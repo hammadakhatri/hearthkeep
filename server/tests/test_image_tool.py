@@ -75,11 +75,12 @@ class FakeGpu:
 class FakeComfy:
     """Returns one PNG per render; `fail_on[i]` raises for the i-th render (0-based)."""
 
-    def __init__(self, gpu=None, fail_on=None):
+    def __init__(self, gpu=None, fail_on=None, per_render=1):
         self.graphs: list[dict] = []
         self.held_during: list[str | None] = []
         self.gpu = gpu
         self.fail_on = fail_on or {}
+        self.per_render = per_render
 
     async def render(self, graph):
         index = len(self.graphs)
@@ -88,7 +89,7 @@ class FakeComfy:
         await asyncio.sleep(0)
         if index in self.fail_on:
             raise self.fail_on[index]
-        return [PNG]
+        return [PNG + bytes([index, n]) for n in range(self.per_render)]
 
 
 @pytest.fixture
@@ -178,7 +179,7 @@ async def test_defaults_square_four_images(store, ctx, conn):
     assert {(r.chat_id, r.turn_id, r.model_id, r.width, r.height) for r in records} == {
         ("chat1", "turn-1", "z-image-turbo", 1024, 1024)
     }
-    assert all(store.path(i).read_bytes() == PNG for i in ids)
+    assert all(store.path(i).read_bytes().startswith(PNG) for i in ids)
 
 
 async def test_aspect_and_explicit_size(store, ctx):
@@ -262,8 +263,12 @@ async def test_partial_success_keeps_saved_images(store, ctx):
     tool, _, _ = make_tool(store, gpu=gpu, comfy=comfy)
     result = await tool.run({"prompt": "fox", "seed": 5}, ctx)
     assert result.ok is False
-    assert result.content == "Image generation took too long."
+    assert result.content == (
+        "Image generation took too long. 2 of 4 images were made before it stopped."
+    )
     ids = image_ids(result)
+    for image_id in ids:
+        assert image_id not in result.content
     assert len(ids) == 2
     assert [store.get(i).seed for i in ids] == [5, 6]
     assert len(comfy.graphs) == 3
@@ -280,9 +285,7 @@ async def test_prefix_is_sanitised(store, conn, tmp_path):
     tool, _, comfy = make_tool(store)
     ctx = ToolContext("chat1", 'a b/../"c', Settings(data_dir=tmp_path), conn)
     await tool.run({"prompt": "fox", "count": 1}, ctx)
-    prefix = comfy.graphs[0]["9"]["inputs"]["filename_prefix"]
-    assert prefix.startswith("hearthkeep/")
-    assert set(prefix) <= set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_/-")
+    assert comfy.graphs[0]["9"]["inputs"]["filename_prefix"] == "hearthkeep/a_b/__/_c"
 
 
 def test_build_registry_registers_the_image_tool_only_when_given(store):
@@ -293,3 +296,59 @@ def test_build_registry_registers_the_image_tool_only_when_given(store):
     assert [t.name for t in registry.all()] == ["clock", "note", "generate_image"]
     schema = registry.schemas([registry.get("generate_image")])[0]["function"]
     json.dumps(schema)  # serialisable for the chat request
+
+
+def test_seed_above_the_random_range_is_rejected_by_the_schema(store):
+    import jsonschema
+
+    tool, _, _ = make_tool(store)
+    jsonschema.validate({"prompt": "fox", "seed": 2**31 - 1}, tool.parameters)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({"prompt": "fox", "seed": 2**31}, tool.parameters)
+
+
+@pytest.mark.parametrize("error", [OSError("disk full"), ValueError("not a PNG"),
+                                   OverflowError("too big")])  # fmt: skip
+async def test_save_failure_keeps_earlier_images(store, ctx, error):
+    real_save = store.save
+    calls = []
+
+    def flaky_save(png, **kwargs):
+        calls.append(png)
+        if len(calls) == 2:
+            raise error
+        return real_save(png, **kwargs)
+
+    store.save = flaky_save
+    tool, _, comfy = make_tool(store)
+    result = await tool.run({"prompt": "fox", "count": 3}, ctx)
+    assert result.ok is False
+    assert result.content == (
+        "Hearthkeep couldn't save the image. 1 of 3 images were made before it stopped."
+    )
+    assert len(image_ids(result)) == 1
+    assert store.get(image_ids(result)[0]) is not None
+    assert len(comfy.graphs) == 2
+
+
+async def test_save_failure_on_first_image_says_only_the_message(store, ctx):
+    import sqlite3
+
+    def broken_save(png, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    store.save = broken_save
+    tool, _, _ = make_tool(store)
+    result = await tool.run({"prompt": "fox", "count": 2}, ctx)
+    assert (result.ok, result.content) == (False, "Hearthkeep couldn't save the image.")
+    assert result.data == {"attachments": []}
+
+
+async def test_only_the_first_png_of_a_render_is_kept(store, ctx):
+    gpu = FakeGpu()
+    tool, _, _ = make_tool(store, gpu=gpu, comfy=FakeComfy(gpu, per_render=3))
+    result = await tool.run({"prompt": "fox", "count": 2}, ctx)
+    assert result.ok and result.content.startswith("Created 2 image(s)")
+    ids = image_ids(result)
+    assert len(ids) == 2
+    assert [store.path(i).read_bytes()[-2:] for i in ids] == [bytes([0, 0]), bytes([1, 0])]

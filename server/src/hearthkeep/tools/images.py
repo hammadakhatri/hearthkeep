@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 import secrets
+import sqlite3
 
 from hearthkeep.images import ASPECTS, ImageStore, validate_size
 from hearthkeep.models.cards import ModelCard, load_workflow
@@ -17,6 +18,7 @@ IMAGES_LEVEL_KEY = "images"
 PROMPT_MAX_CHARS = 2000
 MAX_COUNT = 4
 SEED_RANGE = 2**31
+SAVE_FAILED = "Hearthkeep couldn't save the image."
 STYLE_SENTENCE = "Write the prompt in that model's style. Put any on-image text in double quotes."
 _PREFIX_UNSAFE = re.compile(r"[^A-Za-z0-9_/-]")
 
@@ -72,6 +74,7 @@ class GenerateImageTool:
                 "seed": {
                     "type": "integer",
                     "minimum": 0,
+                    "maximum": SEED_RANGE - 1,
                     "description": "Fixed seed for reproducible images.",
                 },
             },
@@ -124,12 +127,13 @@ class GenerateImageTool:
                 async with self._gpu.lease(card.id):
                     pngs = await self._comfy.render(graph)
             except (ProcessError, RenderError) as exc:
-                return ToolResult(
-                    ok=False, content=exc.user_message, data={"attachments": attachments}
-                )
-            for png in pngs:
+                return _stopped(exc.user_message, attachments, count)
+            try:
+                if not pngs:
+                    raise ValueError("the render returned no image")
+                # Only the first image of a render: a call never attaches more than `count`.
                 record = self._store.save(
-                    png,
+                    pngs[0],
                     chat_id=ctx.chat_id,
                     turn_id=ctx.turn_id,
                     model_id=card.id,
@@ -138,7 +142,9 @@ class GenerateImageTool:
                     height=height,
                     seed=seed,
                 )
-                attachments.append({"kind": "image", "id": record.id})
+            except (OSError, ValueError, sqlite3.Error, OverflowError):
+                return _stopped(SAVE_FAILED, attachments, count)
+            attachments.append({"kind": "image", "id": record.id})
 
         return ToolResult(
             ok=True,
@@ -148,6 +154,15 @@ class GenerateImageTool:
             ),
             data={"attachments": attachments},
         )
+
+
+def _stopped(message: str, attachments: list[dict], count: int) -> ToolResult:
+    """A failed call. Images made before the failure stay attached, and the model is told how
+    many there were (never their ids)."""
+    content = message
+    if attachments:
+        content += f" {len(attachments)} of {count} images were made before it stopped."
+    return ToolResult(ok=False, content=content, data={"attachments": attachments})
 
 
 def _describe(cards: list[ModelCard], default: ModelCard) -> str:

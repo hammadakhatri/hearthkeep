@@ -233,7 +233,8 @@ class AgentLoop:
             except SecretStoreError:
                 yield self._emit(turn, "turn_error", message=SECRETS_UNREADABLE)
                 return
-            # Closed explicitly so an early stop reaches the provider stream right away.
+            # aclosing guarantees the provider stream (and its GPU lease) is closed when this
+            # turn's generator is closed or its consumer raises; turns run as background tasks.
             async with contextlib.aclosing(self._turn(turn, history, think)) as events:
                 async for event in events:
                     yield event
@@ -261,8 +262,8 @@ class AgentLoop:
             text_parts: list[str] = []
             requests: list[ToolCallRequest] = []
             try:
-                # aclosing: a turn that ends early (or a client that goes away) closes the
-                # provider stream right here, releasing any GPU lease it holds.
+                # aclosing guarantees the provider stream (and its GPU lease) is closed when the
+                # turn's generator is closed or its consumer raises, not later at GC.
                 async with contextlib.aclosing(
                     self._client.stream(messages, self._registry.schemas(tools), think)
                 ) as stream:
