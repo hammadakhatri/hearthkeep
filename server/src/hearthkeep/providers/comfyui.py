@@ -23,6 +23,7 @@ _NOT_AN_IMAGE = "Image generation returned something that isn't an image."
 
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _REQUEST_TIMEOUT = 30.0
+_CONTROL_TIMEOUT = 5.0  # /free and /system_stats answer at once unless ComfyUI is hung
 _PLACEHOLDER = re.compile(r"\{\{(.*?)\}\}")
 _UPLOAD_NAME = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 _NODE_TYPE = re.compile(r"[A-Za-z0-9_ .-]{1,64}")
@@ -114,12 +115,12 @@ class ComfyUIClient:
         self._timeout = timeout
         self._clock = clock
 
-    def _http(self) -> httpx.AsyncClient:
+    def _http(self, timeout: float = _REQUEST_TIMEOUT) -> httpx.AsyncClient:
         # trust_env=False: never route anything through a system or environment proxy.
         return httpx.AsyncClient(
             transport=self._transport,
             base_url=self._base,
-            timeout=_REQUEST_TIMEOUT,
+            timeout=timeout,
             trust_env=False,
         )
 
@@ -164,12 +165,33 @@ class ComfyUIClient:
             raise RenderError(_FAILED, f"{type(e).__name__}: {e}") from e
 
     async def free(self) -> None:
-        """Ask ComfyUI to unload its models and release GPU memory."""
+        """Ask ComfyUI to unload its models and release GPU memory. Only a request: ComfyUI
+        frees the memory a little later, and only once a running render has finished."""
         try:
-            async with self._http() as http:
+            async with self._http(_CONTROL_TIMEOUT) as http:
                 resp = await http.post("/free", json={"unload_models": True, "free_memory": True})
                 if resp.status_code >= 400:
                     raise RenderError(_FAILED, f"HTTP {resp.status_code} from /free")
+        except httpx.TransportError as e:
+            raise RenderError(_UNREACHABLE, f"{type(e).__name__}: {e}") from e
+        except httpx.HTTPError as e:
+            raise RenderError(_FAILED, f"{type(e).__name__}: {e}") from e
+
+    async def vram_used(self) -> float:
+        """GPU memory in use on ComfyUI's first device, in bytes (GET /system_stats)."""
+        try:
+            async with self._http(_CONTROL_TIMEOUT) as http:
+                resp = await http.get("/system_stats")
+                if resp.status_code >= 400:
+                    raise RenderError(_FAILED, f"HTTP {resp.status_code} from /system_stats")
+                try:
+                    device = resp.json()["devices"][0]
+                    total, free = device["vram_total"], device["vram_free"]
+                except (ValueError, KeyError, IndexError, TypeError) as e:
+                    raise RenderError(_FAILED, f"bad /system_stats response: {e!r}") from e
+                if not all(isinstance(v, int | float) for v in (total, free)):
+                    raise RenderError(_FAILED, "/system_stats reported no VRAM numbers")
+                return float(total - free)
         except httpx.TransportError as e:
             raise RenderError(_UNREACHABLE, f"{type(e).__name__}: {e}") from e
         except httpx.HTTPError as e:

@@ -453,7 +453,7 @@ describe('photos', () => {
     await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1))
     const message = calls.find((c) => c.path === '/api/chats/ic1/messages')!
     expect(bodyOf(message)).toEqual({
-      text: 'Create 4 image(s), shape square, using FLUX klein: Make the sky pink using my photo up1',
+      text: 'Create 4 image(s), shape square, using FLUX klein: Make the sky pink\nAttached photo: up1',
     })
     expect(chip()).toBeNull()
   })
@@ -475,7 +475,7 @@ describe('photos', () => {
     await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1))
     const message = calls.find((c) => c.path === '/api/chats/ic1/messages')!
     expect(bodyOf(message).text).toBe(
-      'Create 4 image(s), shape landscape, using FLUX klein: Make it autumn using my photo up5',
+      'Create 4 image(s), shape landscape, using FLUX klein: Make it autumn\nAttached photo: up5',
     )
   })
 

@@ -29,6 +29,7 @@ PROMPT_MAX_CHARS = 2000
 MAX_COUNT = 4
 SEED_RANGE = 2**31
 SAVE_FAILED = "Hearthkeep couldn't save the image."
+RENDER_FAILED = "Image generation failed."
 STYLE_SENTENCE = "Write the prompt in that model's style. Put any on-image text in double quotes."
 _PREFIX_UNSAFE = re.compile(r"[^A-Za-z0-9_/-]")
 EDIT_CAPABILITY = "image-edit"
@@ -198,6 +199,9 @@ class GenerateImageTool:
                     pngs = await self._comfy.render(fill_workflow(template, values))
             except (ProcessError, RenderError) as exc:
                 return _stopped(exc.user_message, attachments, count)
+            except (ValueError, KeyError):
+                # A photo ComfyUI won't take or a workflow placeholder left unfilled.
+                return _stopped(RENDER_FAILED, attachments, count)
             try:
                 if not pngs:
                     raise ValueError("the render returned no image")

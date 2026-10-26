@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, aclosing
 
 from hearthkeep.providers.chat import Event, OpenAIChatClient, ProviderError
-from hearthkeep.runtime.gpu import GpuScheduler
+from hearthkeep.runtime.gpu import GpuScheduler, ModelLoadError
 from hearthkeep.runtime.supervisor import ProcessError
 
 _NOT_STARTED = "The chat model couldn't be started. Check <data>/logs/llama-server.log."
@@ -28,7 +28,10 @@ class ScheduledChatClient:
             try:
                 await stack.enter_async_context(self._gpu.lease(self._model_id))
             except ProcessError as exc:
-                raise ProviderError(_NOT_STARTED, str(exc)) from exc
+                # The chat model's own server didn't start: its log says why. Anything else
+                # (memory that couldn't be freed, a model too big) is said as it is.
+                own = isinstance(exc, ModelLoadError) and exc.model_id == self._model_id
+                raise ProviderError(_NOT_STARTED if own else exc.user_message, str(exc)) from exc
             events = await stack.enter_async_context(
                 aclosing(self._inner.stream(messages, tools, think))
             )

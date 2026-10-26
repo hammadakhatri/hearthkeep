@@ -153,6 +153,9 @@ async def test_unreachable_maps_to_render_error():
         await client.free()
     assert exc.value.user_message == expected
     with pytest.raises(RenderError) as exc:
+        await client.vram_used()
+    assert exc.value.user_message == expected
+    with pytest.raises(RenderError) as exc:
         await client.upload(PNG, "a.png")
     assert exc.value.user_message == expected
 
@@ -364,3 +367,43 @@ async def test_upload_rejects_other_bytes():
     with pytest.raises(ValueError):
         await fake.client().upload(b"GIF89a-not-allowed", "hk-photo.gif")
     assert fake.requests == []
+
+
+def _stats(handler_status=200, devices=None):
+    body = {"system": {}, "devices": devices if devices is not None else [
+        {"name": "cuda:0", "vram_total": 16 * 2**30, "vram_free": 10 * 2**30}
+    ]}  # fmt: skip
+
+    def handler(request):
+        if request.url.path == "/system_stats":
+            return httpx.Response(handler_status, json=body)
+        return httpx.Response(404)
+
+    return handler
+
+
+async def test_vram_used_reads_system_stats():
+    seen = []
+
+    def handler(request):
+        seen.append((request.method, request.url.path))
+        return _stats()(request)
+
+    client = ComfyUIClient(BASE, transport=httpx.MockTransport(handler))
+    assert await client.vram_used() == 6 * 2**30
+    assert seen == [("GET", "/system_stats")]
+
+
+@pytest.mark.parametrize(
+    "handler",
+    [
+        _stats(handler_status=500),
+        _stats(devices=[]),
+        _stats(devices=[{"name": "cuda:0", "vram_total": "lots"}]),
+    ],
+)
+async def test_vram_used_bad_answers_are_render_errors(handler):
+    client = ComfyUIClient(BASE, transport=httpx.MockTransport(handler))
+    with pytest.raises(RenderError) as exc:
+        await client.vram_used()
+    assert exc.value.user_message == "Image generation failed."

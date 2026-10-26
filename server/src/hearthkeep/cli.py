@@ -178,7 +178,7 @@ def build_model_stack(
     if all((rt.comfyui_python, rt.comfyui_main, rt.comfyui_model_root)) and image_ids:
         comfy_process = make_comfy(rt, data)
         comfy = ComfyUIClient(f"http://{LOOPBACK}:{rt.comfyui_port}")
-        backends["comfyui"] = ComfyBackend(comfy_process, comfy.free)
+        backends["comfyui"] = ComfyBackend(comfy_process, comfy.free, comfy.vram_used)
         processes.append(comfy_process)
         managed |= image_ids
 

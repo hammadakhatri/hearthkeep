@@ -1,5 +1,6 @@
 """/api/models and /api/images, and the model stack wired into the app."""
 
+import json
 import sqlite3
 
 import pytest
@@ -307,3 +308,53 @@ def test_models_unreadable_card_error_has_no_path(start, tmp_path):
     assert error["id_or_file"] == "unreadable.toml"
     assert error["message"].startswith("cannot read card: ")
     assert tmp_path.name not in response.text and "\\\\" not in response.text
+
+
+# ---- images in saved chats ------------------------------------------------------------------
+
+
+def _stamp(second: int) -> str:
+    return f"2026-10-26T10:00:{second:02d}.000000+00:00"
+
+
+def test_chat_messages_carry_the_images_each_tool_call_made(start, tmp_path):
+    client = start()
+    conn = connect(tmp_path / DB_FILE)
+    store = ImageStore(conn, tmp_path)
+    for chat_id in ("c1", "c2"):
+        conn.execute("INSERT INTO chats (id, title, think, created_at) VALUES (?, '', 0, ?)",
+                     (chat_id, _stamp(0)))  # fmt: skip
+    call = {"type": "function", "function": {"name": "generate_image", "arguments": "{}"}}
+    calls = [{"id": f"k{i}", **call} for i in (1, 2)]
+    rows = [
+        ("c1", "user", "Draw two foxes", None, None, _stamp(1)),
+        ("c1", "assistant", "", json.dumps(calls), None, _stamp(2)),
+        ("c1", "tool", "Created 2 image(s)", None, "k1", _stamp(5)),
+        ("c1", "tool", "Created 1 image(s)", None, "k2", _stamp(7)),
+        ("c1", "assistant", "Here they are.", None, None, _stamp(8)),
+    ]
+    conn.executemany(
+        "INSERT INTO messages (chat_id, role, content, tool_calls, tool_call_id, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+
+    def image(chat_id: str, second: int) -> str:
+        rec = store.save(PNG, chat_id=chat_id, turn_id="t1", model_id="zimg", prompt="fox",
+                         width=1024, height=1024, seed=second)  # fmt: skip
+        conn.execute("UPDATE images SET created_at = ? WHERE id = ?", (_stamp(second), rec.id))
+        return rec.id
+
+    first = [image("c1", 3), image("c1", 4)]
+    second = [image("c1", 6)]
+    image("c2", 4)  # another chat's image, made at the same time
+    conn.close()
+
+    messages = client.get("/api/chats/c1/messages").json()
+    assert [(m["role"], m["images"]) for m in messages] == [
+        ("user", []),
+        ("assistant", []),
+        ("tool", first),
+        ("tool", second),
+        ("assistant", []),
+    ]

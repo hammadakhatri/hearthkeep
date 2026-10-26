@@ -75,6 +75,15 @@ def detect_vram_gb() -> float | None:
         return None
 
 
+class ModelLoadError(ProcessError):
+    """The requested model itself couldn't be loaded (its server didn't start). Other lease
+    failures (no card, too big, memory that couldn't be freed) stay plain ProcessErrors."""
+
+    def __init__(self, model_id: str, user_message: str, detail: str | None = None) -> None:
+        super().__init__(user_message, detail)
+        self.model_id = model_id
+
+
 class Backend(Protocol):
     async def load(self, card: ModelCard) -> None: ...
     async def unload(self, card: ModelCard) -> None: ...
@@ -106,18 +115,53 @@ class LlamaBackend:
 
 class ComfyBackend:
     """Image models: ComfyUI loads them on demand. load = make sure ComfyUI runs; unload = ask
-    it to free its models (`free`, e.g. POST /free); ComfyUI itself keeps running."""
+    it to free its models (`free`, e.g. POST /free) and wait until the GPU memory in use
+    (`vram_used`, e.g. GET /system_stats) drops. ComfyUI keeps running unless it won't free the
+    memory (hung, an error, or nothing released in time): then it is stopped, so its memory is
+    certainly released."""
 
-    def __init__(self, process: ManagedProcess, free: Callable[[], Awaitable[None]]) -> None:
+    def __init__(
+        self,
+        process: ManagedProcess,
+        free: Callable[[], Awaitable[None]],
+        vram_used: Callable[[], Awaitable[float]],
+        *,
+        settle_timeout: float = 5.0,
+        poll_interval: float = 0.25,
+    ) -> None:
         self._process = process
         self._free = free
+        self._vram_used = vram_used
+        self._settle_timeout = settle_timeout
+        self._poll_interval = poll_interval
 
     async def load(self, card: ModelCard) -> None:
         await self._process.start()
 
     async def unload(self, card: ModelCard) -> None:
-        if self._process.running:
+        if not self._process.running:
+            return  # crashed or never started: it holds no GPU memory
+        try:
+            before = await self._vram_used()
             await self._free()
+            if await self._dropped_below(before):
+                return
+            log.warning("ComfyUI didn't release its GPU memory in time; stopping ComfyUI")
+        except Exception as exc:
+            log.warning(
+                "ComfyUI couldn't free its GPU memory (%s); stopping ComfyUI", type(exc).__name__
+            )
+        await self._process.stop()
+
+    async def _dropped_below(self, before: float) -> bool:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._settle_timeout
+        while True:
+            if await self._vram_used() < before:
+                return True
+            if loop.time() >= deadline:
+                return False
+            await asyncio.sleep(self._poll_interval)
 
     async def is_ready(self, card: ModelCard) -> bool:
         return self._process.running and await self._process.is_healthy()
@@ -346,9 +390,11 @@ class GpuScheduler:
                 # this covers backends that don't) unless others still hold leases on it.
                 if self._active.get(card.id, 0) == 0:
                     await _run_to_end(self._backend(card).unload(card))
-                if isinstance(exc, Exception) and not isinstance(exc, ProcessError):
-                    raise ProcessError(
-                        f"{card.name} couldn't be started.", f"{type(exc).__name__}: {exc}"
+                if isinstance(exc, ProcessError):
+                    raise ModelLoadError(card.id, exc.user_message, str(exc)) from exc
+                if isinstance(exc, Exception):
+                    raise ModelLoadError(
+                        card.id, f"{card.name} couldn't be started.", f"{type(exc).__name__}: {exc}"
                     ) from exc
                 raise
         except BaseException:

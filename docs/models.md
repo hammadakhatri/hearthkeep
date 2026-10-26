@@ -156,6 +156,7 @@ A chat model and an image model usually do not fit in the GPU's memory together,
 - **Chat pauses while images render.** When the assistant makes an image, the chat model is unloaded to make room, the image is rendered, and the chat model is loaded again when something needs it. Anything you type in the meantime waits its turn: an image waits for a chat reply that is already in progress, and a chat waits for an image that is being rendered.
 - **The first image after a chat takes longer**, and so does **the first chat after images**, because a model has to be loaded from disk. Later requests of the same kind are quick.
 - Several images in one request are rendered one after another. Chat can run between two of them.
+- If ComfyUI doesn't give its GPU memory back within about 5 seconds (it is stuck, or a render is still finishing), Hearthkeep stops ComfyUI so the chat model can start. ComfyUI starts again with the next image.
 - If a model needs more memory than your GPU has, Hearthkeep says so instead of trying.
 
 ## Photo uploads
@@ -175,6 +176,7 @@ Known Phase 2 limits:
 
 - Uploaded photos never expire. They stay in `<data>` until you delete them yourself.
 - To edit a photo, Hearthkeep sends a copy to ComfyUI, which keeps that copy in its own `input` folder. Hearthkeep does not clean that folder; delete the files there if you want them gone.
+- ComfyUI also keeps a copy of every generated image in its own `output` folder (files whose names start with `hearthkeep`), next to the copy in `<data>`. Hearthkeep does not clean that folder either.
 
 ## Troubleshooting
 
@@ -183,6 +185,6 @@ Logs are in `<data>/logs/`: `llama-server.log` for the chat model and `comfyui.l
 - **No images, or the image tool is missing.** Check that all three `comfyui_*` paths are set in `<data>/models.toml` and point to real files.
 - **A model "couldn't be started".** Open the matching log. The usual causes are a wrong path, a missing model file, or too little free GPU memory because another program is using it.
 - **A card does not show up.** Look at the start-up output: skipped cards are listed with the reason. Common ones are a file name that contains a path, a missing `files` entry, or a `workflow` name that is not one of the shipped files.
-- **"Hearthkeep's data folder path is too long for llama-server on Windows".** On Windows, `<data>\runtime\llama-api-key` (and the model file paths) must each stay under 260 characters. Move the data folder to a shorter path.
+- **"Hearthkeep's data folder path is too long for llama-server on Windows".** On Windows, `<data>\runtime\llama-api-key` (and the model file paths) must each stay under 260 characters. Move the data folder to a shorter path. The limit applies to llama-server only: ComfyUI (Python) handles long paths.
 - **The first image is slow.** That is the model swap described above.
 - **Port already in use.** Change `llama_port` or `comfyui_port` in `models.toml`.

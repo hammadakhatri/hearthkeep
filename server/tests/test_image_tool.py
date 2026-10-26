@@ -513,3 +513,33 @@ def test_input_image_schema_rejects_paths(store):
     for bad in ("../hk.db", "a" * 33, "", "a.png"):
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.validate({"prompt": "x", "input_image": bad}, tool.parameters)
+
+
+async def test_workflow_error_mid_sequence_keeps_earlier_images(store, ctx, monkeypatch):
+    from hearthkeep.tools import images as tool_module
+
+    real = tool_module.fill_workflow
+    filled: list[int] = []
+
+    def fill(graph, values):
+        filled.append(values["seed"])
+        if len(filled) == 3:
+            raise KeyError("unreplaced workflow placeholder: {{missing}}")
+        return real(graph, values)
+
+    monkeypatch.setattr(tool_module, "fill_workflow", fill)
+    tool, _, comfy = make_tool(store)
+    result = await tool.run({"prompt": "fox", "seed": 1}, ctx)
+    assert result.ok is False
+    assert result.content == "Image generation failed. 2 of 4 images were made before it stopped."
+    assert len(image_ids(result)) == 2 and len(comfy.graphs) == 2
+    assert "missing" not in result.content
+
+
+async def test_upload_that_rejects_the_photo_is_error_result(store, ctx):
+    photo = save_photo(store)
+    comfy = UploadingComfy(fail_upload=ValueError("upload must be a PNG, JPEG or WebP image"))
+    tool, _, _ = make_tool(store, comfy=comfy, cards=(FLUX_EDIT, ZIMAGE))
+    result = await tool.run({"prompt": "x", "input_image": photo}, ctx)
+    assert (result.ok, result.content) == (False, "Image generation failed.")
+    assert result.data == {"attachments": []} and comfy.graphs == []

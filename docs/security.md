@@ -13,6 +13,7 @@ This page describes what the code in this repository does today. Phase 1 is the 
 - The server ignores `X-Forwarded-For`, so a local process cannot fake its address to dodge rate limits.
 - Hearthkeep never uses system or environment proxy settings for its local connections (to the chat model and the image server), so your chats and the chat API key cannot be routed through a proxy or VPN.
 - Every child process Hearthkeep starts (llama-server for chat, ComfyUI for images) binds to `127.0.0.1` only. A model card whose launch arguments try to bind another address (`0.0.0.0`, `::`, or a `--host` other than `127.0.0.1`) is rejected.
+- ComfyUI on `127.0.0.1` has no authentication of its own, so any program on this PC can use it (render images, read its output, upload files). That is the same trust boundary as other local software: Hearthkeep does not protect you from programs already running on your PC.
 
 ## Signing in: passkeys and step-up
 
@@ -60,7 +61,7 @@ When a call needs your say-so, Hearthkeep creates an approval and the assistant 
 - The client's file name is never stored or used. The server picks the id and builds the path itself, and only ids of the exact shape it hands out are accepted.
 - The model can only refer to an upload by its id, and the id is looked up in the database. It cannot name a path or a file.
 - Generating an image and uploading a photo are **Look** actions: they stay on this PC and need no approval. Nothing is sent anywhere.
-- Known Phase 2 limits: uploads do not expire, and ComfyUI keeps its own copy of a photo you edit in its `input` folder. See [models.md](models.md).
+- Known Phase 2 limits: uploads do not expire, ComfyUI keeps its own copy of a photo you edit in its `input` folder, and it also keeps a copy of every generated image in its `output` folder (names starting with `hearthkeep`). Hearthkeep cleans neither folder. See [models.md](models.md).
 
 ## Audit log
 

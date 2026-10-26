@@ -17,6 +17,8 @@ export type ServerMessage = {
   tool_calls: { id?: string; function?: { name?: string } }[] | null
   tool_call_id: string | null
   created_at: string
+  /** On a tool message: ids of the images that tool call made, in order. */
+  images?: string[]
 }
 
 export type Step = {
@@ -188,6 +190,11 @@ export function itemsFromMessages(messages: ServerMessage[]): Item[] {
     } else {
       const state = toolFailed(m.content) ? 'failed' : 'ok'
       next = { ...next, steps: next.steps.map((s) => (s.id === m.tool_call_id ? { ...s, state } : s)) }
+      if (m.tool_call_id && m.images?.length) {
+        // The same shape a live turn's attachments event has, so it shows the same way.
+        const items = m.images.map((id) => ({ kind: 'image' as const, id }))
+        next = applyEvent(next, { type: 'attachments', seq: 0, step_id: m.tool_call_id, items }, 0)
+      }
     }
     // A turn that used tools worked from the owner's message until its last saved message.
     if (next.steps.length) next = { ...next, workedMs: Math.max(0, time(m.created_at) - next.startedAt) }

@@ -4,7 +4,7 @@ import { subscribeTurn, type AgentEvent } from '../api/events'
 import { ImageGrid, Thumb, type GridImage } from '../components/ImageGrid'
 import { ImageViewer, type ViewerImage } from '../components/ImageViewer'
 import { Markdown } from '../components/Markdown'
-import { PhotoButton, PhotoChip, usePhoto } from '../components/Photo'
+import { PhotoButton, PhotoChip, attachedPhotoLine, usePhoto } from '../components/Photo'
 import { AlertIcon, ImagesIcon } from '../shell/icons'
 import { LOST_STREAM } from './Chat'
 import { applyEvent, liveTurn, turnImages, type AssistantItem, type ChatSummary } from './chatModel'
@@ -57,7 +57,8 @@ type Live = { chatId: string; turnId: string }
 
 /**
  * The chat message that asks for images: "Create 4 image(s), shape square, using FLUX: …",
- * ending "using my photo {id}" when the owner's photo is to be edited.
+ * followed by the shared "Attached photo: {id}" line when the owner's photo is to be edited,
+ * as the image tool's description expects and the chat shows as a thumbnail.
  */
 export function composeMessage({
   text,
@@ -73,7 +74,7 @@ export function composeMessage({
   photo?: string | null
 }): string {
   const message = `Create ${count} image(s), shape ${shape}${model ? `, using ${model}` : ''}: ${text.trim()}`
-  return photo ? `${message} using my photo ${photo}` : message
+  return photo ? [message, attachedPhotoLine(photo)].join('\n') : message
 }
 
 function storedChat(): string | null {

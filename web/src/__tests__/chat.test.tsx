@@ -189,6 +189,42 @@ describe('Chat', () => {
     expect(FakeEventSource.instances).toHaveLength(0)
   })
 
+  it('a reopened chat shows the images each step made', async () => {
+    const at = (s: number) => `2026-10-26T10:00:0${s}Z`
+    mockFetch({
+      'GET /api/chats': { body: [{ ...newChat, title: 'Foxes' }] },
+      'GET /api/chats/c1/messages': {
+        body: [
+          { id: 1, role: 'user', content: 'Draw foxes', tool_calls: null, tool_call_id: null, created_at: at(0), images: [] },
+          {
+            id: 2,
+            role: 'assistant',
+            content: '',
+            tool_calls: [
+              { id: 'k1', type: 'function', function: { name: 'generate_image', arguments: '{}' } },
+              { id: 'k2', type: 'function', function: { name: 'generate_image', arguments: '{}' } },
+            ],
+            tool_call_id: null,
+            created_at: at(1),
+            images: [],
+          },
+          { id: 3, role: 'tool', content: 'Created 2 image(s)', tool_calls: null, tool_call_id: 'k1', created_at: at(4), images: ['img_a', 'img_b'] },
+          { id: 4, role: 'tool', content: 'Created 1 image(s)', tool_calls: null, tool_call_id: 'k2', created_at: at(6), images: ['img_c'] },
+          { id: 5, role: 'assistant', content: 'Here they are.', tool_calls: null, tool_call_id: null, created_at: at(7), images: [] },
+        ],
+      },
+    })
+    render(<Chat model="Local model 12B" />)
+    expect(await screen.findByText('Here they are.')).toBeInTheDocument()
+    const first = screen.getByRole('img', { name: 'Generated image 1' })
+    expect(first).toHaveAttribute('src', '/api/images/img_a/file')
+    expect(screen.getByRole('img', { name: 'Generated image 2' })).toHaveAttribute('src', '/api/images/img_b/file')
+    expect(screen.getByRole('img', { name: 'Generated image 3' })).toHaveAttribute('src', '/api/images/img_c/file')
+    expect(screen.queryByRole('img', { name: 'Generated image 4' })).toBeNull()
+    // Outside the folded steps, as in a live turn.
+    expect(first.closest('details')).toBeNull()
+  })
+
   it('attachments event shows thumbnails in chat', async () => {
     startChat()
     await send('Draw a lighthouse')

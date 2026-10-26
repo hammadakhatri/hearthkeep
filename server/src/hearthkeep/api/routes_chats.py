@@ -87,17 +87,29 @@ async def list_messages(chat_id: str, session: SessionDep, request: Request) -> 
         " WHERE chat_id = ? ORDER BY id",
         (chat_id,),
     ).fetchall()
-    return [
-        {
-            "id": r["id"],
-            "role": r["role"],
-            "content": r["content"] or "",
-            "tool_calls": json.loads(r["tool_calls"]) if r["tool_calls"] else None,
-            "tool_call_id": r["tool_call_id"],
-            "created_at": r["created_at"],
-        }
-        for r in rows
-    ]
+    images = hk.conn.execute(
+        "SELECT id, created_at FROM images WHERE chat_id = ? ORDER BY created_at, id", (chat_id,)
+    ).fetchall()
+    out = []
+    previous_at = ""
+    for r in rows:
+        made: list[str] = []
+        if r["role"] == "tool" and r["created_at"]:
+            # An image is saved inside its tool call, before that call's tool message.
+            made = [i["id"] for i in images if previous_at < i["created_at"] <= r["created_at"]]
+        out.append(
+            {
+                "id": r["id"],
+                "role": r["role"],
+                "content": r["content"] or "",
+                "tool_calls": json.loads(r["tool_calls"]) if r["tool_calls"] else None,
+                "tool_call_id": r["tool_call_id"],
+                "created_at": r["created_at"],
+                "images": made,
+            }
+        )
+        previous_at = r["created_at"] or ""
+    return out
 
 
 @router.post("/chats/{chat_id}/messages", status_code=202)

@@ -349,21 +349,81 @@ async def test_llama_backend_starts_stops_and_checks_its_own_child():
     assert built == ["chat"]  # one process per card, reused
 
 
+class FakeComfyControl:
+    """`free` and the VRAM reading of a fake ComfyUI. `used` is served in order (the last one
+    repeats); `free_error` makes free raise; `read_error` makes reading VRAM raise."""
+
+    def __init__(self, used=(8.0, 1.0), free_error=None, read_error=None) -> None:
+        self.used = list(used)
+        self.free_error = free_error
+        self.read_error = read_error
+        self.calls: list[str] = []
+
+    async def free(self) -> None:
+        self.calls.append("free")
+        if self.free_error is not None:
+            raise self.free_error
+
+    async def vram_used(self) -> float:
+        self.calls.append("read")
+        if self.read_error is not None:
+            raise self.read_error
+        return self.used.pop(0) if len(self.used) > 1 else self.used[0]
+
+
+def comfy_backend(proc, control: FakeComfyControl) -> ComfyBackend:
+    return ComfyBackend(proc, control.free, control.vram_used, settle_timeout=0.05,
+                        poll_interval=0.001)  # fmt: skip
+
+
 async def test_comfy_backend_frees_models_but_keeps_comfyui_running():
     proc = FakeProcess()
-    freed: list[bool] = []
-
-    async def free() -> None:
-        freed.append(True)
-
-    backend = ComfyBackend(proc, free)
+    control = FakeComfyControl(used=(8.0, 8.0, 1.0))  # memory is released a moment later
+    backend = comfy_backend(proc, control)
     await backend.unload(IMAGE)  # ComfyUI not running: nothing to free
-    assert freed == []
+    assert control.calls == []
     assert await backend.is_ready(IMAGE) is False
     await backend.load(IMAGE)
     assert await backend.is_ready(IMAGE) is True
     await backend.unload(IMAGE)
-    assert freed == [True] and proc.calls == ["start"] and proc.running
+    assert control.calls == ["read", "free", "read", "read"]
+    assert proc.calls == ["start"] and proc.running
+
+
+async def test_comfy_backend_stops_comfyui_when_memory_never_drops():
+    proc = FakeProcess()
+    control = FakeComfyControl(used=(8.0,))  # /free answered, but nothing was released
+    backend = comfy_backend(proc, control)
+    await backend.load(IMAGE)
+    await backend.unload(IMAGE)
+    assert control.calls[:2] == ["read", "free"] and len(control.calls) > 3  # it polled
+    assert proc.calls == ["start", "stop"] and not proc.running
+
+
+@pytest.mark.parametrize(
+    "control",
+    [
+        FakeComfyControl(free_error=TimeoutError("ReadTimeout")),  # hung
+        FakeComfyControl(free_error=RuntimeError("HTTP 500 from /free")),
+        FakeComfyControl(read_error=RuntimeError("HTTP 500 from /system_stats")),
+    ],
+)
+async def test_comfy_that_wont_free_is_stopped_and_chat_still_starts(control, caplog):
+    proc = FakeProcess()
+    chat_backend = FakeBackend()
+    sched = GpuScheduler(
+        {"chat": CHAT, "image": IMAGE},
+        {"llama_server": chat_backend, "comfyui": comfy_backend(proc, control)},
+        16.0,
+    )
+    async with sched.lease("image"):
+        pass
+    async with sched.lease("chat"):  # evicts the image model
+        assert sched.resident() == ["chat"]
+    assert proc.calls == ["start", "stop"]
+    assert chat_backend.ops() == [("load", "chat")]
+    warning = " ".join(r.getMessage() for r in caplog.records)
+    assert "ComfyUI" in warning and "500" not in warning  # the type only, never the text
 
 
 # --- VRAM detection --------------------------------------------------------------------------
