@@ -40,3 +40,21 @@ def test_cli_reads_file_and_stdin(tmp_path):
         [sys.executable, str(SCRIPT), "-"], input=TRAILER, capture_output=True, text=True
     )
     assert out.returncode == 1
+
+
+def test_rejects_generated_by_claude():
+    assert find_violations("docs: y\n\nGenerated " + "by Claude")
+
+
+def test_rejects_attribution_across_link_and_lines():
+    assert find_violations("docs: y\n\nGenerated with [Claude Code](https://example.invalid)")
+    assert find_violations("docs: y\n\nGenerated with\n[Claude\nCode](https://example.invalid)")
+
+
+def test_rejects_vendor_noreply_address():
+    assert find_violations("fix: x\n\nsigned noreply" + "@anthropic.com")
+
+
+def test_rejects_coauthored_by_anywhere_in_message():
+    assert find_violations("fix: x thanks to co-authored" + "-by mention in prose")
+    assert find_violations("fix: x\n\nbody\n\n\n   Co-authored" + "-by: A <a@example.com>")

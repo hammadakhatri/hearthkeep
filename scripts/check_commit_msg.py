@@ -1,4 +1,4 @@
-"""Commit-message guard: no co-author trailers and no AI attribution lines.
+"""Commit-message guard: no co-author trailers and no AI attribution.
 
 Usage:
     python scripts/check_commit_msg.py <message-file>     (commit-msg hook)
@@ -14,8 +14,13 @@ import sys
 from pathlib import Path
 
 FORBIDDEN: list[tuple[str, re.Pattern[str]]] = [
-    ("Co-Authored-By trailer", re.compile(r"co-authored-by", re.IGNORECASE)),
-    ("AI attribution line", re.compile(r"generated with.*claude", re.IGNORECASE)),
+    ("Co-Authored-By trailer", re.compile(r"co-authored[\s-]*by", re.IGNORECASE)),
+    (
+        "AI attribution line",
+        # "Generated with/by ... Claude", also across a markdown link or line break
+        re.compile(r"generated\s+(?:with|by)\b.{0,120}?claude", re.IGNORECASE | re.DOTALL),
+    ),
+    ("AI vendor noreply address", re.compile(r"noreply@anthropic\.com", re.IGNORECASE)),
 ]
 
 

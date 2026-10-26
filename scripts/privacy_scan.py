@@ -2,6 +2,7 @@
 
 Usage:
     python scripts/privacy_scan.py [paths...]
+    python scripts/privacy_scan.py --staged        (scan the staged content, for hooks)
     git log -p | python scripts/privacy_scan.py -
 
 A path of ``-`` reads standard input. Exits 1 if anything is found, 0 otherwise.
@@ -12,6 +13,7 @@ from ``.hearthkeep-personal-markers`` in the repository root. That file is gitig
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,7 +25,8 @@ RULES: list[tuple[str, re.Pattern[str]]] = [
     (
         "abs-path",
         re.compile(
-            r"[A-Za-z]:\\Users\\"  # Windows profile folder
+            # Windows profile folder, with one or more backslashes (escaped source) or slashes
+            r"[A-Za-z]:[\\/]+Users[\\/]+"
             r"|/home/[A-Za-z0-9._-]+/"
             r"|/Users/[A-Za-z0-9._-]+/",
             re.IGNORECASE,
@@ -38,7 +41,7 @@ RULES: list[tuple[str, re.Pattern[str]]] = [
         re.compile(
             r"ghp_[A-Za-z0-9]{36}"
             r"|github_pat_[A-Za-z0-9_]{40,}"
-            r"|sk-[A-Za-z0-9-]{20,}"
+            r"|(?<![A-Za-z0-9])sk-[A-Za-z0-9-]{20,}"
             r"|-----BEGIN [A-Z ]*PRIVATE KEY-----"
         ),
     ),
@@ -75,35 +78,71 @@ def load_markers(root: Path = REPO_ROOT) -> list[str]:
     path = root / MARKERS_FILE
     if not path.is_file():
         return []
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
     return [ln.strip() for ln in lines if ln.strip() and not ln.lstrip().startswith("#")]
 
 
-def _read_file(path: Path) -> str | None:
-    """File text, or None if the path is missing or looks binary."""
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return None
-    if b"\x00" in data[:8192]:
-        return None
-    return data.decode("utf-8", errors="replace")
+def decode_bytes(data: bytes) -> str | None:
+    """Decode file content to text, or None if it is a real binary.
+
+    Handles UTF-8 (with or without BOM) and UTF-16 (BOM, or BOM-less with the
+    tell-tale alternating NUL bytes, as written by PowerShell 5 redirection).
+    """
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return data.decode("utf-16", errors="replace")
+    sample = data[:8192]
+    if b"\x00" not in sample:
+        return data.decode("utf-8-sig", errors="replace")
+    even, odd = sample[0::2], sample[1::2]
+    if odd and odd.count(0) > 0.8 * len(odd) and even.count(0) < 0.1 * len(even):
+        return data.decode("utf-16-le", errors="replace")
+    if even and even.count(0) > 0.8 * len(even) and odd.count(0) < 0.1 * len(odd):
+        return data.decode("utf-16-be", errors="replace")
+    return None
 
 
-def main(argv: list[str] | None = None) -> int:
+def _report(label: str, text: str | None, markers: list[str]) -> int:
+    if text is None:
+        print(f"privacy scan: skipped binary file {label}", file=sys.stderr)
+        return 0
+    findings = scan_text(text, markers)
+    for f in findings:
+        print(f"{label}:{f.line}: [{f.rule}] {f.excerpt}")
+    return len(findings)
+
+
+def _staged_files() -> list[tuple[str, bytes]]:
+    names = subprocess.run(
+        ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z"],
+        capture_output=True,
+        check=True,
+    ).stdout.split(b"\0")
+    files = []
+    for raw in filter(None, names):
+        name = raw.decode("utf-8", errors="replace")
+        blob = subprocess.run(["git", "show", ":" + name], capture_output=True, check=True)
+        files.append((name, blob.stdout))
+    return files
+
+
+def main(argv: list[str] | None = None, root: Path = REPO_ROOT) -> int:
     args = sys.argv[1:] if argv is None else argv
-    markers = load_markers()
+    markers = load_markers(root)
+    if (root / MARKERS_FILE).is_file() and not markers:
+        print(f"privacy scan: warning: {MARKERS_FILE} exists but has no markers", file=sys.stderr)
     total = 0
     for arg in args:
-        if arg == "-":
-            label, text = "<stdin>", sys.stdin.buffer.read().decode("utf-8", errors="replace")
+        if arg == "--staged":
+            for name, data in _staged_files():
+                total += _report(name, decode_bytes(data), markers)
+        elif arg == "-":
+            total += _report("<stdin>", decode_bytes(sys.stdin.buffer.read()), markers)
         else:
-            label, text = arg, _read_file(Path(arg))
-        if text is None:
-            continue
-        for f in scan_text(text, markers):
-            total += 1
-            print(f"{label}:{f.line}: [{f.rule}] {f.excerpt}")
+            try:
+                data = Path(arg).read_bytes()
+            except OSError:
+                continue  # missing (e.g. deleted) or unreadable: nothing to scan
+            total += _report(arg, decode_bytes(data), markers)
     if total:
         print(f"privacy scan: {total} finding(s)", file=sys.stderr)
         return 1

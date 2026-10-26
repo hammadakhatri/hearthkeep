@@ -12,6 +12,7 @@ Use sample data in tests, docs and screenshots.
 
 ```
 python scripts/privacy_scan.py path/to/file ...
+python scripts/privacy_scan.py --staged           # scan what is staged for commit
 git log -p | python scripts/privacy_scan.py -     # '-' reads standard input
 ```
 

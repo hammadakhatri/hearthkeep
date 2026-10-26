@@ -10,7 +10,7 @@ config.toml
 
 # Local working files of the maintainers' tooling
 .superpowers/
-docs/superpowers/
+docs/superpowers/specs/
 
 # Build and tool output
 node_modules/
