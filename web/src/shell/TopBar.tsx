@@ -72,8 +72,7 @@ function StatusPill({ health }: { health: HealthState }) {
   )
 }
 
-export function TopBar({ title }: { title: string }) {
-  const health = useHealth()
+export function TopBar({ title, health }: { title: string; health: HealthState }) {
   return (
     <header className="topbar">
       <div className="topbar-title">

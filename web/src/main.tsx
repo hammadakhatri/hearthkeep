@@ -4,6 +4,8 @@ import './styles/tokens.css'
 import './styles/base.css'
 import './styles/shell.css'
 import './styles/signin.css'
+import './styles/chat.css'
+import './styles/tools.css'
 import App from './App'
 
 createRoot(document.getElementById('root')!).render(

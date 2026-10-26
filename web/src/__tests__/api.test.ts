@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import { startAuthentication } from '@simplewebauthn/browser'
+import { startAuthentication, startRegistration } from '@simplewebauthn/browser'
 import { ApiError, api } from '../api/client'
-import { stepUp } from '../api/webauthn'
+import { enroll, stepUp } from '../api/webauthn'
 import { bodyOf, headerOf, mockFetch } from '../test/fetch'
 
 vi.mock('@simplewebauthn/browser', () => ({
@@ -71,5 +71,40 @@ describe('stepUp', () => {
     })
     await stepUp('settings')
     expect(bodyOf(calls[0])).toEqual({ purpose: 'settings' })
+  })
+})
+
+describe('insecure dev auth stub', () => {
+  it('skips the authenticator only when the server marks options insecureDevAuth: true', async () => {
+    vi.mocked(startAuthentication).mockReset()
+    vi.mocked(startRegistration).mockReset()
+    const options = { challenge: 'eA', allowCredentials: [{ id: 'cred-1', type: 'public-key' }], insecureDevAuth: true }
+    const { calls } = mockFetch({
+      'POST /api/auth/stepup/options': { body: { challenge_id: 'ch-1', options } },
+      'POST /api/auth/stepup/verify': { body: { step_up_token: 't' } },
+      'POST /api/auth/enroll/options': { body: { challenge_id: 'ch-2', options: { challenge: 'eA', insecureDevAuth: true } } },
+      'POST /api/auth/enroll/verify': { body: { device: { id: 'd' } } },
+    })
+    await stepUp('settings')
+    await enroll('ABCD2345', 'Laptop')
+    expect(startAuthentication).not.toHaveBeenCalled()
+    expect(startRegistration).not.toHaveBeenCalled()
+    expect(bodyOf(calls[1]).response).toEqual({ id: 'cred-1', type: 'public-key', response: {} })
+  })
+
+  it('runs the real ceremony for any other insecureDevAuth value', async () => {
+    vi.mocked(startAuthentication).mockReset().mockResolvedValue({ id: 'cred-1' } as never)
+    vi.mocked(startRegistration).mockReset().mockResolvedValue({ id: 'cred-2' } as never)
+    const truthy = { challenge: 'eA', insecureDevAuth: 'true' }
+    mockFetch({
+      'POST /api/auth/stepup/options': { body: { challenge_id: 'ch-1', options: truthy } },
+      'POST /api/auth/stepup/verify': { body: { step_up_token: 't' } },
+      'POST /api/auth/enroll/options': { body: { challenge_id: 'ch-2', options: { challenge: 'eA', insecureDevAuth: 1 } } },
+      'POST /api/auth/enroll/verify': { body: { device: { id: 'd' } } },
+    })
+    await stepUp('settings')
+    await enroll('ABCD2345', 'Laptop')
+    expect(startAuthentication).toHaveBeenCalledOnce()
+    expect(startRegistration).toHaveBeenCalledOnce()
   })
 })

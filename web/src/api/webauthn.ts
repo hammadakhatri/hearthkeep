@@ -13,22 +13,27 @@ export type StepUpPurpose = 'approval' | 'settings' | 'add_device'
 
 export type Device = { id: string; device_name: string; created_at: string; current: boolean }
 
-type Ceremony<O> = { challenge_id: string; options: O & { insecureDevAuth?: boolean } }
+type Ceremony<O> = { challenge_id: string; options: O & { insecureDevAuth?: unknown } }
 
 /* `hearthkeep serve --insecure-dev-auth` (localhost only) marks its options with
- * `insecureDevAuth` and accepts any response, so no authenticator is involved. */
+ * `insecureDevAuth: true` and accepts any response, so no authenticator is involved.
+ * Only the exact boolean counts: anything else runs the real ceremony. */
+function isDevAuth(options: { insecureDevAuth?: unknown }): boolean {
+  return options.insecureDevAuth === true
+}
+
 function devCredentialId(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16))
   return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
 async function register(options: Ceremony<PublicKeyCredentialCreationOptionsJSON>['options']) {
-  if (options.insecureDevAuth) return { id: devCredentialId(), type: 'public-key', response: {} }
+  if (isDevAuth(options)) return { id: devCredentialId(), type: 'public-key', response: {} }
   return startRegistration({ optionsJSON: options })
 }
 
 async function assert(options: Ceremony<PublicKeyCredentialRequestOptionsJSON>['options']) {
-  if (options.insecureDevAuth) {
+  if (isDevAuth(options)) {
     return { id: options.allowCredentials?.[0]?.id ?? '', type: 'public-key', response: {} }
   }
   return startAuthentication({ optionsJSON: options })

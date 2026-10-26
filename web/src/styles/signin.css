@@ -33,6 +33,12 @@
   box-shadow: 0 24px 60px -18px rgba(41, 151, 255, 0.55);
 }
 
+/* The server is away: the mark dims and loses its glow. */
+.signin-mark.away {
+  filter: grayscale(1) brightness(0.7);
+  box-shadow: none;
+}
+
 .signin-title {
   font-size: var(--display);
   line-height: 1.04;

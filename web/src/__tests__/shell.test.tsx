@@ -39,7 +39,8 @@ describe('AppShell', () => {
   it('status pill shows the model name when reachable', async () => {
     mockFetch({ 'GET /api/health': healthy })
     render(<AppShell onSignOut={() => {}} />)
-    const pill = await screen.findByText('Local model 12B')
+    // The composer names the model too; the pill is the one in the top bar.
+    const pill = await screen.findByText('Local model 12B', { selector: '.status-text' })
     expect(pill.closest('[role="status"]')).toHaveAttribute('data-state', 'online')
   })
 

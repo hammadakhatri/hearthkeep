@@ -126,4 +126,24 @@ describe('Sign in', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent("That code didn't work.")
     expect(startRegistration).not.toHaveBeenCalled()
   })
+
+  it("shows Can't reach Hearthkeep with Retry when the session check gets no answer", async () => {
+    let up = false
+    mockFetch({
+      'GET /api/auth/session': () => (up ? signedOut : Promise.reject(new TypeError('Failed to fetch'))),
+    })
+    render(<App />)
+    expect(await screen.findByRole('heading', { name: "Can't reach Hearthkeep" })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Sign in with passkey' })).toBeNull()
+    up = true
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByRole('button', { name: 'Sign in with passkey' })).toBeInTheDocument()
+  })
+
+  it("treats a server error on the session check as Can't reach Hearthkeep, not signed out", async () => {
+    mockFetch({ 'GET /api/auth/session': { status: 502, body: null } })
+    render(<App />)
+    expect(await screen.findByRole('heading', { name: "Can't reach Hearthkeep" })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Sign in with passkey' })).toBeNull()
+  })
 })

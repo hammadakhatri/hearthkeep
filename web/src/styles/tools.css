@@ -1,0 +1,171 @@
+/* Tools & permissions: one row per tool, Allowed / Ask / Off on the right. */
+
+.perms {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  width: 100%;
+  max-width: var(--content);
+  margin: 0 auto;
+}
+
+.perms-head h2 {
+  font-size: var(--text-xl);
+  letter-spacing: var(--tracking-snug);
+}
+
+.perms-head p {
+  margin-top: 8px;
+  max-width: 62ch;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.perms-head b {
+  font-weight: 500;
+  color: var(--fg2);
+}
+
+.perm-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+
+.perm {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  padding: 16px 18px;
+  background: var(--s1);
+}
+
+.perm + .perm {
+  border-top: 1px solid var(--line);
+}
+
+.perm-text {
+  min-width: 0;
+}
+
+.perm b {
+  font-weight: 500;
+}
+
+.perm-sub {
+  margin-top: 3px;
+  max-width: 56ch;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.perm-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: var(--text-xs);
+  color: var(--amber);
+}
+
+.perm-flag svg {
+  width: 14px;
+  height: 14px;
+}
+
+.perm .note {
+  margin-top: 10px;
+}
+
+.perms-error {
+  align-items: center;
+}
+
+.perms-error .btn.ghost {
+  margin-left: auto;
+  padding-block: 0;
+}
+
+.tri {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--r-pill);
+  background: var(--s3);
+  width: max-content;
+}
+
+.tri button {
+  border: 0;
+  background: transparent;
+  padding: 6px 12px;
+  border-radius: var(--r-pill);
+  color: var(--fg2);
+  font-size: 12.5px;
+  line-height: 1.2;
+  white-space: nowrap;
+  transition:
+    background var(--dur) var(--ease),
+    color var(--dur) var(--ease);
+}
+
+.tri button:hover:not(:disabled) {
+  color: var(--fg);
+}
+
+.tri button[aria-checked='true'] {
+  background: var(--fg);
+  color: var(--black);
+}
+
+.tri button:disabled {
+  cursor: default;
+}
+
+.perm[aria-busy='true'] .tri {
+  opacity: 0.6;
+}
+
+.tri button:focus-visible {
+  outline-offset: 0;
+}
+
+/* Loading rows */
+.perm.skeleton .perm-text {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bar {
+  display: block;
+  height: 12px;
+  border-radius: 6px;
+  background: var(--s2);
+  animation: breathe 1.2s var(--ease) infinite alternate;
+}
+
+.bar.w30 {
+  width: 30%;
+}
+
+.bar.w60 {
+  width: 60%;
+}
+
+.bar.tri-ghost {
+  width: 168px;
+  height: 30px;
+  border-radius: var(--r-pill);
+}
+
+@media (max-width: 640px) {
+  .perm {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+}

@@ -109,8 +109,8 @@ def cmd_enroll_code(args: argparse.Namespace) -> int:
         code = EnrollmentCodes(conn).issue("first_device", ENROLLMENT_CODE_TTL_MINUTES)
     except EnrollmentError:
         print(
-            "error: a passkey is already enrolled. Add more devices from Settings > Devices "
-            "in the web app.",
+            "error: a passkey is already enrolled. This command only creates the code for "
+            "the first device.",
             file=sys.stderr,
         )
         return 1

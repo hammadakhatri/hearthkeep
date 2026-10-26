@@ -115,3 +115,29 @@ export const BackIcon = (p: IconProps) => (
     <path d="M15 5l-7 7 7 7" />
   </Icon>
 )
+
+export const SendIcon = (p: IconProps) => (
+  <Icon strokeWidth={2.2} {...p}>
+    <path d="M12 19V5M6 11l6-6 6 6" />
+  </Icon>
+)
+
+/** A small spark: the model thinks before it answers. */
+export const ThinkIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9L12 17.5l-1.9-5.1L5 10.5l5.1-1.9z" />
+    <path d="M18.5 16.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z" />
+  </Icon>
+)
+
+export const NewChatIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M12 20H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v6M16 19h6M19 16v6" />
+  </Icon>
+)
+
+export const ChatsIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M4 6h16M4 12h16M4 18h10" />
+  </Icon>
+)
