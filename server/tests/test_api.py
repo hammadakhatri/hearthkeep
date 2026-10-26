@@ -836,6 +836,7 @@ def test_run_server_ignores_proxy_headers(monkeypatch):
     monkeypatch.setattr(uvicorn, "run", lambda app, **kw: calls.append(kw))
     cli.run_server(object(), "127.0.0.1", 8765)
     assert calls[0]["proxy_headers"] is False
+    assert calls[0]["timeout_graceful_shutdown"] == 5
     assert "forwarded_allow_ips" not in calls[0]
 
 
@@ -960,3 +961,26 @@ def test_insecure_dev_auth_refused_with_real_passkey(tmp_path, monkeypatch, caps
     assert cli.main(["serve", "--data", str(data), "--insecure-dev-auth"]) == 2
     assert "real passkey" in capsys.readouterr().err
     assert started == [8765]
+
+
+# ---- final review fixes ------------------------------------------------------------------
+
+
+def test_startup_closes_turns_and_approvals_left_by_a_restart(harness):
+    from test_runner import seed_interrupted
+
+    from hearthkeep.agent.runner import RESTARTED
+
+    c = harness.conn()
+    seed_interrupted(c, chat_id="c-old", turn_id="t-old")  # what a force-exit leaves behind
+    c.close()
+
+    client = signed_in(harness)  # app startup runs the sweep
+    assert client.get("/api/approvals?status=pending").json() == []
+    resolved = client.post("/api/approvals/a1", json={"approve": True}, headers=CSRF)
+    assert resolved.status_code == 409
+    frames = read_events(client, "c-old", "t-old")
+    assert frames[-1]["event"] == "turn_error"
+    assert frames[-1]["data"] == {"message": RESTARTED}
+    roles = [m["role"] for m in client.get("/api/chats/c-old/messages").json()]
+    assert roles == ["user", "assistant", "tool"]

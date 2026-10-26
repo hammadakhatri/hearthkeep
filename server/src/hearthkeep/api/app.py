@@ -19,7 +19,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from hearthkeep import db
 from hearthkeep.agent.loop import AgentLoop
-from hearthkeep.agent.runner import TurnRunner
+from hearthkeep.agent.runner import TurnRunner, recover_after_restart
 from hearthkeep.api import (
     routes_approvals,
     routes_audit,
@@ -204,6 +204,7 @@ def create_app(
         # The connection is opened on the event loop's thread; every handler is async and
         # runs there, so it is only ever used from one thread.
         conn = db.connect(Path(settings.data_dir) / DB_FILE)
+        recover_after_restart(conn)
         approvals = ApprovalStore(
             conn, settings.approval_ttl_minutes, clock, poll_interval=approval_poll_interval
         )

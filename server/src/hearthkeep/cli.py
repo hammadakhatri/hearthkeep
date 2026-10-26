@@ -15,6 +15,7 @@ from hearthkeep.config import ConfigError, Settings, init_data_dir, load_setting
 from hearthkeep.secrets import SecretStore, SecretStoreError
 
 EXIT_USAGE = 2
+GRACEFUL_SHUTDOWN_SECONDS = 5
 
 
 def _settings(data: Path) -> Settings:
@@ -49,7 +50,16 @@ def run_server(app, host: str, port: int) -> None:  # replaced in tests
 
     # proxy_headers=False: never derive the client address from X-Forwarded-For, so a local
     # process cannot rotate the rate-limit key by spoofing that header.
-    uvicorn.run(app, host=host, port=port, log_level="info", proxy_headers=False)
+    # timeout_graceful_shutdown: open event streams never end on their own, so without a
+    # bound a stop would hang until killed and skip the lifespan shutdown that closes turns.
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        log_level="info",
+        proxy_headers=False,
+        timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECONDS,
+    )
 
 
 def cmd_serve(args: argparse.Namespace) -> int:

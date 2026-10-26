@@ -117,6 +117,29 @@ def load_history(conn: sqlite3.Connection, chat_id: str) -> list[dict]:
     return history
 
 
+def answer_orphan_tool_calls(conn: sqlite3.Connection, chat_id: str) -> int:
+    """Persist the repair `load_history` applies in memory for the chat's trailing tool
+    calls: every call of the latest assistant message that has no answer yet gets an
+    INTERRUPTED tool message. Earlier gaps are left to `load_history`. Returns the count."""
+    rows = conn.execute(
+        "SELECT role, tool_calls, tool_call_id FROM messages WHERE chat_id = ? ORDER BY id",
+        (chat_id,),
+    ).fetchall()
+    unanswered: list[str] = []
+    for row in rows:
+        if row["role"] == "tool":
+            if row["tool_call_id"] in unanswered:
+                unanswered.remove(row["tool_call_id"])
+            continue
+        calls = json.loads(row["tool_calls"]) if row["tool_calls"] else []
+        unanswered = [c.get("id") for c in calls if c.get("id")]
+    for call_id in unanswered:
+        save_message(
+            conn, chat_id, {"role": "tool", "tool_call_id": call_id, "content": INTERRUPTED}, []
+        )
+    return len(unanswered)
+
+
 def record_turn_failure(conn: sqlite3.Connection, exc: BaseException) -> None:
     """Audit a turn-level failure. Only the exception type: its text may carry secrets."""
     try:

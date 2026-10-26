@@ -185,3 +185,87 @@ async def test_one_turn_per_chat_at_a_time(conn, approvals, tmp_path):
 async def test_unknown_turn_subscription_ends_immediately(conn, approvals, tmp_path):
     runner, _ = make_runner(conn, approvals, tmp_path, [])
     assert await collect(runner, "nope") == []
+
+
+# ---- recovery after a restart ------------------------------------------------------------
+
+
+def seed_interrupted(conn, chat_id=CHAT, turn_id="t-crashed"):
+    """What a force-exit mid-approval leaves behind: no terminal event, a pending approval and
+    an assistant tool call without its answer."""
+    now = datetime.now(UTC).isoformat()
+    conn.execute(
+        "INSERT INTO chats (id, title, think, created_at) VALUES (?, '', 0, ?)", (chat_id, now)
+    )
+    calls = [{"id": "c1", "type": "function", "function": {"name": "note", "arguments": "{}"}}]
+    for role, content, tool_calls in (
+        ("user", "save a note", None),
+        ("assistant", "", json.dumps(calls)),
+    ):
+        conn.execute(
+            "INSERT INTO messages (chat_id, role, content, tool_calls, tool_call_id, created_at)"
+            " VALUES (?, ?, ?, ?, NULL, ?)",
+            (chat_id, role, content, tool_calls, now),
+        )
+    for seq, type_ in enumerate(("step_started", "approval_required"), start=1):
+        conn.execute(
+            "INSERT INTO turn_events (chat_id, turn_id, seq, type, data, created_at)"
+            " VALUES (?, ?, ?, ?, '{}', ?)",
+            (chat_id, turn_id, seq, type_, now),
+        )
+    conn.execute(
+        "INSERT INTO approvals (id, chat_id, turn_id, tool, action_class, summary, detail,"
+        " requires_step_up, status, created_at, expires_at)"
+        " VALUES ('a1', ?, ?, 'note', 'change_local', 's', '{}', 0, 'pending', ?, '9999-01-01')",
+        (chat_id, turn_id, now),
+    )
+
+
+def events_of(conn, turn_id):
+    return [
+        (r["seq"], r["type"], json.loads(r["data"]))
+        for r in conn.execute(
+            "SELECT seq, type, data FROM turn_events WHERE turn_id = ? ORDER BY seq", (turn_id,)
+        )
+    ]
+
+
+def test_recovery_closes_interrupted_turns_and_expires_pending_approvals(conn):
+    from hearthkeep.agent.loop import INTERRUPTED
+    from hearthkeep.agent.runner import RESTARTED, recover_after_restart
+
+    seed_interrupted(conn)
+    now = datetime.now(UTC).isoformat()
+    conn.execute(
+        "INSERT INTO turn_events (chat_id, turn_id, seq, type, data, created_at)"
+        " VALUES (?, 't-done', 1, 'turn_done', '{}', ?)",
+        (CHAT, now),
+    )
+
+    recover_after_restart(conn)
+
+    status = conn.execute("SELECT status, resolved_at FROM approvals WHERE id = 'a1'").fetchone()
+    assert status["status"] == "expired" and status["resolved_at"]
+    assert events_of(conn, "t-crashed")[-1] == (3, "turn_error", {"message": RESTARTED})
+    assert RESTARTED == "This reply was interrupted when Hearthkeep restarted."
+    assert events_of(conn, "t-done") == [(1, "turn_done", {})]  # finished turns untouched
+    tool_rows = conn.execute(
+        "SELECT tool_call_id, content FROM messages WHERE role = 'tool'"
+    ).fetchall()
+    assert [tuple(r) for r in tool_rows] == [("c1", INTERRUPTED)]
+    assert [m["role"] for m in load_history(conn, CHAT)] == ["user", "assistant", "tool"]
+    assert any(e["event"] == "turns.recovered" for e in audit.list_events(conn, limit=10))
+
+    recover_after_restart(conn)  # idempotent: nothing left to close
+    assert len(events_of(conn, "t-crashed")) == 3
+    assert conn.execute("SELECT COUNT(*) FROM messages WHERE role = 'tool'").fetchone()[0] == 1
+
+
+async def test_recovered_turn_replays_to_its_end(conn, approvals, tmp_path):
+    from hearthkeep.agent.runner import recover_after_restart
+
+    seed_interrupted(conn)
+    recover_after_restart(conn)
+    runner, _ = make_runner(conn, approvals, tmp_path, [])
+    events = await asyncio.wait_for(collect(runner, "t-crashed"), 2)
+    assert events[-1]["type"] == "turn_error"

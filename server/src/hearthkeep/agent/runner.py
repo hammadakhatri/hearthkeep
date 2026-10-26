@@ -14,16 +14,58 @@ import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
-from hearthkeep import db
+from hearthkeep import audit, db
 from hearthkeep.agent.loop import (
     UNEXPECTED,
     AgentLoop,
+    answer_orphan_tool_calls,
     load_history,
     record_turn_failure,
     save_message,
 )
 
 TERMINAL_EVENTS = frozenset({"turn_done", "turn_error"})
+RESTARTED = "This reply was interrupted when Hearthkeep restarted."
+
+
+def recover_after_restart(conn: sqlite3.Connection) -> None:
+    """Startup sweep: no turn survives a restart. Expire every pending approval (nothing is
+    left to run it), end every turn whose last event is not terminal with a turn_error, and
+    answer the tool calls those turns left open so the chat history stays well-formed."""
+    now = db.utcnow()
+    with db.transaction(conn):
+        expired = conn.execute(
+            "UPDATE approvals SET status = 'expired', resolved_at = ? WHERE status = 'pending'",
+            (now,),
+        ).rowcount
+        open_turns = conn.execute(
+            "SELECT e.chat_id, e.turn_id, e.seq FROM turn_events e JOIN ("
+            "  SELECT chat_id, turn_id, MAX(seq) AS last FROM turn_events"
+            "  GROUP BY chat_id, turn_id"
+            ") l ON e.chat_id = l.chat_id AND e.turn_id = l.turn_id AND e.seq = l.last"
+            " WHERE e.type NOT IN ('turn_done', 'turn_error')"
+        ).fetchall()
+        for row in open_turns:
+            conn.execute(
+                "INSERT INTO turn_events (chat_id, turn_id, seq, type, data, created_at)"
+                " VALUES (?, ?, ?, 'turn_error', ?, ?)",
+                (
+                    row["chat_id"],
+                    row["turn_id"],
+                    row["seq"] + 1,
+                    json.dumps({"message": RESTARTED}),
+                    now,
+                ),
+            )
+        for chat_id in {row["chat_id"] for row in open_turns}:
+            answer_orphan_tool_calls(conn, chat_id)
+        if expired or open_turns:
+            audit.record(
+                conn,
+                "system",
+                "turns.recovered",
+                {"approvals_expired": expired, "turns_closed": len(open_turns)},
+            )
 
 
 class TurnInProgressError(Exception):
