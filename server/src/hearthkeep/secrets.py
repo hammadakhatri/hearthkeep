@@ -79,6 +79,8 @@ class SecretStore:
 
     def put(self, name: str, value: str) -> None:
         self._check_name(name)
+        if not isinstance(value, str):
+            raise TypeError("secret value must be a str")
         data = self._load()
         data[name] = value
         self._save(data)

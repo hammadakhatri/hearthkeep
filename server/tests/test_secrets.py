@@ -71,3 +71,22 @@ def test_keys_scoped_per_data_dir(tmp_path, memory_keyring):
 def test_no_temp_files_left(tmp_path):
     SecretStore(tmp_path).put("k", "v")
     assert [p.name for p in (tmp_path / "secrets").iterdir()] == ["store.bin"]
+
+
+@pytest.mark.parametrize("bad", [None, 5, b"x", ["x"]])
+def test_non_str_value_rejected_and_store_intact(tmp_path, bad):
+    s = SecretStore(tmp_path)
+    s.put("good", "v")
+    with pytest.raises(TypeError):
+        s.put("k", bad)
+    assert s.get("good") == "v"
+    assert s.names() == ["good"]
+
+
+@pytest.mark.parametrize("bad", ["", "a b", "x" * 65, "../x"])
+def test_invalid_names_rejected_on_get_and_delete(tmp_path, bad):
+    s = SecretStore(tmp_path)
+    with pytest.raises(ValueError):
+        s.get(bad)
+    with pytest.raises(ValueError):
+        s.delete(bad)
