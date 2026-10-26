@@ -126,7 +126,7 @@ The repo ships `config.example.toml` (or similar) with placeholders; the real co
 ## 7. Models
 
 ### 7.1 Model cards
-Each model is a small data file (YAML or JSON). Generic cards for the supported models ship in the repo; users add their own in the data folder. A card states:
+Each model is a small data file (TOML). Generic cards for the supported models ship in the repo; users add their own in the data folder. A card states:
 - `id`, display name, kind (`chat` | `image`), capabilities (`vision`, `tools`, `thinking`, `text-in-image`, `image-edit`).
 - Provider and how to start it (llama-server arguments with path placeholders; ComfyUI workflow template file).
 - VRAM estimate, context size, recommended sampling.
