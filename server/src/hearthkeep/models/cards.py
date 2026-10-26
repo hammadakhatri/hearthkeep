@@ -24,8 +24,9 @@ _ALL_KEYS = {
     "prefer_when",
 }  # fmt: skip
 _WILDCARD_HOSTS = {"0.0.0.0", "::", "[::]"}
-_PLACEHOLDER_RE = re.compile(r"\{([^{}]*)\}")
-_LAUNCH_PLACEHOLDERS = {"model", "mmproj", "port", "api_key_file"}
+# The only launch_args placeholders. Any other brace text (for example the JSON value of
+# `--chat-template-kwargs`) is not a placeholder and is passed to the server literally.
+LAUNCH_PLACEHOLDER_RE = re.compile(r"\{(model|mmproj|port|api_key_file)\}")
 
 
 @dataclass(frozen=True)
@@ -140,9 +141,7 @@ def _parse(raw: dict[str, Any], source: Literal["shipped", "owner"]) -> ModelCar
         workflows[key] = value
 
     for arg in launch_args:
-        for name in _PLACEHOLDER_RE.findall(arg):
-            if name not in _LAUNCH_PLACEHOLDERS:
-                raise _Invalid(f"launch_args uses unknown placeholder {{{name}}}")
+        for name in LAUNCH_PLACEHOLDER_RE.findall(arg):
             if name in _CHAT_FILES and name not in files:
                 raise _Invalid(f"launch_args uses {{{name}}} but files.{name} is not set")
 

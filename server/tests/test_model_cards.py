@@ -227,20 +227,32 @@ def test_unreadable_card_is_reported(tmp_path):
     assert [e.id_or_file for e in errors] == ["dir.toml"]
 
 
-@pytest.mark.parametrize(
-    "args",
-    [
-        '["--model", "{model}", "--bogus", "{nope}"]',
-        '["--model", "{model}", "--mmproj", "{mmproj}"]',
-        '["--model", "{model}", "--x", "{}"]',
-    ],
-)
-def test_card_rejects_bad_placeholders(tmp_path, args):
+def test_card_rejects_placeholder_for_missing_file(tmp_path):
+    args = '["--model", "{model}", "--mmproj", "{mmproj}"]'
     body = re.sub(r"launch_args = .*", f"launch_args = {args}", GOOD_CHAT.format(id="ph"))
     put_card(tmp_path, "ph.toml", body)
     cards, errors = load_cards(tmp_path)
     assert "ph" not in cards
     assert [e.id_or_file for e in errors] == ["ph.toml"]
+    assert "files.mmproj" in errors[0].message
+
+
+@pytest.mark.parametrize(
+    "arg",
+    [
+        '{\\"enable_thinking\\": false}',  # JSON for --chat-template-kwargs
+        "{nope}",
+        "{}",
+        "}{",
+    ],
+)
+def test_card_passes_other_braces_through(tmp_path, arg):
+    args = f'["--model", "{{model}}", "--x", "{arg}"]'
+    body = re.sub(r"launch_args = .*", f"launch_args = {args}", GOOD_CHAT.format(id="br"))
+    put_card(tmp_path, "br.toml", body)
+    cards, errors = load_cards(tmp_path)
+    assert errors == []
+    assert cards["br"].launch_args[-1] == arg.replace('\\"', '"')
 
 
 def test_card_accepts_known_placeholders(tmp_path):
