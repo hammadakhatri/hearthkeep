@@ -1,0 +1,96 @@
+/* Sign-in and device setup: one calm, centred column. */
+
+.signin {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100dvh;
+  padding: 48px 16px;
+  padding-top: max(48px, env(safe-area-inset-top));
+  padding-bottom: max(32px, env(safe-area-inset-bottom));
+  padding-left: max(16px, env(safe-area-inset-left));
+  padding-right: max(16px, env(safe-area-inset-right));
+  background:
+    radial-gradient(60% 42% at 50% 0%, rgba(41, 151, 255, 0.1), transparent 70%),
+    var(--black);
+}
+
+.signin-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: min(400px, 100%);
+  text-align: center;
+  animation: rise var(--dur-view) var(--ease);
+}
+
+.signin-mark {
+  width: 64px;
+  height: 64px;
+  border-radius: 18px;
+  margin-bottom: 28px;
+  box-shadow: 0 24px 60px -18px rgba(41, 151, 255, 0.55);
+}
+
+.signin-title {
+  font-size: var(--display);
+  line-height: 1.04;
+}
+
+.signin-title.compact {
+  font-size: clamp(1.9rem, 4.4vw, 2.4rem);
+  line-height: 1.08;
+}
+
+.signin-lede {
+  margin-top: 12px;
+  max-width: 32ch;
+  font-size: var(--text-lg);
+  line-height: 1.45;
+  color: var(--fg2);
+}
+
+.signin-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  margin-top: 40px;
+}
+
+.signin-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  margin-top: 32px;
+  text-align: left;
+}
+
+.signin-form .hint {
+  margin-top: -4px;
+  margin-bottom: 6px;
+}
+
+.signin-form > .btn.ghost {
+  align-self: center;
+}
+
+.signin-form .btn.primary {
+  margin-top: 6px;
+}
+
+.signin .note {
+  width: 100%;
+  text-align: left;
+}
+
+.signin-foot {
+  margin-top: 56px;
+  max-width: 36ch;
+  font-size: 12.5px;
+  color: var(--muted);
+  text-align: center;
+}

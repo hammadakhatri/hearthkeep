@@ -1,0 +1,434 @@
+/* Base styles and the shared building blocks every view uses. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--black);
+  color: var(--fg);
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  font: var(--text-md) / 1.55 var(--font);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  min-height: 100dvh;
+  overscroll-behavior: none;
+}
+
+#root {
+  min-height: 100dvh;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: var(--tracking-tight);
+  text-wrap: balance;
+}
+
+p {
+  margin: 0;
+  text-wrap: pretty;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:disabled {
+  cursor: default;
+}
+
+svg {
+  flex: none;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+/* Focus: always visible for keyboard users, always the accent. */
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+input:focus-visible,
+textarea:focus-visible {
+  outline-offset: 0;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+/* Small caption above a group, e.g. "Needs you". */
+.label {
+  font: 500 var(--text-xs) / 1 var(--font);
+  color: var(--muted);
+  letter-spacing: 0.01em;
+}
+
+/* The brand mark: a rounded square with a soft blue gradient and a point of light. */
+.mark {
+  display: block;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  background:
+    radial-gradient(circle at 30% 25%, #fff 0 8%, transparent 9%),
+    linear-gradient(140deg, #2997ff, #0a3d7a);
+  flex: none;
+}
+
+/* ---- Buttons ------------------------------------------------------------------------ */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  border: 0;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  line-height: 1.2;
+  padding: 9px 16px;
+  border-radius: var(--r-pill);
+  background: var(--s3);
+  color: var(--fg);
+  white-space: nowrap;
+  text-decoration: none;
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease),
+    opacity var(--dur-fast) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+
+.btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--s3) 80%, var(--fg) 20%);
+}
+
+.btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.btn:disabled {
+  opacity: 0.55;
+}
+
+.btn svg {
+  width: 18px;
+  height: 18px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.7;
+}
+
+.btn.primary {
+  background: var(--fg);
+  color: var(--black);
+}
+
+.btn.primary:hover:not(:disabled) {
+  background: #ffffff;
+}
+
+.btn.blue {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.btn.blue:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 88%, #ffffff);
+}
+
+.btn.ghost {
+  background: transparent;
+  color: var(--accent);
+  padding-inline: 6px;
+}
+
+.btn.ghost:hover:not(:disabled) {
+  background: transparent;
+  color: color-mix(in srgb, var(--accent) 80%, #ffffff);
+}
+
+.btn.lg {
+  font-size: var(--text-lg);
+  padding: 15px 28px;
+  gap: 10px;
+}
+
+.btn.lg svg {
+  width: 20px;
+  height: 20px;
+}
+
+.btn.block {
+  width: 100%;
+}
+
+/* ---- Fields ------------------------------------------------------------------------- */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.field > span {
+  font-size: var(--text-sm);
+  color: var(--fg2);
+}
+
+.input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: var(--s1);
+  color: var(--fg);
+  font-size: 16px; /* 16 px keeps iOS from zooming in on focus */
+  padding: 13px 16px;
+  border-radius: var(--r-md);
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease);
+}
+
+.input::placeholder {
+  color: var(--muted);
+}
+
+.input:hover {
+  border-color: color-mix(in srgb, var(--line) 60%, var(--fg2));
+}
+
+.input:focus-visible {
+  border-color: var(--accent);
+  outline: 1px solid var(--accent);
+  background: var(--s2);
+}
+
+.input[aria-invalid='true'] {
+  border-color: var(--red);
+}
+
+.input.code {
+  font-family: var(--mono);
+  font-size: 22px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  text-align: center;
+  padding-block: 14px;
+}
+
+.hint {
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+
+/* ---- Segmented control -------------------------------------------------------------- */
+
+.seg {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  background: var(--s2);
+  border-radius: var(--r-pill);
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.seg button {
+  border: 0;
+  background: transparent;
+  padding: 8px 16px;
+  border-radius: var(--r-pill);
+  color: var(--fg2);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  transition:
+    background var(--dur) var(--ease),
+    color var(--dur) var(--ease);
+}
+
+.seg button:hover {
+  color: var(--fg);
+}
+
+.seg button[aria-pressed='true'],
+.seg button[aria-selected='true'],
+.seg button[aria-checked='true'] {
+  background: var(--fg);
+  color: var(--black);
+}
+
+/* ---- Surfaces ----------------------------------------------------------------------- */
+
+.tile {
+  background: var(--s1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 18px;
+  min-width: 0;
+}
+
+.pill,
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-xs);
+  color: var(--fg2);
+  background: var(--s2);
+  padding: 6px 10px;
+  border-radius: var(--r-pill);
+  white-space: nowrap;
+}
+
+.badge {
+  background: var(--s3);
+}
+
+.badge.amber {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+.badge.green {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.badge.red {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+/* Inline messages */
+.note {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-size: var(--text-sm);
+  line-height: 1.45;
+  padding: 12px 14px;
+  border-radius: var(--r-md);
+  background: var(--s2);
+  color: var(--fg2);
+}
+
+.note svg {
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+}
+
+.note.error {
+  background: var(--red-soft);
+  color: color-mix(in srgb, var(--red) 70%, var(--fg));
+}
+
+.note.info {
+  background: var(--accent-soft);
+  color: color-mix(in srgb, var(--accent) 55%, var(--fg));
+}
+
+/* ---- Motion ------------------------------------------------------------------------- */
+
+@keyframes rise {
+  from {
+    opacity: 0.35;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes sheet-up {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+.rise {
+  animation: rise var(--dur-view) var(--ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

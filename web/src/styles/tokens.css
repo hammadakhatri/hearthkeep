@@ -1,0 +1,82 @@
+/* Hearthkeep design tokens. The interface is always dark: there is no light theme. */
+
+@import '@fontsource/geist-sans/latin-400.css';
+@import '@fontsource/geist-sans/latin-500.css';
+@import '@fontsource/geist-sans/latin-600.css';
+@import '@fontsource/geist-mono/latin-400.css';
+@import '@fontsource/geist-mono/latin-500.css';
+
+:root {
+  color-scheme: dark;
+
+  /* Colour: true black at the edges, soft greys for surfaces, one blue for actions,
+     amber only when something needs the owner. */
+  --black: #000000;
+  --bg: #000000;
+  --s1: #0e0e10;
+  --s2: #161618;
+  --s3: #1f1f22;
+  --line: #2a2a2e;
+  --fg: #f5f5f7;
+  --fg2: #c7c7cc;
+  --muted: #86868b;
+  --accent: #2997ff;
+  --accent-ink: #001a33;
+  --amber: #ffb340;
+  --amber-ink: #2a1a00;
+  --green: #32d74b;
+  --red: #ff6961;
+  --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
+  --amber-soft: color-mix(in srgb, var(--amber) 16%, transparent);
+  --green-soft: color-mix(in srgb, var(--green) 14%, transparent);
+  --red-soft: color-mix(in srgb, var(--red) 14%, transparent);
+
+  /* Type */
+  --font: 'Geist Sans', -apple-system, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
+  --mono: 'Geist Mono', ui-monospace, 'SF Mono', Consolas, monospace;
+  --text-xs: 12px;
+  --text-sm: 13.5px;
+  --text-md: 15px;
+  --text-lg: 17px;
+  --text-xl: 21px;
+  --display: clamp(2.2rem, 5vw, 3.2rem);
+  --tracking-tight: -0.025em;
+  --tracking-snug: -0.01em;
+
+  /* Space: a 4 px rhythm */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-7: 28px;
+  --sp-8: 36px;
+  --sp-9: 48px;
+  --sp-10: 72px;
+
+  /* Shape */
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 18px;
+  --r-pill: 999px;
+
+  /* Depth */
+  --shadow-float: 0 18px 40px -16px rgba(0, 0, 0, 0.9);
+  --shadow-glow: 0 50px 120px -40px rgba(41, 151, 255, 0.18), 0 30px 60px -30px rgba(0, 0, 0, 0.9);
+  --glass: color-mix(in srgb, var(--s2) 88%, transparent);
+  --blur: blur(20px);
+
+  /* Motion: short and settling, never bouncy */
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --dur-fast: 0.2s;
+  --dur: 0.25s;
+  --dur-view: 0.45s;
+
+  /* Layout */
+  --sidebar: 216px;
+  --sidebar-compact: 64px;
+  --content: 760px;
+  --tabbar: 64px;
+}

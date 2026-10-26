@@ -1,0 +1,471 @@
+/* The app frame: sidebar (wide), icon rail (medium), bottom tabs (phones). */
+
+.shell {
+  display: grid;
+  grid-template-columns: var(--sidebar) minmax(0, 1fr);
+  height: 100dvh;
+  background: var(--bg);
+}
+
+/* ---- Sidebar ------------------------------------------------------------------------ */
+
+.side {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 10px;
+  padding-top: max(16px, env(safe-area-inset-top));
+  padding-left: max(10px, env(safe-area-inset-left));
+  background: var(--s1);
+  border-right: 1px solid var(--line);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 10px 18px;
+  font-weight: 600;
+  font-size: var(--text-md);
+  letter-spacing: var(--tracking-snug);
+}
+
+.side-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.side-group.foot {
+  margin-top: auto;
+  padding-top: var(--sp-4);
+}
+
+.navbtn {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 9px 10px;
+  border-radius: 10px;
+  color: var(--fg2);
+  text-align: left;
+  font-size: 14px;
+  line-height: 1.3;
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+.navbtn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.navbtn:hover {
+  background: var(--s2);
+  color: var(--fg);
+}
+
+.navbtn[aria-current='page'] {
+  background: var(--s3);
+  color: var(--fg);
+}
+
+.navbtn:focus-visible {
+  outline-offset: -2px;
+}
+
+.navbtn.quiet {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.navbtn.quiet:hover {
+  color: var(--fg2);
+}
+
+/* ---- Main column -------------------------------------------------------------------- */
+
+.main {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100dvh;
+}
+
+.topbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: 14px 24px;
+  padding-top: max(14px, env(safe-area-inset-top));
+  padding-right: max(24px, env(safe-area-inset-right));
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.topbar-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.topbar h1 {
+  font-size: var(--text-md);
+  font-weight: 600;
+  letter-spacing: var(--tracking-snug);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topbar-mark {
+  display: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+}
+
+/* Status pill: the chat model at a glance. */
+.status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 60%;
+  font-size: 12.5px;
+  line-height: 1.2;
+  color: var(--fg2);
+  background: var(--s2);
+  padding: 6px 12px;
+  border-radius: var(--r-pill);
+  white-space: nowrap;
+}
+
+.status-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--muted);
+  transition:
+    background var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
+}
+
+.status[data-state='checking'] .dot {
+  animation: breathe 1.6s var(--ease) infinite alternate;
+}
+
+.status[data-state='online'] .dot {
+  background: var(--green);
+  box-shadow: 0 0 10px var(--green);
+}
+
+.status[data-state='offline'] .dot {
+  background: var(--amber);
+  box-shadow: 0 0 10px var(--amber);
+}
+
+.status[data-state='offline'] {
+  color: var(--amber);
+}
+
+.status[data-state='unreachable'] .dot {
+  background: var(--red);
+  box-shadow: 0 0 10px var(--red);
+}
+
+@keyframes breathe {
+  from {
+    opacity: 0.35;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* Room at the bottom for the floating composer. */
+  padding: 28px 28px 120px;
+  padding-right: max(28px, env(safe-area-inset-right));
+}
+
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-7);
+  animation: rise var(--dur-view) var(--ease);
+}
+
+/* ---- Placeholder -------------------------------------------------------------------- */
+
+.placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  min-height: calc(100dvh - 240px);
+  max-width: 560px;
+  margin: 0 auto;
+  padding-block: 40px;
+  text-align: center;
+}
+
+.placeholder-icon {
+  display: grid;
+  place-items: center;
+  width: 72px;
+  height: 72px;
+  margin-bottom: 10px;
+  border-radius: 20px;
+  color: var(--accent);
+  background: linear-gradient(160deg, var(--s3), var(--s1));
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-glow);
+}
+
+.placeholder-kicker {
+  font: 500 var(--text-sm) / 1 var(--font);
+  color: var(--muted);
+}
+
+.placeholder-blurb {
+  font-size: clamp(1.6rem, 3.6vw, 2.3rem);
+  line-height: 1.12;
+  max-width: 22ch;
+}
+
+/* ---- Splash (checking the session) ------------------------------------------------- */
+
+.splash {
+  display: grid;
+  place-items: center;
+  min-height: 100dvh;
+}
+
+.splash-mark {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  animation: fade 0.6s var(--ease) 0.15s both;
+}
+
+/* ---- Bottom tabs and the More sheet (phones) --------------------------------------- */
+
+.tabs {
+  display: none;
+}
+
+.tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  padding: 8px 2px 6px;
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1.1;
+  transition: color var(--dur-fast) var(--ease);
+}
+
+.tab svg {
+  width: 22px;
+  height: 22px;
+}
+
+.tab[aria-current='page'] {
+  color: var(--accent);
+}
+
+.tab:focus-visible {
+  outline-offset: -2px;
+}
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: flex-end;
+  background: rgba(0, 0, 0, 0.55);
+  animation: fade var(--dur) var(--ease);
+}
+
+.sheet {
+  width: 100%;
+  margin: 8px;
+  margin-bottom: max(8px, env(safe-area-inset-bottom));
+  padding: 8px 10px 12px;
+  border-radius: 22px;
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-float);
+  animation: sheet-up 0.3s var(--ease);
+}
+
+.grabber {
+  display: block;
+  width: 36px;
+  height: 5px;
+  margin: 2px auto 10px;
+  border-radius: var(--r-pill);
+  background: var(--s3);
+}
+
+.sheet-title {
+  font-size: var(--text-lg);
+  letter-spacing: var(--tracking-snug);
+  padding: 0 10px 8px;
+}
+
+.sheet-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sheet .navbtn {
+  padding: 12px 10px;
+  font-size: var(--text-md);
+}
+
+/* ---- Breakpoints -------------------------------------------------------------------- */
+
+/* Medium: the sidebar folds to an icon rail; labels stay for screen readers. */
+@media (max-width: 900px) {
+  .shell {
+    grid-template-columns: var(--sidebar-compact) minmax(0, 1fr);
+  }
+
+  .side {
+    align-items: center;
+    padding-inline: 8px;
+    overflow: visible; /* let the tooltips out */
+  }
+
+  .side .brand {
+    padding: 4px 0 18px;
+  }
+
+  .side .navbtn {
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+  }
+
+  .side .lbl {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  /* The label as a small tooltip beside the rail (visual only; the button keeps its name). */
+  .side .navbtn {
+    position: relative;
+  }
+
+  .side .navbtn[data-tip]::after {
+    content: attr(data-tip);
+    position: absolute;
+    left: calc(100% + 10px);
+    top: 50%;
+    z-index: 30;
+    padding: 6px 10px;
+    border-radius: var(--r-sm);
+    background: var(--s3);
+    border: 1px solid var(--line);
+    color: var(--fg);
+    font-size: var(--text-xs);
+    white-space: nowrap;
+    box-shadow: var(--shadow-float);
+    pointer-events: none;
+    opacity: 0;
+    transform: translate(-4px, -50%);
+    transition:
+      opacity var(--dur-fast) var(--ease),
+      transform var(--dur-fast) var(--ease);
+  }
+
+  .side .navbtn:hover::after,
+  .side .navbtn:focus-visible::after {
+    opacity: 1;
+    transform: translate(0, -50%);
+  }
+}
+
+/* Phones: no sidebar, bottom tabs instead. */
+@media (max-width: 560px) {
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .side {
+    display: none;
+  }
+
+  .topbar {
+    padding-inline: 16px;
+  }
+
+  .topbar-mark {
+    display: block;
+  }
+
+  .scroll {
+    padding: 20px 16px calc(var(--tabbar) + env(safe-area-inset-bottom) + 120px);
+  }
+
+  .placeholder {
+    min-height: calc(100dvh - 300px);
+  }
+
+  .tabs {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 40;
+    display: flex;
+    justify-content: space-around;
+    gap: 2px;
+    padding: 4px 8px max(6px, env(safe-area-inset-bottom));
+    background: color-mix(in srgb, var(--s1) 82%, transparent);
+    -webkit-backdrop-filter: var(--blur);
+    backdrop-filter: var(--blur);
+    border-top: 1px solid var(--line);
+  }
+}
