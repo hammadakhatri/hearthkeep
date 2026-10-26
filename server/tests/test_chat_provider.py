@@ -51,7 +51,11 @@ async def test_streams_text_deltas():
 
 
 async def test_streams_text_with_crlf():
-    events = await collect(make_client(sse_handler("sse_text_crlf.txt")))
+    lf = fixture_bytes("sse_text.txt").replace(b"\r\n", b"\n")
+    crlf = lf.replace(b"\n", b"\r\n")
+    assert b"\r\n" in crlf
+    client = make_client(lambda r: httpx.Response(200, content=crlf))
+    events = await collect(client)
     texts = [e.text for e in events if isinstance(e, TextDelta)]
     assert "".join(texts) == "Hello, world"
     assert events[-1] == StreamDone("stop")
@@ -152,4 +156,33 @@ async def test_timeout_raises_provider_error():
 async def test_malformed_stream_raises_provider_error():
     with pytest.raises(ProviderError) as exc:
         await collect(make_client(sse_handler("sse_malformed.txt")))
+    assert exc.value.user_message == "The chat model sent a reply Hearthkeep couldn't read."
+
+
+async def test_interleaved_out_of_order_tool_calls_emit_in_index_order():
+    events = await collect(make_client(sse_handler("sse_tool_calls_interleaved.txt")))
+    assert events == [
+        ToolCallRequest("call_a", "alpha", '{"x": 1}'),
+        ToolCallRequest("call_b", "beta", '{"y": 2}'),
+        StreamDone("tool_calls"),
+    ]
+
+
+async def test_truncated_stream_raises_provider_error():
+    with pytest.raises(ProviderError) as exc:
+        await collect(make_client(sse_handler("sse_truncated.txt")))
+    assert exc.value.user_message == "The chat model sent a reply Hearthkeep couldn't read."
+
+
+async def test_empty_choices_chunk_is_skipped():
+    events = await collect(make_client(sse_handler("sse_usage_chunk.txt")))
+    assert events == [TextDelta("ok"), StreamDone("stop")]
+
+
+async def test_decoding_error_maps_to_unreadable():
+    def handler(request):
+        raise httpx.DecodingError("bad gzip", request=request)
+
+    with pytest.raises(ProviderError) as exc:
+        await collect(make_client(handler))
     assert exc.value.user_message == "The chat model sent a reply Hearthkeep couldn't read."

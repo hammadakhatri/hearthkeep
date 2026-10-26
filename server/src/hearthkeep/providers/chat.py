@@ -98,7 +98,10 @@ class OpenAIChatClient:
                             done = True
                             break
                         try:
-                            choice = json.loads(data)["choices"][0]
+                            choices = json.loads(data)["choices"]
+                            if not choices:  # usage/timings chunk
+                                continue
+                            choice = choices[0]
                             delta = choice.get("delta") or {}
                             if choice.get("finish_reason"):
                                 finish_reason = choice["finish_reason"]
@@ -120,8 +123,10 @@ class OpenAIChatClient:
                             yield ReasoningDelta(reasoning)
                         if content:
                             yield TextDelta(content)
-        except (httpx.TransportError, httpx.TimeoutException) as e:
+        except httpx.TransportError as e:
             raise ProviderError(_UNREACHABLE, f"{type(e).__name__}: {e}") from e
+        except (httpx.HTTPError, httpx.StreamError) as e:
+            raise ProviderError(_UNREADABLE, f"{type(e).__name__}: {e}") from e
 
         if not done and finish_reason is None:
             raise ProviderError(_UNREADABLE, "stream ended without finish_reason or [DONE]")
