@@ -1,0 +1,4 @@
+#!/bin/sh
+# Privacy guard: scan the files being committed. Install with:
+#   git config core.hooksPath .githooks
+git diff --cached --name-only --diff-filter=ACMR -z | xargs -0 python scripts/privacy_scan.py

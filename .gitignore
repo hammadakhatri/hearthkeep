@@ -1,0 +1,22 @@
+# Personal data and configuration: never committed
+data/
+*-data/
+.hearthkeep-personal-markers
+config.toml
+
+# Models
+*.gguf
+*.safetensors
+
+# Local working files of the maintainers' tooling
+.superpowers/
+docs/superpowers/
+
+# Build and tool output
+node_modules/
+web/dist/
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/

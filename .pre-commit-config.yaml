@@ -1,0 +1,17 @@
+# Optional: for contributors who use the pre-commit framework.
+# Without it, run `git config core.hooksPath .githooks` to use the plain-shell hooks.
+default_install_hook_types: [pre-commit, commit-msg]
+repos:
+  - repo: local
+    hooks:
+      - id: privacy-scan
+        name: privacy scan
+        entry: python scripts/privacy_scan.py
+        language: system
+        stages: [pre-commit]
+      - id: commit-msg-guard
+        name: commit message guard
+        entry: python scripts/check_commit_msg.py
+        language: system
+        stages: [commit-msg]
+        always_run: true
