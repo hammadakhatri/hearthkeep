@@ -6,6 +6,7 @@ import pytest
 from hearthkeep.api.app import chat_model_health_check
 from hearthkeep.config import Settings
 from hearthkeep.providers.chat import OpenAIChatClient, ProviderError
+from hearthkeep.providers.comfyui import ComfyUIClient, RenderError
 
 PROXY = "http://127.0.0.1:9"  # nothing listens there
 
@@ -51,5 +52,13 @@ async def test_chat_client_ignores_env_proxies(created):
 async def test_health_check_ignores_env_proxies(created, tmp_path):
     settings = Settings(data_dir=tmp_path, chat_base_url="http://127.0.0.1:1/v1")
     assert await chat_model_health_check(settings)() is False
+    assert len(created) == 1
+    assert_direct(created[0])
+
+
+async def test_comfyui_client_ignores_env_proxies(created):
+    comfy = ComfyUIClient("http://127.0.0.1:1")
+    with pytest.raises(RenderError):
+        await comfy.free()
     assert len(created) == 1
     assert_direct(created[0])
