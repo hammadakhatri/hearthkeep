@@ -241,6 +241,9 @@ def create_app(
             )
             gpu = await stack.build_gpu()
             images = ImageStore(conn, settings.data_dir)
+            files = ChatFileStore(conn, settings.data_dir)
+            # Uploads cut off by a stop leave temporary files behind; none can be live yet.
+            files.sweep_temp()
             image_tool = stack.image_tool(gpu, images)
             if image_tool is not None and registry.get(image_tool.name) is None:
                 registry.register(image_tool)
@@ -266,7 +269,7 @@ def create_app(
                 sse_keepalive=sse_keepalive,
                 gpu=gpu,
                 images=images,
-                files=ChatFileStore(conn, settings.data_dir),
+                files=files,
                 cards=dict(stack.cards),
                 card_errors=list(stack.card_errors),
                 managed=stack.managed,

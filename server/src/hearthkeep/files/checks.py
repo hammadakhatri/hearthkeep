@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import codecs
 import json
+import lzma
 import re
 import unicodedata
 import zipfile
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -54,11 +56,21 @@ _HEAD_BYTES = 64 * 1024
 _PDF_HEADER_WINDOW = 1024
 _PDF_TAIL_BYTES = 64 * 1024
 _CONTENT_TYPES_READ = 1024 * 1024
+# Larger JSON files get a bounded check here; the sandbox's inspection reads them fully.
+_JSON_PARSE_BYTES = 5 * 1024 * 1024
+MAX_ZIP_ENTRIES = 10_000
+MAX_EXT_CHARS = 10
 _ZIP_MAGIC = b"PK\x03\x04"
 _UTF16_BOMS = (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)
 _BINARY_EXTS = ("xlsx", "xls", "pdf")
 _TEXT_EXTS = ("csv", "txt", "json")
-_UNSAFE_NAME_CHARS = re.compile(r'[\x00-\x1f\x7f-\x9f\\/:*?"<>|]')
+# Control characters, the characters Windows forbids in names, and the invisible bidi and
+# format characters that can disguise a name (an override can make "xcs.pdf" read "fdp.scx").
+_UNSAFE_NAME_CHARS = re.compile(
+    r'[\x00-\x1f\x7f-\x9f\\/:*?"<>|'
+    r"​-‏‪-‮  ⁦-⁩﻿]"
+)
+_NOT_EXT_CHARS = re.compile(r"[^A-Za-z0-9]")
 
 
 class FileRefused(Exception):
@@ -81,18 +93,26 @@ def _found(kind: str) -> FileCheck:
     return FileCheck(kind=kind, mime=MIME[kind], ext=kind)
 
 
-def _claimed_ext(name: str) -> str:
-    last = re.split(r"[\\/]", name)[-1]
-    stem, dot, ext = last.rpartition(".")
-    return ext.lower() if dot and stem else ""
+def _last_component(name: str) -> str:
+    return re.split(r"[\\/]", name)[-1]
+
+
+def _split_ext(name: str) -> tuple[str, str]:
+    """(stem, extension) with the extension cleaned to at most 10 ASCII letters and digits;
+    "" when there is none."""
+    stem, dot, ext = name.rpartition(".")
+    if not dot or not stem.strip(". "):
+        return name, ""
+    return stem, _NOT_EXT_CHARS.sub("", ext)[:MAX_EXT_CHARS]
 
 
 def _mismatch(ext: str) -> FileRefused:
-    return FileRefused("mismatch", MESSAGES["mismatch"].format(ext=f".{ext}" if ext else "nothing"))
+    return FileRefused("mismatch", MESSAGES["mismatch"].format(ext=f".{ext}"))
 
 
 def _binary(kind: str, claimed: str) -> FileCheck:
-    if claimed != kind:
+    """A binary kind: an extension, when there is one, must be the kind's own."""
+    if claimed and claimed.lower() != kind:
         raise _mismatch(claimed)
     return _found(kind)
 
@@ -105,25 +125,42 @@ def _check_pdf(path: Path, size: int) -> None:
 
 
 def _check_zip(path: Path) -> None:
-    """Raise unless the zip is a macro-free Excel workbook within the unpacked limit."""
+    """Raise unless the zip is a macro-free Excel workbook within the entry and unpacked
+    limits. Part names and content types are compared in lowercase."""
     try:
         with zipfile.ZipFile(path) as zf:
             entries = zf.infolist()
-            names = {e.filename for e in entries}
-            if "xl/vbaProject.bin" in names:
+            if len(entries) > MAX_ZIP_ENTRIES:
+                raise FileRefused("too_large_to_open")
+            if any(e.flag_bits & 0x1 for e in entries):
+                raise FileRefused("password_protected")
+            by_name = {e.filename.lower(): e for e in entries}
+            if "xl/vbaproject.bin" in by_name:
                 raise FileRefused("macros")
-            if "[Content_Types].xml" in names:
-                with zf.open("[Content_Types].xml") as types:
-                    if b"macroEnabled" in types.read(_CONTENT_TYPES_READ):
-                        raise FileRefused("macros")
-            if "xl/workbook.xml" not in names:
+            types = by_name.get("[content_types].xml")
+            if types is not None:
+                with zf.open(types) as fh:
+                    declared = fh.read(_CONTENT_TYPES_READ).lower()
+                if b"macroenabled" in declared or b"vbaproject" in declared:
+                    raise FileRefused("macros")
+            if "xl/workbook.xml" not in by_name:
                 raise FileRefused("unsupported")
             if sum(e.file_size for e in entries) > MAX_XLSX_UNPACKED:
                 raise FileRefused("too_large_to_open")
-    except (zipfile.BadZipFile, zipfile.LargeZipFile, OSError, EOFError, ValueError):
-        raise FileRefused("damaged") from None
+    except RuntimeError:  # an encrypted entry the flag check missed
+        raise FileRefused("password_protected") from None
     except NotImplementedError:  # an unsupported compression method
         raise FileRefused("unsupported") from None
+    except (
+        zipfile.BadZipFile,
+        zipfile.LargeZipFile,
+        zlib.error,
+        lzma.LZMAError,
+        OSError,
+        EOFError,
+        ValueError,
+    ):
+        raise FileRefused("damaged") from None
 
 
 def _check_cfb(path: Path) -> None:
@@ -161,7 +198,12 @@ def _text_encoding(head: bytes, at_end: bool) -> str | None:
     return None
 
 
-def _parses_as_json(path: Path, encoding: str) -> bool:
+def _looks_like_json(path: Path, size: int, head: bytes, encoding: str) -> bool:
+    """Up to 5 MB: a full parse. Larger: text whose first non-blank character opens an object
+    or an array (the sandbox's inspection reads it fully)."""
+    if size > _JSON_PARSE_BYTES:
+        start = codecs.getincrementaldecoder(encoding)().decode(head, final=False).lstrip()
+        return start[:1] in ("{", "[")
     try:
         json.loads(path.read_bytes().decode(encoding))
     except (UnicodeDecodeError, ValueError, RecursionError):
@@ -170,9 +212,11 @@ def _parses_as_json(path: Path, encoding: str) -> bool:
 
 
 def check_file(path: Path, claimed_name: str) -> FileCheck:
-    """The file's kind, or FileRefused. Runs on a worker thread: it reads the file."""
-    claimed = _claimed_ext(claimed_name)
-    if claimed == "xlsm":
+    """The file's kind, or FileRefused. Runs on a worker thread: it reads the file. A name
+    with no extension takes the kind its content shows."""
+    _, claimed = _split_ext(_last_component(claimed_name))
+    lowered = claimed.lower()
+    if lowered == "xlsm":
         raise FileRefused("macros")
     size = path.stat().st_size
     with open(path, "rb") as fh:
@@ -191,31 +235,29 @@ def check_file(path: Path, claimed_name: str) -> FileCheck:
     encoding = _text_encoding(head, at_end=size <= len(head))
     if encoding is None:
         raise FileRefused("unsupported")
-    if claimed in _BINARY_EXTS:
+    if lowered in _BINARY_EXTS:
         raise _mismatch(claimed)
-    if claimed == "json":
-        if not _parses_as_json(path, encoding):
+    if lowered == "json":
+        if not _looks_like_json(path, size, head, encoding):
             raise FileRefused("invalid_json")
         return _found("json")
-    if claimed == "txt":
+    if lowered == "txt":
         return _found("txt")
-    if claimed not in _TEXT_EXTS and _parses_as_json(path, encoding):
+    if lowered not in _TEXT_EXTS and _looks_like_json(path, size, head, encoding):
         return _found("json")
     return _found("csv")
 
 
 def clean_file_name(raw: str | None, ext: str) -> str:
-    """A name safe to show and to send back: the last path component, without control or
-    reserved characters, NFC, at most 120 characters with its extension kept; empty becomes
+    """A name safe to show and to send back: the last path component, without control,
+    reserved, bidi or format characters, NFC, at most 120 characters, ending in the detected
+    kind's extension `.<ext>` (replacing any other, or added when there is none; the owner's
+    own spelling, such as `.TXT`, is kept when it is that extension). Empty becomes
     `file.<ext>`."""
-    last = re.split(r"[\\/]", raw or "")[-1]
-    name = unicodedata.normalize("NFC", _UNSAFE_NAME_CHARS.sub("", last)).strip()
-    if name.strip(". ") == "":
-        return f"file.{ext}"
-    if len(name) > MAX_NAME_CHARS:
-        stem, dot, suffix = name.rpartition(".")
-        if dot and stem and len(suffix) < 20:
-            name = stem[: MAX_NAME_CHARS - len(suffix) - 1].rstrip() + "." + suffix
-        else:
-            name = name[:MAX_NAME_CHARS]
-    return name
+    name = unicodedata.normalize("NFC", _UNSAFE_NAME_CHARS.sub("", _last_component(raw or "")))
+    stem, dot, claimed = name.strip().rpartition(".")
+    if not dot or not stem.strip(". "):
+        stem, claimed = name, ""
+    suffix = claimed if claimed.lower() == ext else ext
+    stem = stem.strip().strip(".").strip() or "file"
+    return f"{stem[: MAX_NAME_CHARS - len(suffix) - 1].rstrip()}.{suffix}"

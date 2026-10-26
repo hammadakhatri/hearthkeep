@@ -74,7 +74,7 @@ def _require_chat(request: Request, chat_id: str) -> None:
 
 
 def prepare_upload(
-    store: ChatFileStore, chat_id: str, body: bytes, boundary: bytes
+    store: ChatFileStore, chat_id: str, body: bytes | bytearray, boundary: bytes
 ) -> tuple[StagedFile, FileCheck, str]:
     """Find the file in the body, write it to a temporary file and check what it is. Runs on a
     worker thread (no database here); the temporary file is removed when the file is refused."""

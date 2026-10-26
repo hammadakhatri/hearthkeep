@@ -262,7 +262,10 @@ def test_message_with_other_chats_file_refused(harness):
     for line in (f"Attached file: {other}", "Attached file: unknown_id"):
         response = say(client, mine, f"Look\n{line}")
         assert response.status_code == 422, line
-        assert response.json()["reason"] == "unknown_file"
+        assert response.json() == {
+            "reason": "unknown_file",
+            "message": "That file isn't part of this chat. Attach it again.",
+        }
     assert harness.query("SELECT * FROM messages WHERE chat_id = ?", (mine,)) == []
     own = attach(client, mine).json()["id"]
     response = say(client, mine, f"Look\nAttached file: {own}")
@@ -362,3 +365,99 @@ def test_store_set_status_and_summary(tmp_path, status):
     with pytest.raises(ValueError):
         store.files_dir("../x")
     conn.close()
+
+
+# ---- fix round 1 ---------------------------------------------------------------------------------
+
+
+def test_chat_files_are_indexed_by_chat(tmp_path):
+    conn = connect(tmp_path / "hk.db")
+    index = conn.execute(
+        "SELECT tbl_name FROM sqlite_master WHERE type = 'index' AND name = 'chat_files_chat'"
+    ).fetchone()
+    assert index is not None and index["tbl_name"] == "chat_files"
+    conn.close()
+
+
+def test_lines_ending_in_cr_are_counted_and_checked(harness):
+    client = signed_in(harness, [DONE])
+    mine, theirs = new_chat(client), new_chat(client)
+    other = attach(client, theirs).json()["id"]
+    response = say(client, mine, f"Look\r\nAttached file: {other}\r\n")
+    assert response.status_code == 422 and response.json()["reason"] == "unknown_file"
+    response = say(client, mine, f"Look\rAttached file: {other}")
+    assert response.status_code == 422 and response.json()["reason"] == "unknown_file"
+    ids = [attach(client, mine).json()["id"] for _ in range(6)]
+    text = "Compare\r\n" + "\r\n".join(f"Attached file: {i}" for i in ids)
+    response = say(client, mine, text)
+    assert response.status_code == 422 and response.json()["reason"] == "too_many_files"
+    # A file-only message with CRLF line ends is still titled with the file name.
+    response = say(client, mine, f"Attached file: {ids[0]}\r\n")
+    assert response.status_code == 202
+    read_events(client, mine, response.json()["turn_id"])
+    assert {c["id"]: c["title"] for c in client.get("/api/chats").json()}[mine] == "sales.csv"
+
+
+def test_without_line_helpers_handle_cr():
+    from hearthkeep.api.routes_chats import without_file_lines
+    from hearthkeep.images import without_photo_lines
+
+    assert without_photo_lines("a\r\nAttached photo: abc\r\nb") == "a\nb"
+    assert without_file_lines("a\rAttached file: abc\r\nb") == "a\nb"
+
+
+def test_stored_name_takes_the_detected_extension(harness):
+    from test_file_checks import make_pdf
+
+    client = signed_in(harness)
+    chat_id = new_chat(client)
+    renamed = attach(client, chat_id, name="run.hta").json()
+    assert (renamed["name"], renamed["kind"]) == ("run.csv", "csv")
+    statement = attach(client, chat_id, make_pdf(), name="statement").json()
+    assert (statement["name"], statement["kind"]) == ("statement.pdf", "pdf")
+    response = client.get(f"/api/files/{statement['id']}/download")
+    assert response.headers["content-disposition"] == (
+        "attachment; filename=\"statement.pdf\"; filename*=UTF-8''statement.pdf"
+    )
+
+
+def test_startup_removes_leftover_temporary_files(harness):
+    chat_id = "c" * 32
+    folder = files_dir(harness, chat_id)
+    folder.mkdir(parents=True)
+    (folder / "abc.tmp").write_bytes(b"half")
+    (folder / "keep.csv").write_bytes(CSV)
+    (harness.data / "workspace" / "chats" / "other.tmp").write_bytes(b"not in a files folder")
+    harness.start()
+    assert sorted(p.name for p in folder.iterdir()) == ["keep.csv"]
+    assert (harness.data / "workspace" / "chats" / "other.tmp").exists()
+
+
+def test_inside_is_public_and_guards_both_stores(tmp_path):
+    from hearthkeep.images import inside
+
+    folder = tmp_path / "files"
+    folder.mkdir()
+    (folder / "a.csv").write_bytes(CSV)
+    (tmp_path / "secret.txt").write_text("x")
+    assert inside(folder, "a.csv") == (folder / "a.csv").resolve()
+    assert inside(folder, "../secret.txt") is None
+    assert inside(folder, "missing.csv") is None
+    assert inside(folder, "") is None
+
+
+def test_parse_file_part_finds_the_file_field_by_offset():
+    from hearthkeep.api.multipart import parse_file_part
+
+    body = bytearray(
+        b"preamble\r\n--XyZ\r\n"
+        b'Content-Disposition: form-data; name="note"\r\n\r\nhello\r\n--XyZ\r\n'
+        b'Content-Disposition: form-data; name="file"; filename="a.csv"; '
+        b"filename*=UTF-8''m%C3%A4rz.csv\r\n\r\n"
+        b"a,b\r\n--XyZnot-a-delimiter\r\n--XyZ--\r\n"
+    )
+    part = parse_file_part(body, b"XyZ")
+    assert part.data == b"a,b" and isinstance(part.data, bytes)
+    assert part.filename == "märz.csv"
+    assert parse_file_part(bytearray(b"--XyZ--\r\n"), b"XyZ") is None
+    assert parse_file_part(b"no delimiter at all", b"XyZ") is None

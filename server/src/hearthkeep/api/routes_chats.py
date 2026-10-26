@@ -19,7 +19,7 @@ from hearthkeep.api.common import ApiError, Services, current_session, services
 from hearthkeep.auth.sessions import Session
 from hearthkeep.files.checks import MAX_FILES_PER_MESSAGE, TOO_MANY
 from hearthkeep.files.store import ATTACHED_FILE_LINE
-from hearthkeep.images import ATTACHED_PHOTO_LINE, without_photo_lines
+from hearthkeep.images import ATTACHED_PHOTO_LINE, normalize_newlines, without_photo_lines
 from hearthkeep.secrets import SecretStoreError
 
 router = APIRouter(prefix="/api")
@@ -29,6 +29,7 @@ MESSAGE_MAX_CHARS = 20000
 TITLE_CHARS = 60
 PHOTO_TITLE = "Photo"
 SECRETS_UNREADABLE = "Hearthkeep couldn't read its stored secrets. Check the server."
+UNKNOWN_FILE = "That file isn't part of this chat. Attach it again."
 
 
 class NewChatBody(BaseModel):
@@ -119,8 +120,10 @@ def _is_photo_line(line: str) -> bool:
 
 
 def without_file_lines(text: str) -> str:
-    """The text with its `Attached file: <id>` lines left out (exact matches only)."""
-    return "\n".join(line for line in text.split("\n") if not ATTACHED_FILE_LINE.fullmatch(line))
+    """The text with its `Attached file: <id>` lines left out (exact matches only). CRLF and CR
+    line ends count as LF."""
+    lines = normalize_newlines(text).split("\n")
+    return "\n".join(line for line in lines if not ATTACHED_FILE_LINE.fullmatch(line))
 
 
 @router.post("/chats/{chat_id}/messages", status_code=202)
@@ -129,7 +132,9 @@ async def post_message(
 ) -> dict:
     hk = services(request)
     row = _chat_row(hk, chat_id)
-    text = body.text.strip()
+    # Line ends are normalised first, so an attached line ending in CR is still counted and
+    # checked (and the message is stored with LF line ends).
+    text = normalize_newlines(body.text).strip()
     if not text:
         raise ApiError(422, "empty_message")
     lines = text.split("\n")
@@ -138,7 +143,7 @@ async def post_message(
         raise ApiError(422, "too_many_files", message=TOO_MANY)
     attached = [hk.files.get(file_id) for file_id in file_ids]
     if any(found is None or found.chat_id != chat_id for found in attached):
-        raise ApiError(422, "unknown_file")
+        raise ApiError(422, "unknown_file", message=UNKNOWN_FILE)
     photos = [line.removeprefix("Attached photo: ") for line in lines if _is_photo_line(line)]
     try:
         turn_id = hk.runner.start(chat_id, text, think=bool(row["think"]))

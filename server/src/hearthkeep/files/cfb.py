@@ -1,7 +1,8 @@
 """The entry names of a compound file (the container of .xls and encrypted Office files).
 
 Only enough of the format ([MS-CFB]) is read to list the directory: the header, the FAT
-sectors the header's 109 DIFAT entries name, and the directory's own FAT chain. Every offset
+sectors named by the DIFAT (the header's 109 entries, then the DIFAT sector chain), and the
+directory's own FAT chain. Every offset
 and chain is checked; anything malformed raises ValueError."""
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ HEADER_BYTES = 512
 HEADER_DIFAT_ENTRIES = 109
 DIR_ENTRY_BYTES = 128
 MAX_DIR_ENTRIES = 4096
+MAX_DIFAT_SECTORS = 1000
 # Special sector numbers: the end of a chain and unused entries (MAXREGSECT is 0xFFFFFFFA).
 END_OF_CHAIN = 0xFFFFFFFE
 FREE_SECT = 0xFFFFFFFF
@@ -44,7 +46,9 @@ def cfb_stream_names(path: Path) -> set[str]:
             raise ValueError("unsupported sector size")
         sector_size = 1 << sector_shift
         fat_sector_count, first_dir_sector = struct.unpack_from("<II", header, 44)
-        difat = struct.unpack_from(f"<{HEADER_DIFAT_ENTRIES}I", header, 76)
+        first_difat_sector, difat_sector_count = struct.unpack_from("<II", header, 68)
+        if difat_sector_count > MAX_DIFAT_SECTORS:
+            raise ValueError("too many DIFAT sectors")
         per_fat_sector = sector_size // 4
         fh.seek(0, 2)
         sector_count = (fh.tell() - sector_size) // sector_size if fh.tell() > sector_size else 0
@@ -54,11 +58,28 @@ def cfb_stream_names(path: Path) -> set[str]:
                 raise ValueError("sector out of range")
             return (sector + 1) * sector_size
 
+        # The FAT sector list: 109 entries in the header, then each DIFAT sector's entries
+        # (all but its last, which points at the next DIFAT sector).
+        difat = list(struct.unpack_from(f"<{HEADER_DIFAT_ENTRIES}I", header, 76))
+        seen_difat: set[int] = set()
+        sector = first_difat_sector
+        while sector not in (END_OF_CHAIN, FREE_SECT):
+            if sector in seen_difat:
+                raise ValueError("DIFAT chain loops")
+            if len(seen_difat) >= min(difat_sector_count, MAX_DIFAT_SECTORS):
+                raise ValueError("DIFAT chain is longer than its count")
+            seen_difat.add(sector)
+            raw = struct.unpack(
+                f"<{per_fat_sector}I", _read_exact(fh, sector_offset(sector), sector_size)
+            )
+            difat.extend(raw[:-1])
+            sector = raw[-1]
+
         fat_cache: dict[int, tuple[int, ...]] = {}
 
         def next_sector(sector: int) -> int:
             index = sector // per_fat_sector
-            if index >= HEADER_DIFAT_ENTRIES or index >= fat_sector_count:
+            if index >= len(difat) or index >= fat_sector_count:
                 raise ValueError("FAT sector out of range")
             if index not in fat_cache:
                 raw = _read_exact(fh, sector_offset(difat[index]), sector_size)

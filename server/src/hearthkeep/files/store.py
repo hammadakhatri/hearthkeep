@@ -15,7 +15,7 @@ from typing import Literal
 
 from hearthkeep import db
 from hearthkeep.files.checks import FILE_KINDS, MAX_FILE_BYTES, FileCheck, FileRefused
-from hearthkeep.images import UPLOAD_ID, _inside
+from hearthkeep.images import UPLOAD_ID, inside
 
 CHAT_ID = re.compile(r"[0-9a-f]{32}")
 FILE_ID = UPLOAD_ID
@@ -68,6 +68,16 @@ class ChatFileStore:
         if not isinstance(chat_id, str) or not CHAT_ID.fullmatch(chat_id):
             raise ValueError("not a chat id")
         return self._chats / chat_id / "files"
+
+    def sweep_temp(self) -> int:
+        """Remove the `*.tmp` files a stopped server left in the chats' files folders (run at
+        startup, before any upload can be staged). Returns how many were removed."""
+        removed = 0
+        for tmp in self._chats.glob("*/files/*.tmp"):
+            if CHAT_ID.fullmatch(tmp.parent.parent.name) and tmp.is_file():
+                _unlink(tmp)
+                removed += 1
+        return removed
 
     def _new_tmp(self, chat_id: str) -> StagedFile:
         folder = self.files_dir(chat_id)
@@ -191,4 +201,4 @@ class ChatFileStore:
         ).fetchone()
         if row is None or not CHAT_ID.fullmatch(row["chat_id"] or ""):
             return None
-        return _inside(self.files_dir(row["chat_id"]), row["file_name"] or "")
+        return inside(self.files_dir(row["chat_id"]), row["file_name"] or "")

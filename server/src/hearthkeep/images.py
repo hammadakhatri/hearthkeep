@@ -53,10 +53,15 @@ def nearest_aspect(width: int, height: int) -> str:
     return min(ASPECTS, key=lambda k: abs(math.log(ASPECTS[k][0] / ASPECTS[k][1]) - ratio))
 
 
+def normalize_newlines(text: str) -> str:
+    """CRLF and lone CR line ends become LF."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def without_photo_lines(text: str) -> str:
     """The text with its `Attached photo: <id>` lines left out (exact matches only, as the web
-    app shows them)."""
-    lines = text.split("\n")
+    app shows them). CRLF and CR line ends count as LF."""
+    lines = normalize_newlines(text).split("\n")
     return "\n".join(line for line in lines if not ATTACHED_PHOTO_LINE.fullmatch(line))
 
 
@@ -271,7 +276,7 @@ class ImageStore:
         row = self._conn.execute(
             "SELECT file_name FROM images WHERE id = ?", (image_id,)
         ).fetchone()
-        return _inside(self._dir, row["file_name"]) if row else None
+        return inside(self._dir, row["file_name"]) if row else None
 
     # ---- the owner's photos ----
 
@@ -340,10 +345,12 @@ class ImageStore:
         row = self._conn.execute(
             "SELECT file_name FROM uploads WHERE id = ?", (upload_id,)
         ).fetchone()
-        return _inside(self._uploads, row["file_name"]) if row else None
+        return inside(self._uploads, row["file_name"]) if row else None
 
 
-def _inside(folder: Path, file_name: str) -> Path | None:
+def inside(folder: Path, file_name: str) -> Path | None:
+    """The existing file `file_name` directly inside `folder` (both resolved), or None: a name
+    that leads anywhere else, through `..` or a link, is never followed."""
     candidate = (folder / file_name).resolve()
     if candidate.parent != folder.resolve() or not candidate.is_file():
         return None

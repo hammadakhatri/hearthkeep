@@ -125,6 +125,7 @@ MIGRATIONS: dict[int, str] = {
         file_name TEXT,
         created_at TEXT
     );
+    CREATE INDEX IF NOT EXISTS chat_files_chat ON chat_files(chat_id);
     CREATE TABLE IF NOT EXISTS upload_chats (
         upload_id TEXT PRIMARY KEY,
         chat_id TEXT

@@ -31,9 +31,10 @@ def multipart_boundary(content_type: str) -> bytes | None:
     return match.group(1).encode("latin-1")
 
 
-async def read_limited_body(request: Request, max_bytes: int, too_big: ApiError) -> bytes:
+async def read_limited_body(request: Request, max_bytes: int, too_big: ApiError) -> bytearray:
     """The request body, read in chunks and abandoned (raising `too_big`) as soon as it is over
-    the limit; a declared length over the limit is refused before anything is read."""
+    the limit; a declared length over the limit is refused before anything is read. The
+    buffer itself is returned (no copy into `bytes`)."""
     declared = request.headers.get("content-length")
     if declared is not None and declared.isdigit() and int(declared) > max_bytes:
         raise too_big
@@ -42,7 +43,7 @@ async def read_limited_body(request: Request, max_bytes: int, too_big: ApiError)
         body += chunk
         if len(body) > max_bytes:
             raise too_big
-    return bytes(body)
+    return body
 
 
 def _filename(disposition: bytes) -> str | None:
@@ -63,30 +64,39 @@ def _filename(disposition: bytes) -> str | None:
     return None
 
 
-def parse_file_part(body: bytes, boundary: bytes) -> FilePart | None:
+def parse_file_part(body: bytes | bytearray, boundary: bytes) -> FilePart | None:
     """The multipart field named `file` and its file name, or None (RFC 7578 / RFC 2046).
 
     The first delimiter is `--boundary` at the very start (or after a preamble); every later
     one is CRLF + `--boundary`, so boundary text inside the file without a CRLF in front is
     content. `filename*=UTF-8''…` is preferred over `filename="…"`."""
+    # Parts are found by offset, so only the chosen file's bytes are copied (once).
     dash = b"--" + boundary
+    delimiter = b"\r\n" + dash
     if body.startswith(dash):
-        rest = body[len(dash) :]
+        start = len(dash)
     else:
-        start = body.find(b"\r\n" + dash)
-        if start < 0:
+        found = body.find(delimiter)
+        if found < 0:
             return None
-        rest = body[start + 2 + len(dash) :]
-    for part in rest.split(b"\r\n" + dash):
-        if part.startswith(b"--"):  # the closing delimiter
+        start = found + len(delimiter)
+    while True:
+        end = body.find(delimiter, start)
+        if end < 0:
+            end = len(body)
+        if body.startswith(b"--", start):  # the closing delimiter
             break
-        head, sep, content = part.partition(b"\r\n\r\n")
-        if not sep:
-            continue
-        for line in head.split(b"\r\n"):
-            name, _, value = line.partition(b":")
-            if name.strip().lower() == b"content-disposition":
-                match = _FIELD_NAME.search(value)
-                if match and match.group(1) == b"file":
-                    return FilePart(content, _filename(value))
+        head_end = body.find(b"\r\n\r\n", start, end)
+        if head_end >= 0:
+            head = bytes(body[start:head_end])
+            for line in head.split(b"\r\n"):
+                name, _, value = line.partition(b":")
+                if name.strip().lower() == b"content-disposition":
+                    match = _FIELD_NAME.search(value)
+                    if match and match.group(1) == b"file":
+                        content = bytes(memoryview(body)[head_end + 4 : end])
+                        return FilePart(content, _filename(value))
+        if end >= len(body):
+            break
+        start = end + len(delimiter)
     return None

@@ -303,3 +303,132 @@ def test_file_refused_carries_reason_and_message():
     error = FileRefused("damaged")
     assert error.reason == "damaged" and error.message.startswith("Hearthkeep couldn't open")
     assert json.dumps({"reason": error.reason, "message": error.message})
+
+
+# ---- fix round 1 --------------------------------------------------------------------------------
+
+DIFAT_SECTOR = 0xFFFFFFFC
+
+
+def make_far_cfb(difat_next: int = END) -> bytes:
+    """A version-3 compound file whose directory sits past what the header's 109 FAT sectors
+    cover: 111 FAT sectors (0..110), a DIFAT sector (111) naming FAT sectors 109 and 110,
+    filler, then the directory at sector 14100 (FAT index 110)."""
+    fat_count, difat_at, dir_at = 111, 111, 14100
+    fat = [FAT_SECTOR] * fat_count + [DIFAT_SECTOR] + [FREE] * (dir_at - difat_at - 1) + [END]
+    fat += [FREE] * (fat_count * 128 - len(fat))
+    fat_bytes = b"".join(struct.pack("<I", v) for v in fat)
+    difat_sector = struct.pack("<II", 109, 110) + struct.pack("<I", FREE) * 125
+    difat_sector += struct.pack("<I", difat_next)
+    directory = (_dir_entry("Root Entry", 5) + _dir_entry("Workbook", 2)).ljust(512, b"\x00")
+    header = (
+        CFB_MAGIC + bytes(16) + struct.pack("<HHHHH", 0x3E, 3, 0xFFFE, 9, 6) + bytes(6)
+        + struct.pack("<IIIIIIIII", 0, fat_count, dir_at, 0, 4096, END, 0, difat_at, 1)
+        + b"".join(struct.pack("<I", v) for v in range(109))
+    )  # fmt: skip
+    filler = bytes(512 * (dir_at - difat_at - 1))
+    return header + fat_bytes + difat_sector + filler + directory
+
+
+def test_cfb_follows_the_difat_chain(tmp_path):
+    path = tmp_path / "big.xls"
+    path.write_bytes(make_far_cfb())
+    assert "Workbook" in cfb_stream_names(path)
+    assert check_file(path, "big.xls").kind == "xls"
+
+
+def test_cfb_difat_loop_and_count_are_refused(tmp_path):
+    path = tmp_path / "loop.xls"
+    path.write_bytes(make_far_cfb(difat_next=111))  # the DIFAT sector points at itself
+    with pytest.raises(ValueError):
+        cfb_stream_names(path)
+    too_many = bytearray(make_cfb({"Workbook": b"x"}))
+    struct.pack_into("<II", too_many, 68, 1, 1001)
+    path.write_bytes(bytes(too_many))
+    with pytest.raises(ValueError):
+        cfb_stream_names(path)
+
+
+def test_file_without_extension_takes_its_content_kind(tmp_path):
+    assert check_file(write(tmp_path, "statement", make_pdf()), "statement").kind == "pdf"
+    assert check_file(write(tmp_path, "budget", make_xlsx()), "budget").kind == "xlsx"
+    assert check_file(write(tmp_path, "old", make_cfb({"Workbook": b"x"})), "old").kind == "xls"
+
+
+def _zip_entry_data_offset(data: bytes) -> int:
+    name_length, extra_length = struct.unpack_from("<HH", data, 26)
+    return 30 + name_length + extra_length
+
+
+def test_hostile_zips_refused(tmp_path):
+    # The first entry is [Content_Types].xml (deflated): a corrupt deflate stream is damaged.
+    good = make_xlsx(content_types=b"<Types>" + b"x" * 400 + b"</Types>")
+    corrupt = bytearray(good)
+    corrupt[_zip_entry_data_offset(good)] = 0xFF  # reserved block type
+    error = refused(tmp_path, "bad.xlsx", bytes(corrupt))
+    assert error.reason == "damaged"
+    # An encrypted entry (flag bit 0, in the local and the central header) asks for a password.
+    encrypted = bytearray(good)
+    encrypted[6] |= 1
+    central = encrypted.find(b"PK\x01\x02")
+    encrypted[central + 8] |= 1
+    error = refused(tmp_path, "locked.xlsx", bytes(encrypted))
+    assert (error.reason, error.message) == ("password_protected", PASSWORD)
+
+
+def test_zip_with_too_many_entries_refused(tmp_path):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("xl/workbook.xml", b"<workbook/>")
+        for i in range(10_000):
+            zf.writestr(f"xl/e{i}", b"")
+    assert refused(tmp_path, "many.xlsx", buffer.getvalue()).reason == "too_large_to_open"
+
+
+def test_macro_detection_ignores_case(tmp_path):
+    cases = [
+        make_xlsx({"XL/VBAPROJECT.BIN": b"vba"}),
+        make_xlsx(content_types=b"<Types>MACROENABLED</Types>"),
+        make_xlsx(content_types=b'<Types><Default ContentType="application/vnd.ms-office.'
+                  b'vbaProject"/></Types>'),
+    ]  # fmt: skip
+    for data in cases:
+        assert refused(tmp_path, "m.xlsx", data).reason == "macros"
+
+
+def test_large_json_is_checked_without_parsing(tmp_path, monkeypatch):
+    def no_parse(*args, **kwargs):
+        raise AssertionError("json.loads on a large file")
+
+    monkeypatch.setattr(checks.json, "loads", no_parse)
+    big = b"  [" + b"1," * (3 * 1024 * 1024) + b"1]"
+    assert check_file(write(tmp_path, "big.json", big), "big.json").kind == "json"
+    assert check_file(write(tmp_path, "big", big), "big").kind == "json"
+    not_json = b"hello " * (1024 * 1024)
+    assert refused(tmp_path, "big.json", not_json).reason == "invalid_json"
+
+
+def test_names_take_the_detected_extension():
+    assert clean_file_name("run.hta", "csv") == "run.csv"
+    assert clean_file_name("statement", "pdf") == "statement.pdf"
+    assert clean_file_name("Notes.TXT", "txt") == "Notes.TXT"
+    assert clean_file_name("export.dat", "csv") == "export.csv"
+    long = clean_file_name("y" * 300, "xlsx")
+    assert len(long) <= 120 and long.endswith(".xlsx")
+
+
+def test_names_lose_bidi_and_format_characters():
+    hidden = "​‌‍‎‏‪‫‬‭‮  "
+    hidden += "⁦⁧⁨⁩﻿"
+    assert clean_file_name(f"inv{hidden}oice.csv", "csv") == "invoice.csv"
+    # "report‮xcs.pdf" would show as "reportfdp.scx": the override is removed.
+    assert clean_file_name("report‮xcs.pdf", "pdf") == "reportxcs.pdf"
+
+
+def test_mismatch_message_shows_a_clean_short_extension(tmp_path):
+    error = refused(tmp_path, "scan.<b>PDFX‮overlong!", make_pdf())
+    assert error.reason == "mismatch"
+    assert error.message == (
+        "That file's name says .bPDFXoverl, but its contents aren't. Check the file and attach "
+        "it again."
+    )

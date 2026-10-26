@@ -33,7 +33,7 @@ def _too_big() -> ApiError:
     return ApiError(413, "too_large", message=TOO_BIG)
 
 
-def parse_upload(body: bytes, boundary: bytes) -> tuple[bytes, ImageInfo | None] | None:
+def parse_upload(body: bytes | bytearray, boundary: bytes) -> tuple[bytes, ImageInfo | None] | None:
     """The photo and what its headers say (None for a photo over the size limit), or None
     when no `file` field was sent. Runs on a worker thread: splitting and scanning up to
     15 MB shouldn't hold up the event loop."""
