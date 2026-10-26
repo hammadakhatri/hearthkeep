@@ -1,0 +1,603 @@
+/* Images: describe, create, and the gallery. The pictures take the space; controls stay quiet. */
+
+.images {
+  display: flex;
+  flex-direction: column;
+  gap: 40px;
+  width: 100%;
+  max-width: 1080px;
+  margin: 0 auto;
+}
+
+.images-head h2 {
+  font-size: clamp(2rem, 4.4vw, 3rem);
+  line-height: 1.06;
+}
+
+.images-head p {
+  margin-top: 10px;
+  font-size: var(--text-lg);
+  color: var(--muted);
+}
+
+/* ---- Describe box ------------------------------------------------------------------- */
+
+.describe {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px 20px 18px;
+  background: var(--s1);
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  transition: border-color var(--dur) var(--ease);
+}
+
+.describe:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+}
+
+.describe-input {
+  width: 100%;
+  min-height: 78px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font-size: var(--text-lg);
+  line-height: 1.5;
+  resize: none;
+}
+
+.describe-input::placeholder {
+  color: var(--muted);
+}
+
+.describe-input:focus-visible {
+  outline: none;
+}
+
+.describe-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 16px 22px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.ctl {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.select-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.select-wrap::after {
+  content: '';
+  position: absolute;
+  right: 15px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-right: 1.6px solid var(--fg2);
+  border-bottom: 1.6px solid var(--fg2);
+  transform: translateY(-70%) rotate(45deg);
+  pointer-events: none;
+}
+
+.select {
+  appearance: none;
+  -webkit-appearance: none;
+  max-width: 220px;
+  height: 38px;
+  padding: 0 38px 0 16px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--s2);
+  color: var(--fg);
+  font-size: var(--text-sm);
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.select:hover {
+  background: var(--s3);
+}
+
+.select option {
+  background: var(--s2);
+  color: var(--fg);
+}
+
+.describe .seg button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* A tiny outline of each shape beside its name. */
+.shape-glyph {
+  display: inline-block;
+  height: 11px;
+  border: 1.5px solid currentColor;
+  border-radius: 2.5px;
+  opacity: 0.75;
+}
+
+.describe-go {
+  align-self: flex-end;
+  margin-left: auto;
+  padding: 11px 26px;
+  font-size: var(--text-md);
+}
+
+/* ---- Not set up --------------------------------------------------------------------- */
+
+.images-setup {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 48px 24px;
+  text-align: center;
+  background: var(--s1);
+  border: 1px solid var(--line);
+  border-radius: 22px;
+}
+
+.images-setup-icon {
+  display: grid;
+  place-items: center;
+  width: 60px;
+  height: 60px;
+  margin-bottom: 6px;
+  border-radius: 18px;
+  background: var(--s2);
+  color: var(--fg2);
+}
+
+.images-setup-title {
+  font-size: var(--text-xl);
+  font-weight: 600;
+  letter-spacing: var(--tracking-snug);
+}
+
+.images-setup-sub {
+  max-width: 46ch;
+  color: var(--muted);
+}
+
+.images-setup .btn {
+  margin-top: 8px;
+}
+
+/* ---- The images being made now ------------------------------------------------------- */
+
+.run {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  animation: rise var(--dur-view) var(--ease);
+}
+
+.run-prompt {
+  max-width: 62ch;
+  font-size: var(--text-lg);
+  line-height: 1.5;
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.pick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+  font-size: var(--text-sm);
+}
+
+.pick .pill {
+  color: var(--fg);
+}
+
+.pick-why {
+  flex: 1 1 280px;
+  min-width: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.pick-why > * + * {
+  margin-top: 8px;
+}
+
+.run-step {
+  margin: 0;
+}
+
+/* The first image is the hero: as large as the screen allows at its own shape. */
+.run-hero {
+  width: min(100%, calc(70vh * var(--ar, 1)));
+  margin-inline: auto;
+  border-radius: var(--r-xl);
+  overflow: hidden;
+  background: var(--s1);
+  box-shadow: var(--shadow-glow);
+}
+
+.run-variants {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.run-variants li {
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: var(--s1);
+}
+
+.skeleton.run-wait,
+.imgtile.skeleton {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--s2);
+  animation: breathe 1.2s var(--ease) infinite alternate;
+}
+
+/* ---- Thumbnail grids ---------------------------------------------------------------- */
+
+.imgrid {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.imgtile {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: inherit;
+  overflow: hidden;
+  background: var(--s1);
+  cursor: zoom-in;
+}
+
+.imgrid li {
+  aspect-ratio: 1;
+  border-radius: var(--r-md);
+}
+
+.imgtile img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition:
+    transform var(--dur-view) var(--ease),
+    opacity var(--dur) var(--ease);
+}
+
+.imgtile:hover img {
+  transform: scale(1.025);
+}
+
+.imgtile:focus-visible {
+  outline-offset: 3px;
+}
+
+/* A file that is gone shows as a quiet blank tile rather than a broken-image icon. */
+.imgtile img[data-broken] {
+  opacity: 0;
+}
+
+.turn-images {
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  max-width: 560px;
+}
+
+.gallery {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.gallery-title {
+  font-size: var(--text-xl);
+  letter-spacing: var(--tracking-snug);
+}
+
+.gallery-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.gallery-grid li {
+  border-radius: var(--r-lg);
+}
+
+.gallery-empty {
+  padding: 56px 24px;
+  text-align: center;
+  color: var(--muted);
+  border: 1px dashed var(--line);
+  border-radius: 22px;
+}
+
+.gallery-more {
+  display: flex;
+  justify-content: center;
+  padding-top: 8px;
+}
+
+/* ---- Viewer ------------------------------------------------------------------------- */
+
+.viewer-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.94);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  animation: fade var(--dur) var(--ease);
+}
+
+.viewer {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 14px;
+  width: 100%;
+  height: 100%;
+  padding: max(14px, env(safe-area-inset-top)) 20px max(20px, env(safe-area-inset-bottom));
+}
+
+.viewer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.viewer-count {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--muted);
+}
+
+.viewer-btn {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--s3) 80%, transparent);
+  color: var(--fg);
+  transition:
+    background var(--dur-fast) var(--ease),
+    opacity var(--dur-fast) var(--ease);
+}
+
+.viewer-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--s3) 70%, var(--fg) 30%);
+}
+
+.viewer-btn:disabled {
+  opacity: 0.3;
+}
+
+.viewer-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.viewer-stage {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 0;
+  height: 100%;
+}
+
+.viewer-img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  border-radius: 14px;
+  object-fit: contain;
+  animation: fade var(--dur) var(--ease);
+}
+
+.viewer-prev,
+.viewer-next {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.viewer-prev {
+  left: 4px;
+}
+
+.viewer-next {
+  right: 4px;
+}
+
+.viewer-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  max-width: var(--content);
+  margin: 0 auto;
+}
+
+.viewer-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.viewer-prompt-text {
+  max-height: 22vh;
+  overflow-y: auto;
+  font: 13px / 1.6 var(--mono);
+  color: var(--fg2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.viewer-prompt-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.viewer-copied {
+  font-size: 12.5px;
+  color: var(--green);
+}
+
+.specs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  margin: 0;
+  font-size: 12.5px;
+}
+
+.specs div {
+  display: flex;
+  gap: 6px;
+}
+
+.specs dt {
+  color: var(--muted);
+}
+
+.specs dd {
+  margin: 0;
+  color: var(--fg);
+  font-weight: 500;
+}
+
+/* Wide screens: the details sit beside the image. */
+@media (min-width: 1000px) {
+  .viewer[data-meta] {
+    grid-template-columns: minmax(0, 1fr) 340px;
+    grid-template-rows: auto minmax(0, 1fr);
+    column-gap: 28px;
+  }
+
+  .viewer[data-meta] .viewer-bar {
+    grid-column: 1 / -1;
+  }
+
+  .viewer[data-meta] .viewer-meta {
+    align-self: center;
+    max-height: 100%;
+    overflow-y: auto;
+  }
+
+  .viewer[data-meta] .viewer-prompt-text {
+    max-height: 50vh;
+  }
+}
+
+/* ---- Breakpoints -------------------------------------------------------------------- */
+
+@media (max-width: 900px) {
+  .gallery-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .images {
+    gap: 32px;
+  }
+
+  .describe {
+    padding: 16px;
+  }
+
+  .describe-controls {
+    gap: 14px;
+  }
+
+  .ctl,
+  .describe .seg {
+    width: 100%;
+  }
+
+  .describe .seg {
+    display: grid;
+    grid-template-columns: repeat(var(--n, 4), minmax(0, 1fr));
+    border-radius: var(--r-md);
+  }
+
+  .describe .seg button {
+    justify-content: center;
+    padding-inline: 4px;
+    border-radius: 9px;
+  }
+
+  /* Shapes: the outline sits above its name so all four fit on a phone. */
+  .describe .seg.shapes button {
+    flex-direction: column;
+    gap: 6px;
+    padding-block: 9px 8px;
+    font-size: var(--text-xs);
+  }
+
+  .select {
+    max-width: none;
+    width: 100%;
+  }
+
+  .select-wrap {
+    width: 100%;
+  }
+
+  .describe-go {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .gallery-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .viewer {
+    padding-inline: 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .imgtile:hover img {
+    transform: none;
+  }
+}

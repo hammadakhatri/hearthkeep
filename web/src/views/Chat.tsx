@@ -2,6 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Keyboar
 import { api, isApiError, post } from '../api/client'
 import { subscribeTurn, type AgentEvent, type ApprovalStatus } from '../api/events'
 import { ApprovalCard } from '../components/ApprovalCard'
+import { ImageGrid, type GridImage } from '../components/ImageGrid'
+import { ImageViewer } from '../components/ImageViewer'
 import { Markdown } from '../components/Markdown'
 import { WorkedSteps } from '../components/WorkedSteps'
 import { Composer } from '../shell/Composer'
@@ -15,6 +17,7 @@ import {
   type ChatSummary,
   type Item,
   type ServerMessage,
+  type Step,
 } from './chatModel'
 
 const TITLE_CHARS = 60
@@ -297,6 +300,7 @@ function AssistantTurn({
         </details>
       )}
       <WorkedSteps steps={item.steps} workedMs={item.workedMs} running={streaming} />
+      <StepImages steps={item.steps} />
       {item.approvals.map(({ request, status }) => (
         <ApprovalCard
           key={request.approval_id}
@@ -324,6 +328,46 @@ function AssistantTurn({
         </div>
       )}
     </div>
+  )
+}
+
+/** The images a turn's steps made: a grid under the steps, opening into the shared viewer. */
+function StepImages({ steps }: { steps: Step[] }) {
+  const [open, setOpen] = useState<number | null>(null)
+  const opener = useRef<HTMLElement | null>(null)
+  const groups: { stepId: string; start: number; images: GridImage[] }[] = []
+  const all: GridImage[] = []
+  for (const step of steps) {
+    if (!step.images?.length) continue
+    const start = all.length
+    const images = step.images.map((id, i) => ({ id, alt: `Generated image ${start + i + 1}` }))
+    groups.push({ stepId: step.id, start, images })
+    all.push(...images)
+  }
+  if (!all.length) return null
+  return (
+    <>
+      {groups.map((group) => (
+        <ImageGrid
+          key={group.stepId}
+          className="turn-images"
+          images={group.images}
+          onOpen={(i, tile) => {
+            opener.current = tile
+            setOpen(group.start + i)
+          }}
+        />
+      ))}
+      {open !== null && (
+        <ImageViewer
+          images={all}
+          index={open}
+          onIndex={setOpen}
+          onClose={() => setOpen(null)}
+          opener={opener.current}
+        />
+      )}
+    </>
   )
 }
 

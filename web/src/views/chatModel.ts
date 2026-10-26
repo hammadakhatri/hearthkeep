@@ -19,7 +19,14 @@ export type ServerMessage = {
   created_at: string
 }
 
-export type Step = { id: string; tool: string; summary: string; state: 'running' | 'ok' | 'failed' }
+export type Step = {
+  id: string
+  tool: string
+  summary: string
+  state: 'running' | 'ok' | 'failed'
+  /** Ids of the images this step made, in order. */
+  images?: string[]
+}
 
 export type ApprovalRequest = {
   approval_id: string
@@ -88,6 +95,15 @@ export function applyEvent(item: AssistantItem, e: AgentEvent, now: number): Ass
         workedMs: worked(item, now),
         steps: item.steps.map((s) => (s.id === e.step_id ? { ...s, state: e.ok ? 'ok' : 'failed' } : s)),
       }
+    case 'attachments': {
+      const ids = e.items.filter((a) => a.kind === 'image' && typeof a.id === 'string').map((a) => a.id)
+      return {
+        ...item,
+        steps: item.steps.map((s) =>
+          s.id === e.step_id ? { ...s, images: [...new Set([...(s.images ?? []), ...ids])] } : s,
+        ),
+      }
+    }
     case 'approval_required': {
       if (item.approvals.some((a) => a.request.approval_id === e.approval_id)) return item
       const request: ApprovalRequest = {
@@ -106,6 +122,11 @@ export function applyEvent(item: AssistantItem, e: AgentEvent, now: number): Ass
     case 'turn_error':
       return { ...item, state: 'error', error: e.message, workedMs: worked(item, now), approvals: expireOpen(item) }
   }
+}
+
+/** Every image the turn made so far, in the order its steps made them. */
+export function turnImages(item: AssistantItem): string[] {
+  return item.steps.flatMap((s) => s.images ?? [])
 }
 
 /** Time from the start of the turn to now, once it has used a tool. */

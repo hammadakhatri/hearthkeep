@@ -6,6 +6,7 @@ import './styles/shell.css'
 import './styles/signin.css'
 import './styles/chat.css'
 import './styles/tools.css'
+import './styles/images.css'
 import App from './App'
 
 createRoot(document.getElementById('root')!).render(

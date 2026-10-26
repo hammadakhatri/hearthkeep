@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
 import { Chat } from '../views/Chat'
+import { Images } from '../views/Images'
 import { Placeholder } from '../views/Placeholder'
 import { ToolsPermissions } from '../views/ToolsPermissions'
 import { BottomTabs, Sidebar } from './Sidebar'
@@ -39,7 +40,13 @@ export function AppShell({ initialView = DEFAULT_VIEW, onSignOut }: Props) {
           <div className="scroll" ref={scroller}>
             <div className="view" key={view}>
               {/* Views not built yet are placeholders; later updates replace them one by one. */}
-              {view === 'tools' ? <ToolsPermissions /> : <Placeholder view={view} />}
+              {view === 'tools' ? (
+                <ToolsPermissions />
+              ) : view === 'images' ? (
+                <Images />
+              ) : (
+                <Placeholder view={view} />
+              )}
             </div>
           </div>
         )}

@@ -517,6 +517,20 @@ def test_post_message_streams_events_over_sse(harness):
     assert client.get("/api/chats/nope/messages").status_code == 404
 
 
+def test_new_chat_can_start_with_a_title_the_first_message_keeps(harness):
+    script = [[TextDelta("Done."), StreamDone("stop")]]
+    client = signed_in(harness, script)
+    response = client.post("/api/chats", json={"title": "  Images "}, headers=CSRF)
+    assert response.status_code == 201, response.text
+    chat = response.json()
+    assert chat["title"] == "Images"
+    turn_id = say(client, chat["id"], "Create 4 image(s), shape square: a cat").json()["turn_id"]
+    read_events(client, chat["id"], turn_id)
+    assert client.get("/api/chats").json()[0]["title"] == "Images"
+    too_long = client.post("/api/chats", json={"title": "x" * 61}, headers=CSRF)
+    assert too_long.status_code == 422
+
+
 def test_post_message_while_turn_running_409(harness):
     client = signed_in(harness, note_turn())
     chat_id = new_chat(client)

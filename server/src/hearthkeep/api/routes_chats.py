@@ -29,6 +29,8 @@ SECRETS_UNREADABLE = "Hearthkeep couldn't read its stored secrets. Check the ser
 
 class NewChatBody(BaseModel):
     think: bool = False
+    # Empty: the first message names the chat.
+    title: str = Field(default="", max_length=TITLE_CHARS)
 
 
 class NewMessageBody(BaseModel):
@@ -68,8 +70,8 @@ async def create_chat(body: NewChatBody, session: SessionDep, request: Request) 
     hk = services(request)
     chat_id = uuid.uuid4().hex
     hk.conn.execute(
-        "INSERT INTO chats (id, title, think, created_at) VALUES (?, '', ?, ?)",
-        (chat_id, int(body.think), db.utcnow()),
+        "INSERT INTO chats (id, title, think, created_at) VALUES (?, ?, ?, ?)",
+        (chat_id, " ".join(body.title.split()), int(body.think), db.utcnow()),
     )
     return _chat_json(_chat_row(hk, chat_id), None)
 

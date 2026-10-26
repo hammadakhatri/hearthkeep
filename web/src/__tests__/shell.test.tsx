@@ -26,6 +26,8 @@ describe('AppShell', () => {
     fireEvent.click(within(sidebar).getByRole('button', { name: 'Images' }))
     expect(screen.getByRole('heading', { level: 1, name: 'Images' })).toBeInTheDocument()
     expect(within(sidebar).getByRole('button', { name: 'Images' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('textbox', { name: 'Describe the image you want' })).toBeInTheDocument()
+    fireEvent.click(within(sidebar).getByRole('button', { name: 'Analysis' }))
     expect(screen.getByText('Arrives in a later update')).toBeInTheDocument()
   })
 

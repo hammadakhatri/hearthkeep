@@ -188,6 +188,70 @@ describe('Chat', () => {
     expect(screen.getByText('Worked for 4 seconds · 1 step')).toBeInTheDocument()
     expect(FakeEventSource.instances).toHaveLength(0)
   })
+
+  it('attachments event shows thumbnails in chat', async () => {
+    startChat()
+    await send('Draw a lighthouse')
+    emit('step_started', 1, { step_id: 's1', tool: 'generate_image', summary: 'Create 2 image(s)' })
+    emit('attachments', 2, {
+      step_id: 's1',
+      items: [
+        { kind: 'image', id: 'img_a' },
+        { kind: 'image', id: 'img_b' },
+      ],
+    })
+    emit('step_finished', 3, { step_id: 's1', ok: true, preview: 'Created 2 image(s)' })
+    emit('turn_done', 4)
+
+    const first = screen.getByRole('img', { name: 'Generated image 1' })
+    expect(first).toHaveAttribute('src', '/api/images/img_a/file')
+    expect(first).toHaveAttribute('loading', 'lazy')
+    expect(first).toHaveAttribute('decoding', 'async')
+    expect(screen.getByRole('img', { name: 'Generated image 2' })).toHaveAttribute('src', '/api/images/img_b/file')
+    // Thumbnails stay outside the folded steps, so they show without opening anything.
+    expect(first.closest('details')).toBeNull()
+  })
+
+  it('viewer opens, navigates with arrows and closes with Escape', async () => {
+    startChat()
+    await send('Draw a lighthouse')
+    emit('step_started', 1, { step_id: 's1', tool: 'generate_image', summary: 'Create 2 image(s)' })
+    emit('attachments', 2, {
+      step_id: 's1',
+      items: [
+        { kind: 'image', id: 'img_a' },
+        { kind: 'image', id: 'img_b' },
+      ],
+    })
+
+    const thumb = screen.getByRole('button', { name: 'Generated image 1' })
+    thumb.focus()
+    fireEvent.click(thumb)
+    const viewer = screen.getByRole('dialog', { name: 'Image 1 of 2' })
+    expect(viewer).toHaveAttribute('aria-modal', 'true')
+    expect(within(viewer).getByRole('img', { name: 'Generated image 1' })).toHaveAttribute('src', '/api/images/img_a/file')
+    expect(viewer).toContainElement(document.activeElement as HTMLElement)
+    // In chat the viewer shows just the image.
+    expect(within(viewer).queryByRole('button', { name: 'Copy prompt' })).toBeNull()
+
+    fireEvent.keyDown(viewer, { key: 'ArrowRight' })
+    expect(screen.getByRole('dialog', { name: 'Image 2 of 2' })).toBeInTheDocument()
+    expect(within(viewer).getByRole('img', { name: 'Generated image 2' })).toHaveAttribute('src', '/api/images/img_b/file')
+    fireEvent.keyDown(viewer, { key: 'ArrowRight' })
+    expect(screen.getByRole('dialog', { name: 'Image 2 of 2' })).toBeInTheDocument()
+    fireEvent.keyDown(viewer, { key: 'ArrowLeft' })
+    expect(screen.getByRole('dialog', { name: 'Image 1 of 2' })).toBeInTheDocument()
+
+    // Tab stays inside the dialog.
+    const buttons = within(viewer).getAllByRole('button')
+    buttons[buttons.length - 1].focus()
+    fireEvent.keyDown(viewer, { key: 'Tab' })
+    expect(viewer).toContainElement(document.activeElement as HTMLElement)
+
+    fireEvent.keyDown(viewer, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(thumb).toHaveFocus()
+  })
 })
 
 describe('subscribeTurn', () => {
