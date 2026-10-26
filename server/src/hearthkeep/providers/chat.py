@@ -9,7 +9,10 @@ from dataclasses import dataclass
 import httpx
 
 _UNREACHABLE = "The chat model isn't reachable. Make sure it's running on this PC."
-_REJECTED = "The chat model rejected Hearthkeep's key. Check the chat API key in settings."
+_REJECTED = (
+    "The chat model rejected Hearthkeep's key. "
+    "Store the right one with: hearthkeep secrets set chat_api_key"
+)
 _UNREADABLE = "The chat model sent a reply Hearthkeep couldn't read."
 _TOO_LONG = "This chat is too long for the model. Start a new chat."
 # Wording servers use when a request does not fit the context (llama-server, OpenAI-style).

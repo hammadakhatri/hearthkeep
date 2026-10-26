@@ -133,7 +133,8 @@ async def test_http_401_raises_provider_error():
     with pytest.raises(ProviderError) as exc:
         await collect(client)
     assert exc.value.user_message == (
-        "The chat model rejected Hearthkeep's key. Check the chat API key in settings."
+        "The chat model rejected Hearthkeep's key. "
+        "Store the right one with: hearthkeep secrets set chat_api_key"
     )
 
 
