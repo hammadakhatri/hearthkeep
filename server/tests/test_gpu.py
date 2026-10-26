@@ -253,6 +253,46 @@ async def test_failed_unload_raises_and_keeps_model_resident():
     assert sched.resident() == ["image"]
 
 
+async def test_failed_reload_keeps_server_other_leases_still_use():
+    sched, backend = scheduler(CHAT, IMAGE)
+    holder = Holder(sched, "chat")
+    await holder.entered.wait()
+    backend.ready["chat"] = False  # crashed under the holder
+    backend.failures["chat"] = 1
+    with pytest.raises(ProcessError):
+        async with sched.lease("chat"):
+            pass
+    assert backend.ops() == [("load", "chat"), ("load", "chat")]  # no unload under the holder
+    await holder.release()
+
+
+def test_every_card_provider_needs_a_backend():
+    with pytest.raises(ValueError, match="comfyui"):
+        GpuScheduler({"chat": CHAT, "image": IMAGE}, {"llama_server": FakeBackend()}, 16.0)
+
+
+async def test_swallowed_errors_are_logged_by_type_only(caplog):
+    sched, backend = scheduler(CHAT, IMAGE)
+    async with sched.lease("chat"):
+        pass
+
+    async def broken_ready(c):
+        raise RuntimeError("secret detail")
+
+    backend.is_ready = broken_ready
+    backend.failures["chat"] = 1
+    backend.unload_failures["chat"] = 1  # the cleanup after the failed reload fails too
+    with caplog.at_level("WARNING", logger="hearthkeep.runtime.gpu"):
+        with pytest.raises(ProcessError):
+            async with sched.lease("chat"):
+                pass
+    records = [r for r in caplog.records if r.name == "hearthkeep.runtime.gpu"]
+    assert len(records) == 2
+    assert all("RuntimeError" in r.getMessage() for r in records)
+    assert not any("secret detail" in r.getMessage() or "free failed" in r.getMessage()
+                   or r.exc_info for r in records)  # fmt: skip
+
+
 async def test_status_shape():
     sched, backend = scheduler(card("chat", 11.04), IMAGE)
     assert sched.status() == {"total_gb": 16.0, "used_gb": 0.0, "resident": [], "waiting": 0}
@@ -329,7 +369,17 @@ async def test_comfy_backend_frees_models_but_keeps_comfyui_running():
 # --- VRAM detection --------------------------------------------------------------------------
 
 
-def test_detect_vram_gb_reads_nvidia_smi(monkeypatch):
+@pytest.fixture
+def smi(tmp_path, monkeypatch):
+    """An nvidia-smi.exe on PATH at an absolute place outside the current folder."""
+    exe = tmp_path / "driver" / "nvidia-smi.exe"
+    exe.parent.mkdir()
+    exe.write_bytes(b"")
+    monkeypatch.setattr(gpu.shutil, "which", lambda name: str(exe))
+    return exe
+
+
+def test_detect_vram_gb_reads_nvidia_smi(monkeypatch, smi):
     seen = {}
 
     def run(argv, **kwargs):
@@ -339,7 +389,7 @@ def test_detect_vram_gb_reads_nvidia_smi(monkeypatch):
     monkeypatch.setattr(gpu.subprocess, "run", run)
     assert detect_vram_gb() == pytest.approx(16376 / 1024)
     assert seen["argv"] == [
-        "nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"
+        str(smi), "--query-gpu=memory.total", "--format=csv,noheader,nounits"
     ]  # fmt: skip
     assert seen["timeout"] == 5
 
@@ -353,11 +403,49 @@ def test_detect_vram_gb_reads_nvidia_smi(monkeypatch):
         subprocess.CompletedProcess([], 0, stdout="N/A\n", stderr=""),
     ],
 )
-def test_detect_vram_gb_none_on_failure(monkeypatch, outcome):
+def test_detect_vram_gb_none_on_failure(monkeypatch, smi, outcome):
     def run(argv, **kwargs):
         if isinstance(outcome, BaseException):
             raise outcome
         return outcome
 
     monkeypatch.setattr(gpu.subprocess, "run", run)
+    assert detect_vram_gb() is None
+
+
+def _install(root, *parts: str):
+    exe = root.joinpath(*parts)
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.write_bytes(b"")
+    return exe
+
+
+@pytest.mark.parametrize("which_result", [None, "nvidia-smi.exe", r".\nvidia-smi.exe", "cwd"])
+def test_nvidia_smi_fallbacks_and_never_a_bare_or_cwd_name(tmp_path, monkeypatch, which_result):
+    monkeypatch.chdir(_install(tmp_path, "cwd", "nvidia-smi.exe").parent)
+    if which_result == "cwd":
+        which_result = str(tmp_path / "cwd" / "nvidia-smi.exe")  # found in the current folder
+    monkeypatch.setattr(gpu.shutil, "which", lambda name: which_result)
+    monkeypatch.setenv("SystemRoot", str(tmp_path / "win"))
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "pf"))
+    ran: list[list[str]] = []
+
+    def run(argv, **kwargs):
+        ran.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="8192\n", stderr="")
+
+    monkeypatch.setattr(gpu.subprocess, "run", run)
+    assert detect_vram_gb() is None and ran == []  # nothing installed outside the cwd
+
+    nvsmi = _install(tmp_path, "pf", "NVIDIA Corporation", "NVSMI", "nvidia-smi.exe")
+    assert detect_vram_gb() == 8.0 and ran[-1][0] == str(nvsmi)
+    system32 = _install(tmp_path, "win", "System32", "nvidia-smi.exe")
+    assert detect_vram_gb() == 8.0 and ran[-1][0] == str(system32)  # preferred over NVSMI
+
+
+def test_detect_vram_gb_none_without_any_location(monkeypatch):
+    monkeypatch.setattr(gpu.shutil, "which", lambda name: None)
+    monkeypatch.delenv("SystemRoot", raising=False)
+    monkeypatch.delenv("ProgramFiles", raising=False)
+    monkeypatch.setattr(gpu.subprocess, "run", lambda *a, **k: pytest.fail("must not run"))
     assert detect_vram_gb() is None

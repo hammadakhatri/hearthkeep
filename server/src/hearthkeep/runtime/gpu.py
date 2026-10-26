@@ -11,11 +11,15 @@ eviction is queued, later requests queue behind it, so new chat streams can't st
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
+import shutil
 import subprocess
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Protocol
 
 from hearthkeep.models.cards import ModelCard
@@ -23,14 +27,38 @@ from hearthkeep.runtime.supervisor import ManagedProcess, ProcessError
 
 RESERVED_GB = 1.5  # kept free for the CUDA contexts, the desktop and fragmentation
 _TOO_BIG = "This model needs more GPU memory than this PC has."
-_NVIDIA_SMI = ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"]
+_NVIDIA_SMI_ARGS = ["--query-gpu=memory.total", "--format=csv,noheader,nounits"]
+
+log = logging.getLogger(__name__)
+
+
+def _nvidia_smi_path() -> Path | None:
+    """nvidia-smi as an absolute path: from PATH (a match in the current folder or through a
+    relative PATH entry is ignored), else the driver's usual install places; None if absent."""
+    found = shutil.which("nvidia-smi")
+    if found:
+        path = Path(found)
+        if path.is_absolute() and path.parent.resolve() != Path.cwd().resolve():
+            return path
+    candidates = []
+    if root := os.environ.get("SystemRoot"):
+        candidates.append(Path(root) / "System32" / "nvidia-smi.exe")
+    if program_files := os.environ.get("ProgramFiles"):
+        candidates.append(Path(program_files) / "NVIDIA Corporation" / "NVSMI" / "nvidia-smi.exe")
+    for candidate in candidates:
+        if candidate.is_absolute() and candidate.is_file():
+            return candidate
+    return None
 
 
 def detect_vram_gb() -> float | None:
     """Total memory of the first NVIDIA GPU in GB (nvidia-smi reports MiB); None if unknown."""
+    exe = _nvidia_smi_path()
+    if exe is None:
+        return None
     try:
         result = subprocess.run(
-            _NVIDIA_SMI,
+            [str(exe), *_NVIDIA_SMI_ARGS],
             capture_output=True,
             text=True,
             timeout=5,
@@ -118,8 +146,8 @@ async def _run_to_end(awaitable: Awaitable[None]) -> None:
             cancelled = cancelled or not task.done()
         except Exception:
             pass
-    with suppress(Exception, asyncio.CancelledError):
-        task.result()
+    if not task.cancelled() and task.exception() is not None:
+        log.warning("cleanup after a failed load failed: %s", type(task.exception()).__name__)
     if cancelled:
         raise asyncio.CancelledError
 
@@ -132,6 +160,9 @@ class GpuScheduler:
     def __init__(
         self, cards: dict[str, ModelCard], backends: dict[str, Backend], total_vram_gb: float
     ) -> None:
+        missing = sorted({c.provider for c in cards.values()} - set(backends))
+        if missing:
+            raise ValueError(f"no GPU backend for provider {', '.join(missing)}")
         self._cards = dict(cards)
         self._backends = dict(backends)
         self._total = float(total_vram_gb)
@@ -224,7 +255,8 @@ class GpuScheduler:
     async def _is_ready(self, card: ModelCard) -> bool:
         try:
             return await self._backend(card).is_ready(card)
-        except Exception:
+        except Exception as exc:
+            log.warning("readiness check for %s failed: %s", card.id, type(exc).__name__)
             return False
 
     def _backend(self, card: ModelCard) -> Backend:
@@ -311,8 +343,9 @@ class GpuScheduler:
                 await self._backend(card).load(card)
             except BaseException as exc:
                 # Don't leave a half-started server behind (start() cleans up after itself,
-                # this covers backends that don't).
-                await _run_to_end(self._backend(card).unload(card))
+                # this covers backends that don't) unless others still hold leases on it.
+                if self._active.get(card.id, 0) == 0:
+                    await _run_to_end(self._backend(card).unload(card))
                 if isinstance(exc, Exception) and not isinstance(exc, ProcessError):
                     raise ProcessError(
                         f"{card.name} couldn't be started.", f"{type(exc).__name__}: {exc}"
