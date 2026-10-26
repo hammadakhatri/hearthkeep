@@ -17,12 +17,12 @@ ASPECTS: dict[str, tuple[int, int]] = {
     "portrait": (864, 1536),
     "banner": (1536, 640),
 }
-MIN_SIDE, MAX_SIDE, STEP = 512, 2048, 32
+MIN_SIDE, MAX_SIDE, STEP = 512, 2048, 16
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 def validate_size(width: int, height: int) -> None:
-    """Raise ValueError unless both sides are multiples of 32 within 512..2048."""
+    """Raise ValueError unless both sides are multiples of 16 within 512..2048."""
     for name, value in (("width", width), ("height", height)):
         if not isinstance(value, int) or isinstance(value, bool):
             raise ValueError(f"{name} must be an integer")
@@ -92,13 +92,16 @@ class ImageStore:
                 placed = True
         except BaseException:
             with contextlib.suppress(OSError):
-                tmp.unlink()
-                if placed:
-                    final.unlink()
+                tmp.unlink(missing_ok=True)
+            if placed:
+                with contextlib.suppress(OSError):
+                    final.unlink(missing_ok=True)
             raise
         return record
 
     def list(self, limit: int = 60, before: str | None = None) -> list[ImageRecord]:
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
+            raise ValueError("limit must be between 1 and 100")
         sql = f"SELECT {_COLUMNS} FROM images"
         params: list[object] = []
         if before is not None:

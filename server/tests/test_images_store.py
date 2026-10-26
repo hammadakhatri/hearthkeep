@@ -1,3 +1,4 @@
+import contextlib
 import sqlite3
 
 import pytest
@@ -40,7 +41,13 @@ def test_save_rejects_non_png(store):
     assert store.list() == []
 
 
-def test_list_newest_first_and_paginates(store):
+def _ticking(monkeypatch):
+    counter = iter(range(1, 1000))
+    monkeypatch.setattr(db, "utcnow", lambda: f"2026-01-01T00:00:00.{next(counter):06d}+00:00")
+
+
+def test_list_newest_first_and_paginates(store, monkeypatch):
+    _ticking(monkeypatch)
     recs = [_save(store, prompt=f"p{i}") for i in range(5)]
     newest_first = list(reversed(recs))
     assert [r.id for r in store.list()] == [r.id for r in newest_first]
@@ -50,11 +57,52 @@ def test_list_newest_first_and_paginates(store):
     assert [r.id for r in rest] == [r.id for r in newest_first[2:]]
 
 
+def test_list_same_timestamp_orders_by_id_desc(store, monkeypatch):
+    monkeypatch.setattr(db, "utcnow", lambda: "2026-01-01T00:00:00.000001+00:00")
+    ids = iter(["aaa", "ccc", "bbb"])
+    monkeypatch.setattr("hearthkeep.images.token_urlsafe", lambda n: next(ids))
+    for _ in range(3):
+        _save(store)
+    assert [r.id for r in store.list()] == ["ccc", "bbb", "aaa"]
+
+
+@pytest.mark.parametrize("limit", [0, -1, 101])
+def test_list_rejects_bad_limit(store, limit):
+    with pytest.raises(ValueError):
+        store.list(limit=limit)
+
+
 def test_path_rejects_unknown_id_and_traversal(store, tmp_path):
     (tmp_path / "x.png").write_bytes(PNG)
     assert store.path("../x") is None
     assert store.path("nope") is None
     assert store.get("nope") is None
+
+
+def test_path_guard_rejects_escaping_and_missing_files(store, tmp_path):
+    (tmp_path / "x.png").write_bytes(PNG)
+    for image_id, name in (("esc", "../x.png"), ("gone", "gone.png")):
+        store._conn.execute(
+            "INSERT INTO images (id, file_name, created_at) VALUES (?,?,?)",
+            (image_id, name, db.utcnow()),
+        )
+    assert store.path("esc") is None
+    assert store.path("gone") is None
+
+
+def test_save_removes_file_when_commit_fails_after_placement(store, tmp_path, monkeypatch):
+    orig = db.transaction
+
+    @contextlib.contextmanager
+    def failing(conn):
+        with orig(conn) as c:
+            yield c
+        raise RuntimeError("commit failed")
+
+    monkeypatch.setattr(db, "transaction", failing)
+    with pytest.raises(RuntimeError):
+        _save(store)
+    assert list((tmp_path / "workspace" / "output" / "images").iterdir()) == []
 
 
 def test_save_rolls_back_file_when_insert_fails(store, tmp_path, monkeypatch):
@@ -69,6 +117,7 @@ def test_save_rolls_back_file_when_insert_fails(store, tmp_path, monkeypatch):
 
 def test_validate_size():
     validate_size(1024, 1024)
+    validate_size(1040, 1024)
     for w, h in ((1000, 1024), (256, 256), (4096, 1024)):
         with pytest.raises(ValueError):
             validate_size(w, h)
