@@ -407,3 +407,72 @@ def test_pdf_helpers_need_a_pdf(job):
     assert hk.pdf_tables(fid) == []  # plain text, no ruled table
     with pytest.raises(ValueError):
         hk.pdf_text(job.add("t.csv", "csv", b"a,b\n1,2\n"))
+
+
+# ------------------------------------------------------------------ fix round 1
+
+
+def test_chart_fields_escape_dots_and_brackets(job):
+    slash = r"a\b"  # a column name with a real backslash in it
+    df = pd.DataFrame({"price.gbp": [1.0, 2.0], "Amount [GBP]": [3.0, 4.0], slash: ["x", "y"]})
+    hk.scatter(df, "price.gbp", "Amount [GBP]", color=slash, title="Escaped")
+    hk.line(df, "price.gbp", "Amount [GBP]", title="Marked", highlight=[{"x": 1.5, "label": "m"}])
+    spec, marked = (c["spec"] for c in by_type(job.results(), "chart"))
+    main = spec["layer"][0]
+    assert main["encoding"]["x"]["field"] == r"price\.gbp"
+    assert main["encoding"]["y"]["field"] == r"Amount \[GBP\]"
+    assert main["encoding"]["color"]["field"] == r"a\\b"
+    assert [t["field"] for t in main["encoding"]["tooltip"]] == [
+        r"price\.gbp",
+        r"Amount \[GBP\]",
+        r"a\\b",
+    ]
+    legend = next(p for p in main["params"] if p["name"] == "legend")
+    assert legend["select"]["fields"] == [r"a\\b"]
+    assert spec["data"]["values"][0] == {"price.gbp": 1.0, "Amount [GBP]": 3.0, slash: "x"}
+    rule = marked["layer"][1]
+    assert rule["encoding"]["x"]["field"] == r"price\.gbp"
+    assert rule["data"]["values"][0] == {"price.gbp": 1.5, "hk_label": "m"}
+
+
+def test_row_numbers_follow_filter_and_sort_only(job):
+    data = "n,group\n" + "".join(f"{i},{'ab'[i % 2]}\n" for i in range(10))
+    df = hk.read(job.add("rows.csv", "csv", data.encode()))
+    assert df.index.name == "hk_row"
+    hk.table("Filtered", df[df["n"] >= 7])
+    hk.table("Sorted", df.sort_values("n", ascending=False).head(3))
+    hk.table("Reset", df.reset_index(drop=True))
+    hk.table("Grouped", df.groupby("group").agg(total=("n", "sum")))
+    tables = {t["name"]: t for t in by_type(job.results(), "table")}
+    assert tables["Filtered"]["row_numbers"] == [9, 10, 11]
+    assert tables["Sorted"]["row_numbers"] == [11, 10, 9]
+    assert tables["Reset"]["row_numbers"] == []
+    assert tables["Grouped"]["row_numbers"] == []
+
+
+def test_numpy_dates_and_durations_are_not_integers(job):
+    hk.result("when", np.datetime64("2026-01-05T10:00:00.000000000"))
+    hk.result("gap", np.timedelta64(90, "m"))
+    hk.table("Dates", pd.DataFrame({"d": [np.datetime64("2026-01-05T00:00:00.000000000")]}))
+    values = {r["name"]: r for r in by_type(job.results(), "value")}
+    assert values["when"]["value"].startswith("2026-01-05T10:00")
+    assert values["when"]["is_date"] is True
+    assert values["gap"]["value"] == "P0DT1H30M0S"
+    assert values["gap"]["is_date"] is False
+    assert by_type(job.results(), "table")[0]["rows"] == [["2026-01-05T00:00:00"]]
+
+
+def test_profile_knows_day_month_name_year_with_dashes():
+    from hk._profile import _date_format
+
+    assert _date_format("12-Mar-2026") == "D Month YYYY"
+    assert _date_format("12 March, 2026") == "D Month YYYY"
+    assert _date_format("12#Mar#2026") is None
+
+
+def test_read_semicolon_dot_thousands_integers(job):
+    data = "Qty;Price;Code\n1.500;2,5;1.5\n20;3;2.25\n12.000.000;4,75;3\n"
+    df = hk.read(job.add("q.csv", "csv", data.encode()))
+    assert df["Qty"].tolist() == [1500, 20, 12_000_000]
+    assert df["Price"].tolist() == [2.5, 3.0, 4.75]
+    assert df["Code"].tolist() == [1.5, 2.25, 3.0]  # not all thousands-shaped: dots are decimals

@@ -16,6 +16,7 @@ import pandas as pd
 MAX_TABLE_ROWS = 500
 FILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,119}")
 NOT_A_NUMBER = "not a number"
+ROW_INDEX = "hk_row"  # the index name hk.read gives
 
 
 def out_dir() -> Path:
@@ -42,8 +43,20 @@ def _is_missing(value) -> bool:
         return False
 
 
+def _from_numpy(value):
+    """numpy dates and durations become pandas ones (their .item() can be a bare int)."""
+    if isinstance(value, np.datetime64):
+        return pd.Timestamp(value)
+    if isinstance(value, np.timedelta64):
+        return pd.Timedelta(value)
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
 def plain(value):
     """A JSON-safe copy of one cell or scalar: numpy → Python, dates → ISO text, NaN → None."""
+    value = _from_numpy(value)
     if isinstance(value, np.generic):
         value = value.item()
     if _is_missing(value):
@@ -66,8 +79,7 @@ def plain(value):
 def _value_record(name: str, value, *, unit, note, kind: str, page) -> dict:
     if not isinstance(name, str) or not name.strip():
         raise ValueError("a result needs a name")
-    if isinstance(value, np.generic):
-        value = value.item()
+    value = _from_numpy(value)
     is_date = isinstance(value, _dt.date | pd.Timestamp) and value is not pd.NaT
     if _is_missing(value):
         value = None
@@ -80,6 +92,8 @@ def _value_record(name: str, value, *, unit, note, kind: str, page) -> dict:
         value = float(value)
     elif is_date:
         value = value.isoformat()
+    elif isinstance(value, _dt.timedelta):
+        value = pd.Timedelta(value).isoformat()  # a duration, e.g. P0DT1H30M0S
     else:
         raise TypeError(
             f"hk.result takes a number, a date or text, not {type(value).__name__}; "
@@ -115,7 +129,9 @@ def table(
     """Report rows to show the owner (the first 500 are kept; total_rows is the real count).
 
     row_numbers are the rows in the original file (index + the file row of the first data
-    row), so the owner can find them; they are null when that is unknown.
+    row), so the owner can find them. They are kept only while the rows still carry hk.read's
+    index (named "hk_row": filtering, sorting and head keep it); otherwise, e.g. after
+    reset_index or groupby, the list is empty.
     """
     if not isinstance(df, pd.DataFrame):
         raise TypeError("hk.table takes a pandas DataFrame")
@@ -125,8 +141,8 @@ def table(
         raise KeyError(f"no such column: {missing[0]!r}")
     kept = df[cols].head(MAX_TABLE_ROWS)
     first = df.attrs.get("hk_first_data_row")
-    row_numbers = None
-    if isinstance(first, int) and pd.api.types.is_integer_dtype(kept.index.dtype):
+    row_numbers: list[int] = []
+    if kept.index.name == ROW_INDEX and isinstance(first, int):
         row_numbers = [int(i) + first for i in kept.index]
     rows = [[plain(v) for v in row] for row in kept.itertuples(index=False, name=None)]
     emit(

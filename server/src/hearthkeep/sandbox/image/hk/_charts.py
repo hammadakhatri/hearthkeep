@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pandas as pd
 
@@ -10,6 +11,13 @@ from hk._results import emit, plain
 
 SCHEMA = "https://vega.github.io/schema/vega-lite/v6.json"
 MAX_CHART_ROWS = 5000
+_FIELD_SPECIALS = re.compile(r"([\\.\[\]])")
+
+
+def field(name: str) -> str:
+    """A column name as a Vega-Lite `field`: `.` and `[...]` mean nested access there, so
+    they (and the backslash) are escaped. Data keys stay as they are."""
+    return _FIELD_SPECIALS.sub(r"\\\1", str(name))
 
 
 def _too_many(spec) -> bool:
@@ -56,7 +64,7 @@ def _highlight_layers(highlight, x: str, x_type: str) -> list[dict]:
                     "data": {"values": values},
                     "mark": {"type": "rule", "strokeDash": [4, 4]},
                     "encoding": {
-                        "x": {"field": x, "type": x_type},
+                        "x": {"field": field(x), "type": x_type},
                         "tooltip": [{"field": "hk_label", "type": "nominal", "title": "Note"}],
                     },
                 }
@@ -66,7 +74,7 @@ def _highlight_layers(highlight, x: str, x_type: str) -> list[dict]:
                     "data": {"values": values},
                     "mark": {"type": "text", "align": "left", "dx": 4, "dy": -4, "y": 0},
                     "encoding": {
-                        "x": {"field": x, "type": x_type},
+                        "x": {"field": field(x), "type": x_type},
                         "text": {"field": "hk_label"},
                     },
                 }
@@ -109,18 +117,24 @@ def _spec(mark: str, df: pd.DataFrame, x: str, y: str, color, title: str, highli
     ]
     x_type = _field_type(df[x], mark=mark)
     encoding: dict = {
-        "x": {"field": x, "type": x_type},
-        "y": {"field": y, "type": "quantitative"},
-        "tooltip": [{"field": f, "type": _field_type(df[f], mark="tooltip")} for f in fields],
+        "x": {"field": field(x), "type": x_type},
+        "y": {"field": field(y), "type": "quantitative"},
+        "tooltip": [
+            {"field": field(f), "type": _field_type(df[f], mark="tooltip")} for f in fields
+        ],
     }
     params: list[dict] = []
     if mark in ("line", "point"):
         params.append({"name": "zoom", "select": "interval", "bind": "scales"})
     if color:
-        encoding["color"] = {"field": color, "type": "nominal"}
+        encoding["color"] = {"field": field(color), "type": "nominal"}
         encoding["opacity"] = {"condition": {"param": "legend", "value": 1}, "value": 0.2}
         params.append(
-            {"name": "legend", "select": {"type": "point", "fields": [color]}, "bind": "legend"}
+            {
+                "name": "legend",
+                "select": {"type": "point", "fields": [field(color)]},
+                "bind": "legend",
+            }
         )
     main: dict = {"mark": {"type": mark}, "encoding": encoding}
     if mark == "line":

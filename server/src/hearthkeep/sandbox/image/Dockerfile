@@ -4,7 +4,7 @@ FROM python:3.12-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_INPUT=1
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt \
+RUN pip install --no-cache-dir --only-binary=:all: --require-hashes -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt
 
 RUN useradd --uid 10001 --create-home hk

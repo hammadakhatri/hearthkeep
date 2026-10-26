@@ -16,7 +16,7 @@ DATE_FORMATS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("DD.MM.YYYY", re.compile(r"\d{1,2}\.\d{1,2}\.\d{2,4}( .*)?")),
     ("DD-MM-YYYY", re.compile(r"\d{1,2}-\d{1,2}-\d{2,4}( .*)?")),
     ("YYYY/MM/DD", re.compile(r"\d{4}/\d{1,2}/\d{1,2}( .*)?")),
-    ("D Month YYYY", re.compile(r"\d{1,2}[ -][A-Za-z]{3,9}\.?[ -,]+\d{2,4}")),
+    ("D Month YYYY", re.compile(r"\d{1,2}[ -][A-Za-z]{3,9}\.?[ ,-]+\d{2,4}")),
     ("Month D, YYYY", re.compile(r"[A-Za-z]{3,9}\.? \d{1,2},? \d{4}")),
 )
 THOUSANDS = re.compile(r"\(?[-+−]?[£$€]?\s?\d{1,3}(,\d{3})+(\.\d+)?\)?")

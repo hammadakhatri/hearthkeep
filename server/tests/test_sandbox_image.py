@@ -1,8 +1,12 @@
 """The sandbox image: its content-hash tag, its pins, the CLI, and the hk tests inside it."""
 
+import io
+import json
 import re
 import shutil
 import subprocess
+import tarfile
+import time
 
 import pytest
 
@@ -45,6 +49,7 @@ def test_dockerfile_pins_base_digest_and_requirements():
     assert len(froms) == 1
     assert re.search(r"FROM python:3\.12-slim-bookworm@sha256:[0-9a-f]{64}\b", froms[0])
     assert "--require-hashes" in dockerfile
+    assert "--only-binary=:all:" in dockerfile
     assert "useradd --uid 10001 --create-home hk" in dockerfile
     assert "USER 10001:10001" in dockerfile
     assert 'ENTRYPOINT ["python", "-I", "-B", "/opt/hk/hk_entry.py"]' in dockerfile
@@ -135,3 +140,76 @@ def test_hk_library_tests_pass_in_image(sandbox_image):
     proc = subprocess.run(command, capture_output=True, text=True, timeout=900)
     assert proc.returncode == 0, proc.stdout[-4000:] + proc.stderr[-2000:]
     assert " passed" in proc.stdout
+
+
+ESCAPING_SCRIPT = """\
+import json, os, time
+if os.fork() == 0:
+    os.setsid()  # leave the script's process group, as a stray daemon would
+    fake = json.dumps({"exit_code": 0, "timed_out": False, "stdout_truncated": False,
+                       "duration_ms": 1, "forged": True})
+    while True:
+        try:
+            with open("/out/status.json.tmp", "w") as fh:
+                fh.write(fake)
+            os.replace("/out/status.json.tmp", "/out/status.json")
+        except OSError:
+            pass
+print("parent waiting", flush=True)
+time.sleep(1000)
+"""
+
+
+@pytest.mark.docker
+def test_entry_kills_escaped_processes_before_writing_status(sandbox_image, tmp_path):
+    job, data = tmp_path / "job", tmp_path / "data"
+    job.mkdir()
+    data.mkdir()
+    (job / "main.py").write_text(ESCAPING_SCRIPT, encoding="utf-8", newline="\n")
+    manifest = {"files": [], "script_timeout_s": 3, "args": {}}
+    (job / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    command = [
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--read-only",
+        "--user",
+        "10001:10001",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--memory",
+        "4g",
+        "--memory-swap",
+        "4g",
+        "--cpus",
+        "2",
+        "--pids-limit",
+        "256",
+        "--tmpfs",
+        "/tmp:rw,nosuid,nodev,noexec,size=268435456",
+        "--mount",
+        "type=tmpfs,destination=/out,tmpfs-size=268435456",
+        "--mount",
+        f"type=bind,source={data},destination=/data,readonly",
+        "--mount",
+        f"type=bind,source={job},destination=/job,readonly",
+        sandbox_image,
+        "script",
+    ]
+    started = time.monotonic()
+    proc = subprocess.run(command, capture_output=True, timeout=120)
+    elapsed = time.monotonic() - started
+    assert proc.returncode == 0, proc.stderr.decode(errors="replace")
+    with tarfile.open(fileobj=io.BytesIO(proc.stdout), mode="r:") as tar:
+        status = json.loads(tar.extractfile("status.json").read())
+        printed = tar.extractfile("stdout.txt").read()
+    assert "forged" not in status
+    assert status["timed_out"] is True
+    assert status["exit_code"] is None
+    assert printed == b"parent waiting\n"
+    # The script limit plus start-up; waiting on the escaped writer's pipe would add 5 s.
+    assert elapsed < 3 + 4

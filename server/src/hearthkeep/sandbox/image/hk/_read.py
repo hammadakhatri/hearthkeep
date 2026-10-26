@@ -15,9 +15,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from hk._results import ROW_INDEX
+
 DELIMITERS = (",", ";", "\t", "|")
 HEADER_SCAN_ROWS = 20
 DECIMAL_COMMA = re.compile(r"[-+]?\d+(\.\d{3})*,\d+")
+DOT_THOUSANDS = re.compile(r"[-+]?\d{1,3}(\.\d{3})+")
 PLAIN_INTEGER = re.compile(r"[-+]?\d+")
 ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?)?")
 _SAMPLE_CHARS = 64 * 1024
@@ -62,7 +65,7 @@ def decode(data: bytes) -> tuple[str, str]:
     if data.startswith(b"\xef\xbb\xbf"):
         return data[3:].decode("utf-8", errors="replace"), "utf-8-sig"
     if data.startswith((b"\xff\xfe", b"\xfe\xff")):
-        return data.decode("utf-16", errors="replace").lstrip("﻿"), "utf-16"
+        return data.decode("utf-16", errors="replace").lstrip("\ufeff"), "utf-16"
     sample = data[:4096]
     if b"\x00" in sample:
         odd = sample[1::2]
@@ -144,7 +147,7 @@ def column_names(header: list) -> list[str]:
     names: list[str] = []
     seen: Counter[str] = Counter()
     for i, raw in enumerate(header):
-        name = "" if raw is None else str(raw).strip().lstrip("﻿")
+        name = "" if raw is None else str(raw).strip().lstrip("\ufeff")
         if not name:
             name = f"column_{i + 1}"
         seen[name] += 1
@@ -164,14 +167,19 @@ def _text_column(values: pd.Series, delimiter: str | None) -> pd.Series:
     if present.empty:
         return stripped
     texts = present.astype(str)
-    if delimiter == ";" and texts.map(lambda s: bool(DECIMAL_COMMA.fullmatch(s))).any():
-        if texts.map(
-            lambda s: bool(DECIMAL_COMMA.fullmatch(s) or PLAIN_INTEGER.fullmatch(s))
-        ).all():
+    if delimiter == ";":
+        # European numbers: "1.234,5" (decimal comma) and "1.500" (dot thousands), when
+        # every value in the column has one of those shapes or is a plain integer.
+        comma = texts.map(lambda s: bool(DECIMAL_COMMA.fullmatch(s)))
+        dots = texts.map(lambda s: bool(DOT_THOUSANDS.fullmatch(s)))
+        plain_int = texts.map(lambda s: bool(PLAIN_INTEGER.fullmatch(s)))
+        if (comma | dots).any() and (comma | dots | plain_int).all():
             converted = stripped.map(
                 lambda s: float(s.replace(".", "").replace(",", ".")) if isinstance(s, str) else s
-            )
-            return converted.astype(float)
+            ).astype(float)
+            if not comma.any() and converted.notna().all():
+                return converted.astype("int64")
+            return converted
     numbers = pd.to_numeric(stripped, errors="coerce")
     if numbers.notna().sum() == len(present):
         return numbers
@@ -338,13 +346,16 @@ def read(file: str, *, sheet: str | int | None = None, header: int | None = None
     entry = find(file)
     kind, path = entry.get("kind"), Path(entry["path"])
     if kind in ("csv", "txt"):
-        return read_text_table(path, header=header)[0]
-    if kind == "xlsx":
-        return read_xlsx(path, sheet=sheet, header=header)
-    if kind == "xls":
-        return read_xls(path, sheet=sheet, header=header)
-    if kind == "json":
-        return read_json(path)
-    if kind == "pdf":
+        df = read_text_table(path, header=header)[0]
+    elif kind == "xlsx":
+        df = read_xlsx(path, sheet=sheet, header=header)
+    elif kind == "xls":
+        df = read_xls(path, sheet=sheet, header=header)
+    elif kind == "json":
+        df = read_json(path)
+    elif kind == "pdf":
         raise ValueError("a PDF is read with hk.pdf_text or hk.pdf_tables")
-    raise ValueError(f"hk.read can't read a {kind} file")
+    else:
+        raise ValueError(f"hk.read can't read a {kind} file")
+    df.index.name = ROW_INDEX  # hk.table keeps file row numbers while this index survives
+    return df
