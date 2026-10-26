@@ -6,6 +6,36 @@
 
 Hearthkeep is an open-source, local-first personal assistant. It runs on your own PC, thinks with local models only, and is reachable from your other devices over your private Tailscale network. Anything that leaves your PC or changes something permanently waits for your explicit approval.
 
-**Status:** Phase 1 in progress (secure core).
+**Status:** Phase 1: secure core. Sign-in with passkeys, a permission and approval engine, an audit log, encrypted secrets and a chat UI are in place. Only two demo tools exist (`clock` and `note`); the six real tools (budget, news and search, files, Python, images, GitHub) arrive in later phases.
 
-See [docs/design.md](docs/design.md) for the design, [CONTRIBUTING.md](CONTRIBUTING.md) to contribute, and [SECURITY.md](SECURITY.md) to report a vulnerability.
+## Run the Phase 1 core
+
+You need Python 3.12+, [uv](https://docs.astral.sh/uv/), Node 20+, and an OpenAI-compatible chat server already running on your own machine (by default at `http://127.0.0.1:8080/v1`).
+
+```
+# build the web app (the server serves web/dist)
+cd web
+npm ci && npm run build
+
+# install and start the server; <data> is your own data folder
+cd ../server
+uv sync
+uv run hearthkeep serve --data <data>
+```
+
+On first run the data folder is created with a `config.toml` you can edit (model name, chat server address, port). If your chat server needs a key, store it with `uv run hearthkeep secrets set chat_api_key --data <data>`.
+
+The server prints a one-time enrollment code. Open `http://localhost:8765`, enter the code within 15 minutes and create your first passkey. Lost the code? Run `uv run hearthkeep enroll-code --data <data>`. Add a second device before removing the first: the last device cannot be removed.
+
+`--insecure-dev-auth` is for development only; see the security notes before using it.
+
+## Learn more
+
+- [docs/design.md](docs/design.md): design and roadmap
+- [docs/security.md](docs/security.md): security model, permissions and what the assistant can never do
+- [SECURITY.md](SECURITY.md): how to report a vulnerability
+- [CONTRIBUTING.md](CONTRIBUTING.md): how to contribute
+
+## License
+
+Apache 2.0, see [LICENSE](LICENSE).
