@@ -8,8 +8,10 @@ request, the event log or the message history.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import re
 import sqlite3
 import uuid
 from collections.abc import AsyncIterator
@@ -63,6 +65,7 @@ SECRETS_UNREADABLE = (
 UNEXPECTED = "Something went wrong while answering. Please try again."
 INVALID_CALL_SUMMARY = "Invalid tool call"
 INTERRUPTED = json.dumps({"error": "This step was interrupted"})
+_ATTACHMENT_ID = re.compile(r"[A-Za-z0-9_-]{1,32}")
 
 _log = logging.getLogger(__name__)
 
@@ -192,6 +195,7 @@ class _Call:
 @dataclass
 class _Outcome:
     content: str = ""
+    attachments: list[dict] = field(default_factory=list)  # checked items to show in the chat
 
 
 class AgentLoop:
@@ -229,8 +233,10 @@ class AgentLoop:
             except SecretStoreError:
                 yield self._emit(turn, "turn_error", message=SECRETS_UNREADABLE)
                 return
-            async for event in self._turn(turn, history, think):
-                yield event
+            # Closed explicitly so an early stop reaches the provider stream right away.
+            async with contextlib.aclosing(self._turn(turn, history, think)) as events:
+                async for event in events:
+                    yield event
         except Exception as exc:
             record_turn_failure(self._conn, exc)
             yield self._emit(turn, "turn_error", message=UNEXPECTED)
@@ -255,15 +261,19 @@ class AgentLoop:
             text_parts: list[str] = []
             requests: list[ToolCallRequest] = []
             try:
-                stream = self._client.stream(messages, self._registry.schemas(tools), think)
-                async for event in stream:
-                    if isinstance(event, TextDelta):
-                        text_parts.append(event.text)
-                        yield self._emit(turn, "text_delta", text=event.text)
-                    elif isinstance(event, ReasoningDelta):
-                        yield self._emit(turn, "reasoning_delta", text=event.text)
-                    elif isinstance(event, ToolCallRequest):
-                        requests.append(event)
+                # aclosing: a turn that ends early (or a client that goes away) closes the
+                # provider stream right here, releasing any GPU lease it holds.
+                async with contextlib.aclosing(
+                    self._client.stream(messages, self._registry.schemas(tools), think)
+                ) as stream:
+                    async for event in stream:
+                        if isinstance(event, TextDelta):
+                            text_parts.append(event.text)
+                            yield self._emit(turn, "text_delta", text=event.text)
+                        elif isinstance(event, ReasoningDelta):
+                            yield self._emit(turn, "reasoning_delta", text=event.text)
+                        elif isinstance(event, ToolCallRequest):
+                            requests.append(event)
             except ProviderError as exc:
                 if text_parts:
                     self._save(turn, {"role": "assistant", "content": "".join(text_parts)})
@@ -308,8 +318,11 @@ class AgentLoop:
                     else:
                         steps += 1
                         outcome = _Outcome()
-                        async for event in self._handle_call(turn, call, outcome):
-                            yield event
+                        async with contextlib.aclosing(
+                            self._handle_call(turn, call, outcome)
+                        ) as events:
+                            async for event in events:
+                                yield event
                         content = outcome.content
                     tool_message = {
                         "role": "tool",
@@ -364,7 +377,7 @@ class AgentLoop:
 
         decision = self._decide(turn, tool, action)
         if decision == Decision.RUN:
-            ok, outcome.content = await self._run(turn, tool, args, decision)
+            ok = await self._run(turn, tool, args, decision, outcome)
         elif decision in (Decision.ASK, Decision.ASK_STEP_UP):
             approval = self._approvals.create(
                 turn.chat_id,
@@ -398,13 +411,15 @@ class AgentLoop:
                             "INSERT OR IGNORE INTO chat_grants (chat_id, tool) VALUES (?, ?)",
                             (turn.chat_id, tool.level_key),
                         )
-                    ok, outcome.content = await self._run(turn, tool, args, decision)
+                    ok = await self._run(turn, tool, args, decision, outcome)
             elif resolved.status == "declined":
                 ok, outcome.content = False, _error(DECLINED)
             else:
                 ok, outcome.content = False, _error(EXPIRED)
         else:
             ok, outcome.content = self._deny(tool)
+        if outcome.attachments:
+            yield self._emit(turn, "attachments", step_id=step_id, items=outcome.attachments)
         yield self._step_finished(turn, step_id, ok, outcome.content)
 
     def _parse(self, call: _Call) -> tuple[Tool | None, dict, str | None]:
@@ -467,15 +482,20 @@ class AgentLoop:
         return False, _error(f"The tool failed: {type(exc).__name__}")
 
     async def _run(
-        self, turn: _Turn, tool: Tool, args: dict, decision: Decision
-    ) -> tuple[bool, str]:
+        self, turn: _Turn, tool: Tool, args: dict, decision: Decision, outcome: _Outcome
+    ) -> bool:
+        """Run the tool, filling `outcome`. Only `result.content` ever reaches the model;
+        `result.data` attachments become an `attachments` event after they are checked."""
         ctx = ToolContext(turn.chat_id, turn.turn_id, self._settings, self._conn)
         try:
             result = await tool.run(args, ctx)
             if not isinstance(result, ToolResult):
                 raise TypeError("tool returned something other than a ToolResult")
         except Exception as exc:
-            return self._failed(tool, decision, exc)
+            ok, outcome.content = self._failed(tool, decision, exc)
+            return ok
+        outcome.content = str(result.content)
+        outcome.attachments = self._attachments(turn, result.data)
         audit.record(
             self._conn,
             "agent",
@@ -487,7 +507,32 @@ class AgentLoop:
                 "ok": bool(result.ok),
             },
         )
-        return bool(result.ok), str(result.content)
+        return bool(result.ok)
+
+    def _attachments(self, turn: _Turn, data: object) -> list[dict]:
+        """The valid attachment items of a tool result: images of this chat, each once.
+        Anything else is dropped silently."""
+        items = data.get("attachments") if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            return []
+        checked: list[dict] = []
+        seen: set[str] = set()
+        for item in items:
+            if not isinstance(item, dict) or item.get("kind") != "image":
+                continue
+            image_id = item.get("id")
+            if not isinstance(image_id, str) or not _ATTACHMENT_ID.fullmatch(image_id):
+                continue
+            if image_id in seen:
+                continue
+            exists = self._conn.execute(
+                "SELECT 1 FROM images WHERE id = ? AND chat_id = ?", (image_id, turn.chat_id)
+            ).fetchone()
+            if exists is None:
+                continue
+            seen.add(image_id)
+            checked.append({"kind": "image", "id": image_id})
+        return checked
 
     # -- persistence --------------------------------------------------------------------
 

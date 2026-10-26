@@ -6,6 +6,7 @@ import argparse
 import getpass
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from hearthkeep import db
 from hearthkeep.api.app import DB_FILE
@@ -13,6 +14,9 @@ from hearthkeep.api.common import ENROLLMENT_CODE_TTL_MINUTES
 from hearthkeep.auth.enrollment import EnrollmentCodes, EnrollmentError, first_device_allowed
 from hearthkeep.config import ConfigError, Settings, init_data_dir, load_settings
 from hearthkeep.secrets import SecretStore, SecretStoreError
+
+if TYPE_CHECKING:
+    from hearthkeep.tools.images import GenerateImageTool
 
 EXIT_USAGE = 2
 GRACEFUL_SHUTDOWN_SECONDS = 5
@@ -35,13 +39,17 @@ def _print_code(code: str) -> None:
     )
 
 
-def build_registry():
+def build_registry(*, image_tool: GenerateImageTool | None = None):
+    """The tools the agent may use. The image tool is registered only when it could be built
+    (at least one image card and ComfyUI configured); the `images` level is listed either way."""
     from hearthkeep.tools.base import ToolRegistry
     from hearthkeep.tools.demo import ClockTool, NoteTool
 
     registry = ToolRegistry()
     registry.register(ClockTool())
     registry.register(NoteTool())
+    if image_tool is not None:
+        registry.register(image_tool)
     return registry
 
 

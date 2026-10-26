@@ -517,3 +517,198 @@ def test_load_history_answers_orphan_tool_calls(conn):
         ("assistant", None, ""),
         ("tool", "a", stub),
     ]
+
+
+# --- attachments ---------------------------------------------------------------------------
+
+
+class ImageMakerTool:
+    """Saves real image records for this chat and returns `extra` items next to them."""
+
+    name = "make_images"
+    level_key = "images"
+    description = "Makes images."
+    parameters = {"type": "object", "properties": {}}
+
+    def __init__(self, count=2, extra=(), ok=True):
+        self.count, self.extra, self.ok = count, list(extra), ok
+        self.ids: list[str] = []
+
+    def classify(self, args):
+        return ActionClass.LOOK
+
+    def summarize(self, args):
+        return "Make images"
+
+    async def run(self, args, ctx):
+        from hearthkeep.images import PNG_SIGNATURE, ImageStore
+
+        store = ImageStore(ctx.conn, ctx.settings.data_dir)
+        for _ in range(self.count):
+            rec = store.save(
+                PNG_SIGNATURE + b"x", chat_id=ctx.chat_id, turn_id=ctx.turn_id, model_id="m",
+                prompt="p", width=512, height=512, seed=1,
+            )  # fmt: skip
+            self.ids.append(rec.id)
+        items = [{"kind": "image", "id": i} for i in self.ids] + self.extra
+        return ToolResult(ok=self.ok, content="Made them.", data={"attachments": items})
+
+
+def image_turn(tool_name="make_images"):
+    return FakeChatClient(
+        [
+            [call(tool_name, {}), StreamDone("tool_calls")],
+            [TextDelta("Here they are."), StreamDone("stop")],
+        ]
+    )
+
+
+async def test_attachments_event_emitted_and_persisted(conn, settings, approvals, registry):
+    tool = ImageMakerTool(count=2)
+    registry.register(tool)
+    loop = make_loop(image_turn(), registry, approvals, conn, settings)
+    events = await drain(loop, user("draw"))
+
+    assert types(events) == [
+        "step_started", "attachments", "step_finished", "text_delta", "turn_done",
+    ]  # fmt: skip
+    attached = events[1]
+    assert attached["step_id"] == events[0]["step_id"]
+    assert attached["items"] == [{"kind": "image", "id": i} for i in tool.ids]
+    row = conn.execute(
+        "SELECT seq, data FROM turn_events WHERE type = 'attachments' AND turn_id = 't1'"
+    ).fetchone()
+    assert row["seq"] == attached["seq"]
+    assert json.loads(row["data"]) == {"step_id": attached["step_id"], "items": attached["items"]}
+
+
+async def test_attachments_kept_when_the_tool_reports_failure(conn, settings, approvals, registry):
+    tool = ImageMakerTool(count=1, ok=False)
+    registry.register(tool)
+    loop = make_loop(image_turn(), registry, approvals, conn, settings)
+    events = await drain(loop, user("draw"))
+    attached = next(e for e in events if e["type"] == "attachments")
+    assert attached["items"] == [{"kind": "image", "id": tool.ids[0]}]
+    assert next(e for e in events if e["type"] == "step_finished")["ok"] is False
+
+
+async def test_invalid_attachment_items_dropped(conn, settings, approvals, registry):
+    from hearthkeep.images import PNG_SIGNATURE, ImageStore
+
+    other = ImageStore(conn, settings.data_dir).save(
+        PNG_SIGNATURE + b"x", chat_id="another-chat", turn_id="t9", model_id="m", prompt="p",
+        width=512, height=512, seed=1,
+    )  # fmt: skip
+    extra = [
+        {"kind": "file", "id": "abc"},
+        {"kind": "image", "id": "../etc/passwd"},
+        {"kind": "image", "id": "x" * 33},
+        {"kind": "image", "id": 12345},
+        {"kind": "image"},
+        "not-a-dict",
+        {"kind": "image", "id": "doesNotExist"},
+        {"kind": "image", "id": other.id},  # exists, but belongs to another chat
+    ]
+    tool = ImageMakerTool(count=1, extra=extra)
+    registry.register(tool)
+    loop = make_loop(image_turn(), registry, approvals, conn, settings)
+    events = await drain(loop, user("draw"))
+    attached = [e for e in events if e["type"] == "attachments"]
+    assert len(attached) == 1
+    assert attached[0]["items"] == [{"kind": "image", "id": tool.ids[0]}]
+
+
+@pytest.mark.parametrize(
+    "data",
+    [None, {}, {"attachments": "nope"}, {"attachments": [{"kind": "image", "id": "missing"}]}],
+)
+async def test_no_attachments_event_without_valid_items(conn, settings, approvals, registry, data):
+    class Plain:
+        name, level_key, description = "plain", "demo", "Plain."
+        parameters = {"type": "object", "properties": {}}
+
+        def classify(self, args):
+            return ActionClass.LOOK
+
+        def summarize(self, args):
+            return "Plain"
+
+        async def run(self, args, ctx):
+            return ToolResult(ok=True, content="done", data=data)
+
+    registry.register(Plain())
+    loop = make_loop(image_turn("plain"), registry, approvals, conn, settings)
+    events = await drain(loop, user("go"))
+    assert "attachments" not in types(events)
+
+
+async def test_model_never_sees_attachment_ids(conn, settings, approvals, registry):
+    tool = ImageMakerTool(count=3)
+    registry.register(tool)
+    client = image_turn()
+    loop = make_loop(client, registry, approvals, conn, settings)
+    await drain(loop, user("draw"))
+
+    tool_msg = tool_messages(client.calls[1]["messages"])[0]
+    assert tool_msg["content"] == "Made them."
+    sent = json.dumps(client.calls)
+    stored = json.dumps([tuple(r) for r in conn.execute("SELECT * FROM messages").fetchall()])
+    for image_id in tool.ids:
+        assert image_id not in sent
+        assert image_id not in stored
+
+
+# --- provider streams are closed deterministically ------------------------------------------
+
+
+class ClosingStream:
+    """An async iterator over scripted events that records `aclose()`."""
+
+    def __init__(self, events):
+        self._events = list(events)
+        self.closed = False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._events:
+            raise StopAsyncIteration
+        return self._events.pop(0)
+
+    async def aclose(self):
+        self.closed = True
+
+
+class ClosingClient:
+    def __init__(self, scripts):
+        self.scripts = list(scripts)
+        self.streams: list[ClosingStream] = []
+
+    def stream(self, messages, tools, think):
+        s = ClosingStream(self.scripts.pop(0))
+        self.streams.append(s)
+        return s
+
+
+async def test_provider_stream_closed_when_turn_ends_early(conn, settings, approvals, registry):
+    client = ClosingClient([[TextDelta("a"), TextDelta("b"), StreamDone("stop")]])
+    loop = make_loop(client, registry, approvals, conn, settings)
+    turn = loop.run_turn(CHAT, "t1", user("hi"), False)
+    first = await anext(turn)
+    assert first["type"] == "text_delta"
+    await turn.aclose()  # the client went away mid-reply
+    assert client.streams[0].closed is True
+
+
+async def test_provider_stream_closed_after_each_round(conn, settings, approvals, registry):
+    client = ClosingClient(
+        [
+            [call("clock", {}), StreamDone("tool_calls")],
+            [TextDelta("noon"), StreamDone("stop")],
+        ]
+    )
+    loop = make_loop(client, registry, approvals, conn, settings)
+    events = await drain(loop, user("time?"))
+    assert events[-1]["type"] == "turn_done"
+    assert [s.closed for s in client.streams] == [True, True]
