@@ -138,3 +138,45 @@ def test_detect_docker_never_raises(monkeypatch, exc):
 
     monkeypatch.setattr(config.subprocess, "run", fake_run)
     assert detect_docker() is False
+
+
+@pytest.mark.parametrize(
+    "url", ["http://127.0.0.1:8080/v1", "http://localhost:1234/v1", "http://[::1]:8080/v1"]
+)
+def test_loopback_chat_base_url_accepted(tmp_path, url):
+    write(tmp_path, f'chat_base_url = "{url}"')
+    assert load_settings(tmp_path).chat_base_url == url
+
+
+@pytest.mark.parametrize(
+    "url", ["https://api.example.com/v1", "http://192.168.1.5:8080/v1", "ftp://localhost/v1"]
+)
+def test_remote_chat_base_url_rejected(tmp_path, url):
+    write(tmp_path, f'chat_base_url = "{url}"')
+    with pytest.raises(ConfigError, match="local models"):
+        load_settings(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "port = 0",
+        "port = 65536",
+        "session_idle_days = 0",
+        "approval_ttl_minutes = 0",
+        "max_agent_steps = 0",
+        "max_agent_steps = 51",
+    ],
+)
+def test_out_of_range_rejected(tmp_path, line):
+    write(tmp_path, line)
+    with pytest.raises(ConfigError, match=line.split()[0]):
+        load_settings(tmp_path)
+
+
+def test_range_boundaries_accepted(tmp_path):
+    write(
+        tmp_path,
+        "port = 65535\nsession_idle_days = 1\napproval_ttl_minutes = 1\nmax_agent_steps = 50",
+    )
+    assert load_settings(tmp_path).max_agent_steps == 50

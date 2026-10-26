@@ -49,6 +49,14 @@ def _check_type(key: str, value: object) -> None:
         raise ConfigError(f"config key '{key}' has the wrong type: {type(value).__name__}")
 
 
+_RANGES = (
+    ("port", 1, 65535),
+    ("session_idle_days", 1, None),
+    ("approval_ttl_minutes", 1, None),
+    ("max_agent_steps", 1, 50),
+)
+
+
 def load_settings(data_dir: Path) -> Settings:
     data_dir = Path(data_dir)
     path = data_dir / "config.toml"
@@ -79,6 +87,17 @@ def _validate(s: Settings) -> None:
         raise ConfigError(f"public_origin '{s.public_origin}' is not a valid http(s) URL")
     if origin.scheme == "http" and hostname not in LOOPBACK_HOSTS:
         raise ConfigError("public_origin must use https unless it is localhost")
+    chat = urlparse(s.chat_base_url)
+    if chat.scheme not in ("http", "https") or chat.hostname not in LOOPBACK_HOSTS:
+        raise ConfigError(
+            f"chat_base_url '{s.chat_base_url}' must point at a loopback host "
+            "(127.0.0.1, ::1, localhost): Hearthkeep only talks to local models."
+        )
+    for key, lo, hi in _RANGES:
+        value = getattr(s, key)
+        if value < lo or (hi is not None and value > hi):
+            bound = f"between {lo} and {hi}" if hi is not None else f"at least {lo}"
+            raise ConfigError(f"config key '{key}' must be {bound}, got {value}")
     if s.rp_id != hostname:
         raise ConfigError(f"rp_id '{s.rp_id}' must equal the public_origin host '{hostname}'")
 
