@@ -7,7 +7,8 @@ Usage:
 
 A path of ``-`` reads standard input. Exits 1 if anything is found, 0 otherwise.
 Extra, owner-specific identifiers are read (one per line, ``#`` comments allowed)
-from ``.hearthkeep-personal-markers`` in the repository root. That file is gitignored.
+from ``.hearthkeep-personal-markers`` in the repository root (UTF-8 or UTF-16). That
+file is gitignored. If it exists but is unreadable or empty, ``--staged`` exits 2.
 """
 
 from __future__ import annotations
@@ -74,14 +75,6 @@ def scan_text(text: str, extra_markers: list[str]) -> list[Finding]:
     return findings
 
 
-def load_markers(root: Path = REPO_ROOT) -> list[str]:
-    path = root / MARKERS_FILE
-    if not path.is_file():
-        return []
-    lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
-    return [ln.strip() for ln in lines if ln.strip() and not ln.lstrip().startswith("#")]
-
-
 def decode_bytes(data: bytes) -> str | None:
     """Decode file content to text, or None if it is a real binary.
 
@@ -99,6 +92,35 @@ def decode_bytes(data: bytes) -> str | None:
     if even and even.count(0) > 0.8 * len(even) and odd.count(0) < 0.1 * len(odd):
         return data.decode("utf-16-be", errors="replace")
     return None
+
+
+def read_markers(root: Path = REPO_ROOT) -> tuple[list[str], str | None]:
+    """The owner's extra markers and, if the markers file exists but is unusable, why.
+
+    The file may be UTF-8 (with or without BOM) or UTF-16 (as PowerShell writes it).
+    """
+    path = root / MARKERS_FILE
+    if not path.is_file():
+        return [], None
+    try:
+        text = decode_bytes(path.read_bytes())
+    except OSError:
+        return [], "could not be read"
+    if text is None or "�" in text:
+        return [], "could not be decoded (save it as UTF-8 or UTF-16)"
+    lines = [ln.strip() for ln in text.splitlines()]
+    markers = [ln for ln in lines if ln and not ln.startswith("#")]
+    if not markers:
+        return [], "has no markers"
+    return markers, None
+
+
+def load_markers(root: Path = REPO_ROOT) -> list[str]:
+    return read_markers(root)[0]
+
+
+def warn_markers_problem(problem: str) -> None:
+    print(f"privacy scan: warning: {MARKERS_FILE} {problem}", file=sys.stderr)
 
 
 def _report(label: str, text: str | None, markers: list[str]) -> int:
@@ -127,9 +149,13 @@ def _staged_files() -> list[tuple[str, bytes]]:
 
 def main(argv: list[str] | None = None, root: Path = REPO_ROOT) -> int:
     args = sys.argv[1:] if argv is None else argv
-    markers = load_markers(root)
-    if (root / MARKERS_FILE).is_file() and not markers:
-        print(f"privacy scan: warning: {MARKERS_FILE} exists but has no markers", file=sys.stderr)
+    markers, problem = read_markers(root)
+    if problem:
+        warn_markers_problem(problem)
+        if "--staged" in args:
+            # In the hooks a broken markers file must not make every scan silently pass.
+            print("privacy scan: fix the markers file (or delete it) to commit", file=sys.stderr)
+            return 2
     total = 0
     for arg in args:
         if arg == "--staged":

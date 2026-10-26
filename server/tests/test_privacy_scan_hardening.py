@@ -2,7 +2,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from privacy_scan import decode_bytes, load_markers, main, scan_text
+import pytest
+from privacy_scan import decode_bytes, load_markers, main, read_markers, scan_text
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "privacy_scan.py"
 
@@ -70,3 +71,50 @@ def test_empty_markers_file_warns_on_stderr(tmp_path, capsys):
     (tmp_path / ".hearthkeep-personal-markers").write_text("# nothing yet\n", encoding="utf-8")
     assert main([], root=tmp_path) == 0
     assert "has no markers" in capsys.readouterr().err
+
+
+# ---- markers file encodings and broken markers files ------------------------------------
+
+MARKERS = ".hearthkeep-personal-markers"
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig", "utf-16", "utf-16-le", "utf-16-be"])
+def test_markers_file_read_in_any_supported_encoding(tmp_path, encoding):
+    text = "# mine\r\nJane Example\r\nexample-account\r\n"
+    (tmp_path / MARKERS).write_bytes(text.encode(encoding))
+    assert load_markers(tmp_path) == ["Jane Example", "example-account"]
+    markers, problem = read_markers(tmp_path)
+    assert problem is None and markers == ["Jane Example", "example-account"]
+
+
+def test_missing_markers_file_is_not_a_problem(tmp_path):
+    assert read_markers(tmp_path) == ([], None)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [b"\x00\x01\x02\x03\x89PNG" * 40, "José Example\n".encode("cp1252")],
+    ids=["binary", "not-utf"],
+)
+def test_undecodable_markers_file_is_reported(tmp_path, content):
+    (tmp_path / MARKERS).write_bytes(content)
+    markers, problem = read_markers(tmp_path)
+    assert markers == [] and problem is not None
+
+
+@pytest.mark.parametrize(
+    "content", [b"# only comments\n", b"", b"\x00\x01\x02\x03\x89PNG" * 40], ids=str
+)
+def test_staged_scan_fails_when_markers_file_is_unusable(tmp_path, capsys, content):
+    (tmp_path / MARKERS).write_bytes(content)
+    assert main(["--staged"], root=tmp_path) != 0
+    err = capsys.readouterr().err
+    assert MARKERS in err and "warning" in err
+
+
+def test_path_scan_only_warns_when_markers_file_is_unusable(tmp_path, capsys):
+    (tmp_path / MARKERS).write_bytes(b"\x00\x01\x02\x03\x89PNG" * 40)
+    clean = tmp_path / "clean.txt"
+    clean.write_text("nothing here\n", encoding="utf-8")
+    assert main([str(clean)], root=tmp_path) == 0
+    assert "could not be decoded" in capsys.readouterr().err

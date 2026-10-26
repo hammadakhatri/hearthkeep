@@ -8,7 +8,7 @@ Use sample data in tests, docs and screenshots.
 
 ## Privacy scanner
 
-`scripts/privacy_scan.py` flags absolute user paths, links to private claude.ai artifacts, tokens and private keys, plus any identifiers you list one per line in `.hearthkeep-personal-markers` at the repo root. That file is gitignored: it is your own local list and is never committed.
+`scripts/privacy_scan.py` flags absolute user paths, links to private claude.ai artifacts, tokens and private keys, plus any identifiers you list one per line in `.hearthkeep-personal-markers` at the repo root (UTF-8 or UTF-16, `#` starts a comment). That file is gitignored: it is your own local list and is never committed. If the file exists but cannot be decoded or lists no markers, the scanner warns, and the hooks refuse the commit until you fix or delete it.
 
 ```
 python scripts/privacy_scan.py path/to/file ...
@@ -32,7 +32,7 @@ If you prefer the pre-commit framework, `.pre-commit-config.yaml` defines the sa
 
 Use conventional commits (`feat:`, `fix:`, `docs:`, `chore:`, `test:`).
 
-**Commit messages must not contain a `Co-Authored-By` trailer or an AI attribution line** (for example "Generated with" followed by an AI tool name). The `commit-msg` hook rejects them, and CI checks every commit message in a push or pull request with `scripts/check_commit_msg.py`.
+**Commit messages must not contain a `Co-Authored-By` trailer or an AI attribution line** (for example "Generated with" followed by an AI tool name). The `commit-msg` hook rejects them, and CI checks every commit message in a push or pull request with `scripts/check_commit_msg.py`. The same check also rejects messages that contain absolute user paths, private links, tokens or one of your personal markers.
 
 ## Tests
 
