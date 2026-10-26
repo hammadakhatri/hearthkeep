@@ -432,3 +432,64 @@ def test_mismatch_message_shows_a_clean_short_extension(tmp_path):
         "That file's name says .bPDFXoverl, but its contents aren't. Check the file and attach "
         "it again."
     )
+
+
+# ---- fix round 2 --------------------------------------------------------------------------------
+
+
+def _set_method(data: bytes, method: int) -> bytes:
+    """The first entry's compression method, in its local and its central header."""
+    patched = bytearray(data)
+    struct.pack_into("<H", patched, 8, method)
+    struct.pack_into("<H", patched, patched.find(b"PK\x01\x02") + 10, method)
+    return bytes(patched)
+
+
+def test_unsupported_zip_compression_is_unsupported_not_password(tmp_path):
+    for method in (9, 99):  # Deflate64, and a method number nothing uses
+        error = refused(tmp_path, "odd.xlsx", _set_method(make_xlsx(), method))
+        assert error.reason == "unsupported", method
+
+
+def _eocd(data: bytes) -> int:
+    return data.rfind(b"PK\x05\x06")
+
+
+def test_zip_directory_is_measured_before_opening(tmp_path, monkeypatch):
+    opened: list[object] = []
+    real = zipfile.ZipFile
+
+    def recording(*args, **kwargs):
+        opened.append(args)
+        return real(*args, **kwargs)
+
+    good = make_xlsx()  # built before ZipFile is watched
+    monkeypatch.setattr(checks.zipfile, "ZipFile", recording)
+    many = bytearray(good)
+    struct.pack_into("<H", many, _eocd(good) + 10, 10_001)
+    assert refused(tmp_path, "many.xlsx", bytes(many)).reason == "too_large_to_open"
+    huge_dir = bytearray(good)
+    struct.pack_into("<I", huge_dir, _eocd(good) + 12, 16 * 1024 * 1024 + 1)
+    assert refused(tmp_path, "huge.xlsx", bytes(huge_dir)).reason == "too_large_to_open"
+    assert opened == []
+
+    # A ZIP64 end record is read too: its 64-bit counts are the real ones.
+    at = _eocd(good)
+    cd_size, cd_offset = struct.unpack_from("<II", good, at + 12)
+    zip64_at = at
+    zip64 = struct.pack("<4sQHHIIQQQQ", b"PK\x06\x06", 44, 45, 45, 0, 0,
+                        10_001, 10_001, cd_size, cd_offset)  # fmt: skip
+    locator = struct.pack("<4sIQI", b"PK\x06\x07", 0, zip64_at, 1)
+    end = struct.pack("<4sHHHHIIH", b"PK\x05\x06", 0, 0, 0xFFFF, 0xFFFF,
+                      0xFFFFFFFF, 0xFFFFFFFF, 0)  # fmt: skip
+    data = good[:at] + zip64 + locator + end
+    assert refused(tmp_path, "z64.xlsx", data).reason == "too_large_to_open"
+    assert opened == []
+    # Within the limits, the workbook is opened and accepted.
+    assert check_file(write(tmp_path, "ok.xlsx", good), "ok.xlsx").kind == "xlsx"
+    assert len(opened) == 1
+
+
+def test_names_lose_every_format_character():
+    assert clean_file_name("in؜vo­ice⁠.csv", "csv") == "invoice.csv"
+    assert clean_file_name("\U000e0041tag.csv", "csv") == "tag.csv"  # a tag character (Cf)

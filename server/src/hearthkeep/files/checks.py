@@ -6,6 +6,7 @@ import codecs
 import json
 import lzma
 import re
+import struct
 import unicodedata
 import zipfile
 import zlib
@@ -59,17 +60,27 @@ _CONTENT_TYPES_READ = 1024 * 1024
 # Larger JSON files get a bounded check here; the sandbox's inspection reads them fully.
 _JSON_PARSE_BYTES = 5 * 1024 * 1024
 MAX_ZIP_ENTRIES = 10_000
+MAX_ZIP_DIRECTORY_BYTES = 16 * 1024 * 1024
+# The end of central directory record (22 bytes plus a comment of up to 64 KB), and the ZIP64
+# locator (20 bytes, just before it) and ZIP64 end record (56 bytes) it may point to.
+_EOCD_SIGNATURE = b"PK\x05\x06"
+_EOCD_BYTES = 22
+_EOCD_SEARCH_BYTES = 64 * 1024 + _EOCD_BYTES
+_ZIP64_LOCATOR_SIGNATURE = b"PK\x06\x07"
+_ZIP64_LOCATOR_BYTES = 20
+_ZIP64_EOCD_SIGNATURE = b"PK\x06\x06"
+_ZIP64_EOCD_BYTES = 56
 MAX_EXT_CHARS = 10
 _ZIP_MAGIC = b"PK\x03\x04"
 _UTF16_BOMS = (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)
 _BINARY_EXTS = ("xlsx", "xls", "pdf")
 _TEXT_EXTS = ("csv", "txt", "json")
-# Control characters, the characters Windows forbids in names, and the invisible bidi and
-# format characters that can disguise a name (an override can make "xcs.pdf" read "fdp.scx").
-_UNSAFE_NAME_CHARS = re.compile(
-    r'[\x00-\x1f\x7f-\x9f\\/:*?"<>|'
-    r"​-‏‪-‮  ⁦-⁩﻿]"
-)
+# Control characters and the characters Windows forbids in names. Every format character
+# (Unicode category Cf: bidi overrides and isolates, zero-width characters, soft hyphens, tags)
+# is removed too, as are the line and paragraph separators (U+2028, U+2029): they can
+# disguise a name (an override can make "xcs.pdf" read "fdp.scx").
+_UNSAFE_NAME_CHARS = re.compile(r'[\x00-\x1f\x7f-\x9f\\/:*?"<>|]')
+_HIDDEN_CATEGORIES = frozenset({"Cf", "Zl", "Zp"})
 _NOT_EXT_CHARS = re.compile(r"[^A-Za-z0-9]")
 
 
@@ -124,9 +135,36 @@ def _check_pdf(path: Path, size: int) -> None:
             raise FileRefused("damaged")
 
 
+def _check_zip_directory(path: Path) -> None:
+    """Refuse (too_large_to_open) a zip whose end record declares more than 10,000 entries or a
+    central directory over 16 MB, before zipfile reads that directory into memory. A ZIP64 end
+    record, when a locator just before the classic one points to it, gives the real counts."""
+    size = path.stat().st_size
+    with open(path, "rb") as fh:
+        fh.seek(max(0, size - _EOCD_SEARCH_BYTES))
+        tail = fh.read(_EOCD_SEARCH_BYTES)
+        at = tail.rfind(_EOCD_SIGNATURE)
+        if at < 0 or len(tail) - at < _EOCD_BYTES:
+            raise FileRefused("damaged")
+        entries, directory_size = struct.unpack_from("<HI", tail, at + 10)
+        locator_at = at - _ZIP64_LOCATOR_BYTES
+        if locator_at >= 0 and tail[locator_at : locator_at + 4] == _ZIP64_LOCATOR_SIGNATURE:
+            (zip64_at,) = struct.unpack_from("<Q", tail, locator_at + 8)
+            if zip64_at >= size:
+                raise FileRefused("damaged")
+            fh.seek(zip64_at)
+            record = fh.read(_ZIP64_EOCD_BYTES)
+            if len(record) != _ZIP64_EOCD_BYTES or not record.startswith(_ZIP64_EOCD_SIGNATURE):
+                raise FileRefused("damaged")
+            entries, directory_size = struct.unpack_from("<QQ", record, 32)
+    if entries > MAX_ZIP_ENTRIES or directory_size > MAX_ZIP_DIRECTORY_BYTES:
+        raise FileRefused("too_large_to_open")
+
+
 def _check_zip(path: Path) -> None:
     """Raise unless the zip is a macro-free Excel workbook within the entry and unpacked
     limits. Part names and content types are compared in lowercase."""
+    _check_zip_directory(path)
     try:
         with zipfile.ZipFile(path) as zf:
             entries = zf.infolist()
@@ -147,10 +185,11 @@ def _check_zip(path: Path) -> None:
                 raise FileRefused("unsupported")
             if sum(e.file_size for e in entries) > MAX_XLSX_UNPACKED:
                 raise FileRefused("too_large_to_open")
+    # NotImplementedError is a RuntimeError: it must be caught first.
+    except NotImplementedError:  # an unsupported compression method (Deflate64, say)
+        raise FileRefused("unsupported") from None
     except RuntimeError:  # an encrypted entry the flag check missed
         raise FileRefused("password_protected") from None
-    except NotImplementedError:  # an unsupported compression method
-        raise FileRefused("unsupported") from None
     except (
         zipfile.BadZipFile,
         zipfile.LargeZipFile,
@@ -254,7 +293,9 @@ def clean_file_name(raw: str | None, ext: str) -> str:
     kind's extension `.<ext>` (replacing any other, or added when there is none; the owner's
     own spelling, such as `.TXT`, is kept when it is that extension). Empty becomes
     `file.<ext>`."""
-    name = unicodedata.normalize("NFC", _UNSAFE_NAME_CHARS.sub("", _last_component(raw or "")))
+    kept = _UNSAFE_NAME_CHARS.sub("", _last_component(raw or ""))
+    kept = "".join(c for c in kept if unicodedata.category(c) not in _HIDDEN_CATEGORIES)
+    name = unicodedata.normalize("NFC", kept)
     stem, dot, claimed = name.strip().rpartition(".")
     if not dot or not stem.strip(". "):
         stem, claimed = name, ""

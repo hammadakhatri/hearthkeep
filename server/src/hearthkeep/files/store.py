@@ -53,6 +53,20 @@ def _chat_file(row: sqlite3.Row) -> ChatFile:
     return ChatFile(**values)
 
 
+_REPARSE_POINT = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT: junctions and other Windows links
+
+
+def _is_link(path: Path) -> bool:
+    """True for a symlink, and on Windows for any reparse point (a junction, say)."""
+    try:
+        if path.is_symlink():
+            return True
+        attributes = getattr(os.lstat(path), "st_file_attributes", 0)
+    except OSError:
+        return True  # can't tell: treat as a link and leave it alone
+    return bool(attributes & _REPARSE_POINT)
+
+
 def _unlink(path: Path) -> None:
     with contextlib.suppress(OSError):
         path.unlink(missing_ok=True)
@@ -73,10 +87,19 @@ class ChatFileStore:
         """Remove the `*.tmp` files a stopped server left in the chats' files folders (run at
         startup, before any upload can be staged). Returns how many were removed."""
         removed = 0
-        for tmp in self._chats.glob("*/files/*.tmp"):
-            if CHAT_ID.fullmatch(tmp.parent.parent.name) and tmp.is_file():
-                _unlink(tmp)
-                removed += 1
+        if not self._chats.is_dir() or _is_link(self._chats):
+            return 0
+        for chat in self._chats.iterdir():
+            files = chat / "files"
+            # A chat or files folder that is a link or junction leads elsewhere: never swept.
+            if not CHAT_ID.fullmatch(chat.name) or _is_link(chat) or not chat.is_dir():
+                continue
+            if _is_link(files) or not files.is_dir():
+                continue
+            for tmp in files.glob("*.tmp"):
+                if not _is_link(tmp) and tmp.is_file():
+                    _unlink(tmp)
+                    removed += 1
         return removed
 
     def _new_tmp(self, chat_id: str) -> StagedFile:

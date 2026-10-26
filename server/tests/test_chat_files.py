@@ -461,3 +461,34 @@ def test_parse_file_part_finds_the_file_field_by_offset():
     assert part.filename == "märz.csv"
     assert parse_file_part(bytearray(b"--XyZ--\r\n"), b"XyZ") is None
     assert parse_file_part(b"no delimiter at all", b"XyZ") is None
+
+
+# ---- fix round 2 ---------------------------------------------------------------------------------
+
+
+def _link_folder(link, target):
+    """A directory junction on Windows (no privilege needed), a symlink elsewhere."""
+    import os
+
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        os.symlink(target, link, target_is_directory=True)
+
+
+def test_startup_sweep_does_not_follow_links(harness, tmp_path_factory):
+    outside = tmp_path_factory.mktemp("outside")
+    (outside / "files").mkdir()
+    (outside / "files" / "victim.tmp").write_bytes(b"not ours")
+    (outside / "victim.tmp").write_bytes(b"not ours either")
+    chats = harness.data / "workspace" / "chats"
+    chats.mkdir(parents=True, exist_ok=True)
+    _link_folder(chats / ("d" * 32), outside)  # a linked chat folder
+    real_chat = chats / ("e" * 32)
+    real_chat.mkdir()
+    _link_folder(real_chat / "files", outside)  # a linked files folder
+    harness.start()
+    assert (outside / "files" / "victim.tmp").exists()
+    assert (outside / "victim.tmp").exists()
