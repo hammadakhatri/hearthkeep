@@ -4,6 +4,14 @@ data/
 .hearthkeep-personal-markers
 config.toml
 
+# Secrets and keys
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+
 # Models
 *.gguf
 *.safetensors
