@@ -1,0 +1,19 @@
+# Hearthkeep configuration. Copied to <data>/config.toml on first run.
+# Every value below is a placeholder default; edit your own copy.
+
+host = "127.0.0.1"
+port = 8765
+
+# For remote access use `tailscale serve`, then set these to your tailnet name.
+public_origin = "http://localhost:8765"
+rp_id = "localhost"
+
+chat_base_url = "http://127.0.0.1:8080/v1"
+chat_model = "gemma-4-12b"
+chat_api_key_secret = "chat_api_key"
+
+session_idle_days = 14
+approval_ttl_minutes = 15
+max_agent_steps = 8
+
+# docker_available = true   # leave unset to auto-detect
