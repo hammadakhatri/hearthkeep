@@ -300,6 +300,8 @@ class AgentLoop:
             answered = 0
             try:
                 for call in calls:
+                    # Deliberate: `steps` counts tool calls, not model rounds, so one round
+                    # asking for many calls cannot run past max_agent_steps.
                     if steps >= limit:
                         hit_limit = True
                         content = _error(STEP_LIMIT_CALL)
