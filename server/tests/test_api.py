@@ -984,3 +984,23 @@ def test_startup_closes_turns_and_approvals_left_by_a_restart(harness):
     assert frames[-1]["data"] == {"message": RESTARTED}
     roles = [m["role"] for m in client.get("/api/chats/c-old/messages").json()]
     assert roles == ["user", "assistant", "tool"]
+
+
+def test_unreadable_secret_store_is_a_plain_error_not_a_500(harness, monkeypatch):
+    from hearthkeep.agent.loop import AgentLoop
+    from hearthkeep.secrets import SecretStoreError
+
+    def broken(self):
+        raise SecretStoreError("keyring locked")
+
+    monkeypatch.setattr(AgentLoop, "secret_values", broken)
+    client = signed_in(harness)
+    chat_id = new_chat(client)
+    response = say(client, chat_id, "hi")
+    assert response.status_code == 503
+    assert response.json() == {
+        "reason": "secrets_unreadable",
+        "message": "Hearthkeep couldn't read its stored secrets. Check the server.",
+    }
+    assert client.get(f"/api/chats/{chat_id}/messages").json() == []
+    assert client.get("/api/chats").json()[0]["active_turn"] is None

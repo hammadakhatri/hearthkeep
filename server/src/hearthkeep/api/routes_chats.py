@@ -17,12 +17,14 @@ from hearthkeep import db
 from hearthkeep.agent.runner import TERMINAL_EVENTS, TurnInProgressError
 from hearthkeep.api.common import ApiError, Services, current_session, services
 from hearthkeep.auth.sessions import Session
+from hearthkeep.secrets import SecretStoreError
 
 router = APIRouter(prefix="/api")
 
 SessionDep = Annotated[Session, Depends(current_session)]
 MESSAGE_MAX_CHARS = 20000
 TITLE_CHARS = 60
+SECRETS_UNREADABLE = "Hearthkeep couldn't read its stored secrets. Check the server."
 
 
 class NewChatBody(BaseModel):
@@ -107,6 +109,9 @@ async def post_message(
         turn_id = hk.runner.start(chat_id, text, think=bool(row["think"]))
     except TurnInProgressError:
         raise ApiError(409, "turn_in_progress") from None
+    except SecretStoreError:
+        # Nothing was saved: the message is refused rather than stored unredacted.
+        raise ApiError(503, "secrets_unreadable", message=SECRETS_UNREADABLE) from None
     if not row["title"]:
         title = " ".join(text.split())[:TITLE_CHARS]
         hk.conn.execute("UPDATE chats SET title = ? WHERE id = ?", (title, chat_id))

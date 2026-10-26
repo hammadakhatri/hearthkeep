@@ -27,6 +27,9 @@ function sendError(error: unknown): string {
   if (isApiError(error, 'turn_in_progress')) {
     return 'Hearthkeep is still answering in this chat. Wait for it to finish, then send again.'
   }
+  if (isApiError(error, 'secrets_unreadable')) {
+    return "Hearthkeep couldn't read its stored secrets. Check the server."
+  }
   if (isApiError(error, 'network')) return "Can't reach Hearthkeep. Your message wasn't sent."
   return "Your message couldn't be sent. Try again."
 }

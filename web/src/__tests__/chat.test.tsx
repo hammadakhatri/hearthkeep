@@ -133,6 +133,20 @@ describe('Chat', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Hearthkeep is still answering in this chat.')
   })
 
+  it('says so when the server cannot read its stored secrets', async () => {
+    mockFetch({
+      'GET /api/chats': { body: [] },
+      'POST /api/chats': { status: 201, body: newChat },
+      'POST /api/chats/c1/messages': { status: 503, body: { reason: 'secrets_unreadable' } },
+    })
+    render(<Chat model="Local model 12B" />)
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Message Hearthkeep' }), { target: { value: 'Hi' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      "Hearthkeep couldn't read its stored secrets. Check the server.",
+    )
+  })
+
   it('resumes a reply that is still running when the chat opens', async () => {
     mockFetch({
       'GET /api/chats': { body: [{ ...newChat, title: 'Time', active_turn: 't9' }] },
