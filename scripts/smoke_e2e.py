@@ -123,7 +123,8 @@ def stream_turn(
             elif line.startswith("data: "):
                 data = json.loads(line[6:])
             elif line == "" and event is not None:
-                check(ends is None or time.monotonic() < ends, f"no result after {deadline:.0f}s")
+                if ends is not None:
+                    check(time.monotonic() < ends, f"no result after {deadline:.0f}s")
                 yield event, data
                 if event in ("turn_done", "turn_error") or event == stop_on:
                     return
