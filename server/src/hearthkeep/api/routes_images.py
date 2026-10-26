@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 
 from hearthkeep.api.common import ApiError, current_session, services
 from hearthkeep.auth.sessions import Session
@@ -55,11 +55,15 @@ async def list_images(
 
 
 @router.get("/images/{image_id}/file")
-async def image_file(session: SessionDep, request: Request, image_id: str) -> FileResponse:
+async def image_file(session: SessionDep, request: Request, image_id: str) -> Response:
     # The id is checked before the store is asked, so nothing path-like ever reaches it.
     if not _IMAGE_ID.fullmatch(image_id):
         raise ApiError(404, "not_found")
     path = services(request).images.path(image_id)
     if path is None:
         raise ApiError(404, "not_found")
-    return FileResponse(path, media_type="image/png", headers={"Cache-Control": _CACHE})
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:  # removed after path() found it
+        raise ApiError(404, "not_found") from None
+    return Response(data, media_type="image/png", headers={"Cache-Control": _CACHE})

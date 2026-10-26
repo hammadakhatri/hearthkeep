@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { AppShell } from '../shell/AppShell'
-import { healthy, mockFetch, unreachable } from '../test/fetch'
+import { healthy, mockFetch, standby, unreachable } from '../test/fetch'
 
 const SEVEN = ['Today', 'Chat', 'Images', 'Analysis', 'Repos', 'Files', 'Tools & permissions']
 
@@ -42,6 +42,13 @@ describe('AppShell', () => {
     // The composer names the model too; the pill is the one in the top bar.
     const pill = await screen.findByText('Local model 12B', { selector: '.status-text' })
     expect(pill.closest('[role="status"]')).toHaveAttribute('data-state', 'online')
+  })
+
+  it('status pill says a managed model starts when needed', async () => {
+    mockFetch({ 'GET /api/health': standby })
+    render(<AppShell onSignOut={() => {}} />)
+    const pill = await screen.findByText('Local model 12B · starts when needed')
+    expect(pill.closest('[role="status"]')).toHaveAttribute('data-state', 'standby')
   })
 
   it('status pill says the server is unreachable when health cannot be fetched', async () => {

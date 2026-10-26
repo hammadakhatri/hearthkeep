@@ -738,6 +738,7 @@ def test_health_reports_model_reachability(harness):
         "status": "ok",
         "chat_model": "gemma-4-12b",
         "chat_model_reachable": False,
+        "chat_model_state": "offline",
     }
 
     async def broken():

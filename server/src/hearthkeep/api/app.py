@@ -230,47 +230,51 @@ def create_app(
         # The connection is opened on the event loop's thread; every handler is async and
         # runs there, so it is only ever used from one thread.
         conn = db.connect(Path(settings.data_dir) / DB_FILE)
-        recover_after_restart(conn)
-        approvals = ApprovalStore(
-            conn, settings.approval_ttl_minutes, clock, poll_interval=approval_poll_interval
-        )
-        gpu = await stack.build_gpu()
-        images = ImageStore(conn, settings.data_dir)
-        image_tool = stack.image_tool(gpu, images)
-        if image_tool is not None and registry.get(image_tool.name) is None:
-            registry.register(image_tool)
-        chat = stack.chat_client(chat_client, gpu)
-        loop = AgentLoop(chat, registry, approvals, conn, settings, secrets=secrets)
-        runner = TurnRunner(conn, loop)
-        sessions = SessionStore(conn, settings.session_idle_days, clock=clock)
-        app.state.hk = Services(
-            settings=settings,
-            conn=conn,
-            verifier=verifier,
-            registry=registry,
-            clock=clock,
-            challenges=ChallengeStore(clock=clock),
-            sessions=sessions,
-            step_up=StepUp(clock=clock),
-            codes=EnrollmentCodes(conn, clock=clock),
-            credentials=CredentialStore(conn, clock=clock),
-            approvals=approvals,
-            runner=runner,
-            limiter=rate_limiter or RateLimiter(),
-            health_check=check,
-            sse_keepalive=sse_keepalive,
-            gpu=gpu,
-            images=images,
-            cards=dict(stack.cards),
-            card_errors=list(stack.card_errors),
-            managed=stack.managed,
-            monotonic=monotonic,
-        )
+        runner: TurnRunner | None = None
         try:
+            recover_after_restart(conn)
+            approvals = ApprovalStore(
+                conn, settings.approval_ttl_minutes, clock, poll_interval=approval_poll_interval
+            )
+            gpu = await stack.build_gpu()
+            images = ImageStore(conn, settings.data_dir)
+            image_tool = stack.image_tool(gpu, images)
+            if image_tool is not None and registry.get(image_tool.name) is None:
+                registry.register(image_tool)
+            chat = stack.chat_client(chat_client, gpu)
+            loop = AgentLoop(chat, registry, approvals, conn, settings, secrets=secrets)
+            runner = TurnRunner(conn, loop)
+            sessions = SessionStore(conn, settings.session_idle_days, clock=clock)
+            app.state.hk = Services(
+                settings=settings,
+                conn=conn,
+                verifier=verifier,
+                registry=registry,
+                clock=clock,
+                challenges=ChallengeStore(clock=clock),
+                sessions=sessions,
+                step_up=StepUp(clock=clock),
+                codes=EnrollmentCodes(conn, clock=clock),
+                credentials=CredentialStore(conn, clock=clock),
+                approvals=approvals,
+                runner=runner,
+                limiter=rate_limiter or RateLimiter(),
+                health_check=check,
+                sse_keepalive=sse_keepalive,
+                gpu=gpu,
+                images=images,
+                cards=dict(stack.cards),
+                card_errors=list(stack.card_errors),
+                managed=stack.managed,
+                chat_model_id=stack.chat_model_id,
+                monotonic=monotonic,
+            )
             yield
         finally:
+            # Also runs when setup above fails part way: the connection is always closed.
             try:
-                await runner.shutdown()
+                if runner is not None:
+                    await runner.shutdown()
             finally:
                 # After the runner: no turn can still be holding a lease on a model server.
                 await stack.stop()
@@ -290,7 +294,7 @@ def create_app(
         return {
             "status": "ok",
             "chat_model": settings.chat_model,
-            "chat_model_reachable": await services(request).chat_model_reachable(),
+            **await services(request).chat_model_status(),
         }
 
     for module in (

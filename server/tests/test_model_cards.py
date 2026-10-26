@@ -147,7 +147,15 @@ def test_workflows_have_placeholders(tmp_path, card_id):
     graph = load_workflow(cards[card_id])
     text = json.dumps(graph)
     for name in (
-        "prompt", "width", "height", "seed", "steps", "prefix", "unet", "text_encoder", "vae"
+        "prompt",
+        "width",
+        "height",
+        "seed",
+        "steps",
+        "prefix",
+        "unet",
+        "text_encoder",
+        "vae",
     ):
         assert "{{" + name + "}}" in text, name
     assert ".safetensors" not in text
@@ -225,6 +233,8 @@ def test_unreadable_card_is_reported(tmp_path):
     cards, errors = load_cards(tmp_path)
     assert "good-one" in cards
     assert [e.id_or_file for e in errors] == ["dir.toml"]
+    assert errors[0].message.startswith("cannot read card: ")
+    assert str(tmp_path) not in errors[0].message and "dir.toml" not in errors[0].message
 
 
 def test_card_rejects_placeholder_for_missing_file(tmp_path):
@@ -328,7 +338,10 @@ def test_zimage_workflow_structure(tmp_path):
     assert g["11"]["inputs"]["shift"] == 3
     ks = g["3"]["inputs"]
     assert (ks["cfg"], ks["sampler_name"], ks["scheduler"], ks["denoise"]) == (
-        1, "res_multistep", "simple", 1
+        1,
+        "res_multistep",
+        "simple",
+        1,
     )
     assert g["30"]["inputs"]["type"] == "lumina2"
 

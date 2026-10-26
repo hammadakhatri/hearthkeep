@@ -125,6 +125,7 @@ class Services:
     cards: dict[str, ModelCard] = field(default_factory=dict)
     card_errors: list[CardError] = field(default_factory=list)
     managed: frozenset[str] = frozenset()  # card ids the GPU scheduler runs
+    chat_model_id: str | None = None  # set when Hearthkeep runs the chat model itself
     monotonic: Callable[[], float] = time.monotonic
     health_cache: tuple[float, bool] | None = None
     health_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -142,6 +143,23 @@ class Services:
                 reachable = False
             self.health_cache = (self.monotonic(), reachable)
             return reachable
+
+    async def chat_model_status(self) -> dict:
+        """`chat_model_reachable` and `chat_model_state` for /api/health. A chat model
+        Hearthkeep runs itself is never "offline" just because it hasn't started yet: it is
+        "ready" once loaded and "starts_on_first_use" before. An external chat server keeps the
+        Phase 1 probe: "ready" or "offline"."""
+        if self.chat_model_id is not None:
+            loaded = self.chat_model_id in self.gpu.resident()
+            return {
+                "chat_model_reachable": True,
+                "chat_model_state": "ready" if loaded else "starts_on_first_use",
+            }
+        reachable = await self.chat_model_reachable()
+        return {
+            "chat_model_reachable": reachable,
+            "chat_model_state": "ready" if reachable else "offline",
+        }
 
     @property
     def docker_available(self) -> bool:

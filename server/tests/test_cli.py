@@ -210,3 +210,41 @@ def test_serve_lists_card_problems_without_paths(serve, capsys):
     assert "Card problems: 1." in out
     assert "Card problem in broken.toml: missing required field name" in out
     assert [e.id_or_file for e in serve.hk.card_errors] == ["broken.toml"]
+
+
+def test_unreadable_card_path_not_in_startup_line_or_api(serve, capsys):
+    # /api/models returns these same CardError objects (see test_api_models_images).
+    folder = serve.data / "models" / "cards" / "unreadable.toml"
+    folder.mkdir(parents=True)  # a folder named like a card: reading it fails with OSError
+    assert serve() == 0
+    out = capsys.readouterr().out
+    assert "Card problem in unreadable.toml: cannot read card: " in out
+    # No path in any spelling (str(OSError) on Windows doubles the backslashes).
+    line = next(x for x in out.splitlines() if x.startswith("Card problem in"))
+    assert "\\" not in line and "/" not in line and serve.data.parent.name not in out
+    [error] = serve.hk.card_errors
+    assert "\\" not in error.message and serve.data.parent.name not in error.message
+
+
+def test_health_owned_chat_model_starts_on_first_use(serve, tmp_path, monkeypatch):
+    write(serve.data, "models.toml", owned_models_toml(tmp_path))
+    seen = []
+
+    def run_server(app, host, port):
+        with TestClient(app, base_url=ORIGIN) as client:
+            seen.append(client.get("/api/health").json())
+            gpu = app.state.hk.gpu
+
+            async def use_chat():
+                async with gpu.lease("gemma-4-12b"):
+                    pass
+
+            client.portal.call(use_chat)
+            seen.append(client.get("/api/health").json())
+
+    monkeypatch.setattr(cli, "run_server", run_server)
+    assert serve(vram=16.0) == 0
+    assert seen[0]["chat_model_reachable"] is True
+    assert seen[0]["chat_model_state"] == "starts_on_first_use"
+    assert seen[0]["chat_model"] == "gemma-4-12b"
+    assert seen[1]["chat_model_state"] == "ready"

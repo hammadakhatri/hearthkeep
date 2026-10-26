@@ -200,7 +200,9 @@ def _load_dir(
             if card.id in seen:
                 raise _Invalid(f"duplicate card id {card.id!r} in the same folder")
         except OSError as exc:
-            errors.append(CardError(path.name, f"cannot read card: {exc}"))
+            # Only the reason, never str(exc): that would carry the card's full path.
+            reason = exc.strerror or type(exc).__name__
+            errors.append(CardError(path.name, f"cannot read card: {reason}"))
         except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
             errors.append(CardError(path.name, f"not valid TOML: {exc}"))
         except _Invalid as exc:

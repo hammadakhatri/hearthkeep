@@ -177,6 +177,11 @@
   box-shadow: 0 0 10px var(--green);
 }
 
+.status[data-state='standby'] .dot {
+  background: var(--green);
+  opacity: 0.55;
+}
+
 .status[data-state='offline'] .dot {
   background: var(--amber);
   box-shadow: 0 0 10px var(--amber);

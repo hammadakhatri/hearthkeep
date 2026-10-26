@@ -12,7 +12,7 @@ type Props = {
 }
 
 function modelName(health: HealthState): string | null {
-  return health.state === 'online' || health.state === 'offline' ? health.model : null
+  return 'model' in health ? health.model : null
 }
 
 export function AppShell({ initialView = DEFAULT_VIEW, onSignOut }: Props) {

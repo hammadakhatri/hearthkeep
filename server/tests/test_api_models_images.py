@@ -1,5 +1,7 @@
 """/api/models and /api/images, and the model stack wired into the app."""
 
+import sqlite3
+
 import pytest
 from fakes import FakeBackend, FakeChatClient, FakeVerifier, card
 from fastapi.testclient import TestClient
@@ -240,3 +242,68 @@ def test_image_file_requires_session(start, tmp_path):
     image_id = _save_images(tmp_path, 1)[0][0]
     response = client.get(f"/api/images/{image_id}/file")
     assert response.status_code == 401 and response.json() == {"reason": "unauthenticated"}
+
+
+def test_image_file_vanished_after_lookup_is_404(start, tmp_path, monkeypatch):
+    client = start()
+    image_id = _save_images(tmp_path, 1)[0][0]
+    store = client.app.state.hk.images
+    monkeypatch.setattr(store, "path", lambda _id: tmp_path / "gone.png")
+    response = client.get(f"/api/images/{image_id}/file")
+    assert response.status_code == 404 and response.json() == {"reason": "not_found"}
+
+
+def test_health_external_and_owned_states(start):
+    external = start(_stack(chat_model_id=None), sign_in=False).get("/api/health").json()
+    assert external["chat_model_reachable"] is True and external["chat_model_state"] == "ready"
+    owned = start(_stack(), sign_in=False).get("/api/health").json()
+    assert owned["chat_model_reachable"] is True
+    assert owned["chat_model_state"] == "starts_on_first_use"
+
+
+class _BrokenStack(ModelStack):
+    def image_tool(self, gpu, store):
+        raise RuntimeError("setup failed")
+
+
+def test_lifespan_closes_connection_when_model_setup_fails(tmp_path, monkeypatch):
+    import hearthkeep.api.app as app_module
+
+    opened = []
+    real_connect = app_module.db.connect
+
+    def connect_and_keep(path):
+        conn = real_connect(path)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(app_module.db, "connect", connect_and_keep)
+    stopped: list = []
+    stack = _BrokenStack(**{**_stack().__dict__, "processes": [FakeProcess("ComfyUI", stopped)]})
+    app = create_app(
+        Settings(data_dir=tmp_path, docker_available=False),
+        verifier=FakeVerifier(),
+        chat_client=FakeChatClient([]),
+        registry=_registry(),
+        health_check=_healthy,
+        web_dist=None,
+        models=stack,
+    )
+    with pytest.raises(RuntimeError, match="setup failed"), TestClient(app, base_url=ORIGIN):
+        pass
+    [conn] = opened
+    with pytest.raises(sqlite3.ProgrammingError):
+        conn.execute("SELECT 1")
+    assert stopped == [("ComfyUI", 10.0)]
+
+
+def test_models_unreadable_card_error_has_no_path(start, tmp_path):
+    from hearthkeep.models.cards import load_cards
+
+    (tmp_path / "models" / "cards" / "unreadable.toml").mkdir(parents=True)
+    cards, errors = load_cards(tmp_path)
+    response = start(ModelStack(cards=cards, card_errors=errors)).get("/api/models")
+    [error] = response.json()["errors"]
+    assert error["id_or_file"] == "unreadable.toml"
+    assert error["message"].startswith("cannot read card: ")
+    assert tmp_path.name not in response.text and "\\\\" not in response.text

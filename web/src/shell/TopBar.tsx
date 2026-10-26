@@ -1,11 +1,18 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 
-type Health = { status: string; chat_model: string; chat_model_reachable: boolean }
+type Health = {
+  status: string
+  chat_model: string
+  chat_model_reachable: boolean
+  /** "starts_on_first_use": Hearthkeep runs the model itself and starts it when needed. */
+  chat_model_state?: 'ready' | 'offline' | 'starts_on_first_use'
+}
 
 export type HealthState =
   | { state: 'checking' }
   | { state: 'online'; model: string }
+  | { state: 'standby'; model: string }
   | { state: 'offline'; model: string }
   | { state: 'unreachable' }
 
@@ -21,7 +28,10 @@ export function useHealth(): HealthState {
       try {
         const h = await api<Health>('/api/health')
         if (alive) {
-          setHealth(h.chat_model_reachable ? { state: 'online', model: h.chat_model } : { state: 'offline', model: h.chat_model })
+          const model = h.chat_model
+          if (!h.chat_model_reachable) setHealth({ state: 'offline', model })
+          else if (h.chat_model_state === 'starts_on_first_use') setHealth({ state: 'standby', model })
+          else setHealth({ state: 'online', model })
         }
       } catch {
         if (alive) setHealth({ state: 'unreachable' })
@@ -54,6 +64,10 @@ function StatusPill({ health }: { health: HealthState }) {
     case 'online':
       text = health.model
       title = `Chat model ${health.model} is ready`
+      break
+    case 'standby':
+      text = `${health.model} · starts when needed`
+      title = `Hearthkeep starts ${health.model} when you send a message`
       break
     case 'offline':
       text = 'Chat model offline'

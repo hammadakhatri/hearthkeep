@@ -37,6 +37,14 @@ export const healthy = {
 export const unreachable = {
   body: { status: 'ok', chat_model: 'Local model 12B', chat_model_reachable: false },
 }
+export const standby = {
+  body: {
+    status: 'ok',
+    chat_model: 'Local model 12B',
+    chat_model_reachable: true,
+    chat_model_state: 'starts_on_first_use',
+  },
+}
 export const signedOut = { status: 401, body: { reason: 'unauthenticated' } }
 export const signedIn = {
   body: { device: { id: 'cred-1', device_name: 'Laptop', created_at: '2026-10-26T00:00:00Z', current: true } },
