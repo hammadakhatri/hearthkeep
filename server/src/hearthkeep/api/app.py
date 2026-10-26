@@ -26,6 +26,8 @@ from hearthkeep.api import (
     routes_audit,
     routes_auth,
     routes_chats,
+    routes_images,
+    routes_models,
     routes_settings,
 )
 from hearthkeep.api.common import (
@@ -43,6 +45,8 @@ from hearthkeep.auth.enrollment import EnrollmentCodes
 from hearthkeep.auth.sessions import SessionStore, StepUp
 from hearthkeep.auth.webauthn import ChallengeStore, Verifier
 from hearthkeep.config import LOOPBACK_HOSTS, Settings, detect_docker
+from hearthkeep.images import ImageStore
+from hearthkeep.runtime.stack import ModelStack
 from hearthkeep.secrets import SecretStore
 from hearthkeep.tools.base import ToolRegistry
 
@@ -214,10 +218,12 @@ def create_app(
     sse_keepalive: float = SSE_KEEPALIVE_SECONDS,
     approval_poll_interval: float = 0.5,
     monotonic: Callable[[], float] = time.monotonic,
+    models: ModelStack | None = None,
 ) -> FastAPI:
     if settings.docker_available is None:
         settings = dataclasses.replace(settings, docker_available=detect_docker())
     check = health_check or chat_model_health_check(settings)
+    stack = models or ModelStack()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -228,7 +234,13 @@ def create_app(
         approvals = ApprovalStore(
             conn, settings.approval_ttl_minutes, clock, poll_interval=approval_poll_interval
         )
-        loop = AgentLoop(chat_client, registry, approvals, conn, settings, secrets=secrets)
+        gpu = await stack.build_gpu()
+        images = ImageStore(conn, settings.data_dir)
+        image_tool = stack.image_tool(gpu, images)
+        if image_tool is not None and registry.get(image_tool.name) is None:
+            registry.register(image_tool)
+        chat = stack.chat_client(chat_client, gpu)
+        loop = AgentLoop(chat, registry, approvals, conn, settings, secrets=secrets)
         runner = TurnRunner(conn, loop)
         sessions = SessionStore(conn, settings.session_idle_days, clock=clock)
         app.state.hk = Services(
@@ -247,13 +259,22 @@ def create_app(
             limiter=rate_limiter or RateLimiter(),
             health_check=check,
             sse_keepalive=sse_keepalive,
+            gpu=gpu,
+            images=images,
+            cards=dict(stack.cards),
+            card_errors=list(stack.card_errors),
+            managed=stack.managed,
             monotonic=monotonic,
         )
         try:
             yield
         finally:
-            await runner.shutdown()
-            conn.close()
+            try:
+                await runner.shutdown()
+            finally:
+                # After the runner: no turn can still be holding a lease on a model server.
+                await stack.stop()
+                conn.close()
 
     app = FastAPI(
         title="Hearthkeep",
@@ -272,7 +293,15 @@ def create_app(
             "chat_model_reachable": await services(request).chat_model_reachable(),
         }
 
-    for module in (routes_auth, routes_chats, routes_approvals, routes_settings, routes_audit):
+    for module in (
+        routes_auth,
+        routes_chats,
+        routes_approvals,
+        routes_settings,
+        routes_audit,
+        routes_models,
+        routes_images,
+    ):
         app.include_router(module.router)
 
     if web_dist is not None and Path(web_dist).is_dir():

@@ -23,6 +23,9 @@ from hearthkeep.auth.enrollment import EnrollmentCodes
 from hearthkeep.auth.sessions import Session, SessionStore, StepUp, public_id
 from hearthkeep.auth.webauthn import ChallengeStore, Verifier
 from hearthkeep.config import LOOPBACK_HOSTS, Settings
+from hearthkeep.images import ImageStore
+from hearthkeep.models.cards import CardError, ModelCard
+from hearthkeep.runtime.gpu import GpuScheduler
 from hearthkeep.tools.base import ToolRegistry
 
 SESSION_COOKIE = "hk_session"
@@ -117,6 +120,11 @@ class Services:
     limiter: RateLimiter
     health_check: HealthCheck
     sse_keepalive: float
+    gpu: GpuScheduler
+    images: ImageStore
+    cards: dict[str, ModelCard] = field(default_factory=dict)
+    card_errors: list[CardError] = field(default_factory=list)
+    managed: frozenset[str] = frozenset()  # card ids the GPU scheduler runs
     monotonic: Callable[[], float] = time.monotonic
     health_cache: tuple[float, bool] | None = None
     health_lock: asyncio.Lock = field(default_factory=asyncio.Lock)

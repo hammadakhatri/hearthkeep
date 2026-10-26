@@ -25,6 +25,8 @@ uv run hearthkeep serve --data <data>
 
 On first run the data folder is created with a `config.toml` you can edit (model name, chat server address, port). If you change `port`, change `public_origin` to match (and `rp_id` if the host name changes). If your chat server needs a key, store it with `uv run hearthkeep secrets set chat_api_key --data <data>`.
 
+To let Hearthkeep run the models itself, copy `models.example.toml` to `<data>/models.toml` and fill in the paths for your machine: with `llama_server_exe` and a `model_dirs` entry for the chat model set, Hearthkeep starts llama-server on first use (with its own generated key) and stops it when Hearthkeep stops; with the three `comfyui_*` paths set, it starts ComfyUI for image generation the same way. Without `models.toml`, Hearthkeep uses the chat server already running at `chat_base_url` and image generation stays off. On start the server prints the model cards it loaded and any card problems.
+
 The server prints a one-time enrollment code. Open `http://localhost:8765`, enter the code within 15 minutes and create your first passkey. Lost the code? Run `uv run hearthkeep enroll-code --data <data>`. Add a second device before removing the first: the last device cannot be removed.
 
 `--insecure-dev-auth` is for development only; see the security notes before using it.

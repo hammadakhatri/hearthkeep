@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import getpass
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -13,9 +15,21 @@ from hearthkeep.api.app import DB_FILE
 from hearthkeep.api.common import ENROLLMENT_CODE_TTL_MINUTES
 from hearthkeep.auth.enrollment import EnrollmentCodes, EnrollmentError, first_device_allowed
 from hearthkeep.config import ConfigError, Settings, init_data_dir, load_settings
+from hearthkeep.providers.chat import OpenAIChatClient
+from hearthkeep.runtime.gpu import detect_vram_gb
+from hearthkeep.runtime.supervisor import (
+    API_KEY_FILE,
+    LOOPBACK,
+    ProcessError,
+    build_comfyui_process,
+    build_llama_process,
+    ensure_chat_api_key,
+)
 from hearthkeep.secrets import SecretStore, SecretStoreError
 
 if TYPE_CHECKING:
+    from hearthkeep.models.cards import ModelCard
+    from hearthkeep.runtime.stack import ModelStack
     from hearthkeep.tools.images import GenerateImageTool
 
 EXIT_USAGE = 2
@@ -70,7 +84,155 @@ def run_server(app, host: str, port: int) -> None:  # replaced in tests
     )
 
 
-def cmd_serve(args: argparse.Namespace) -> int:
+def _alias(card: ModelCard) -> str:
+    """The model name llama-server answers to: the card's `--alias`, else its id."""
+    args = card.launch_args
+    for i, arg in enumerate(args):
+        if arg == "--alias" and i + 1 < len(args):
+            return args[i + 1]
+        if arg.startswith("--alias="):
+            return arg.split("=", 1)[1]
+    return card.id
+
+
+def _warn(message: str) -> None:
+    print(f"warning: {message}", file=sys.stderr)
+
+
+def build_model_stack(
+    settings: Settings,
+    secrets: SecretStore,
+    *,
+    make_llama: Callable = build_llama_process,
+    make_comfy: Callable = build_comfyui_process,
+    detect_vram: Callable[[], float | None] = detect_vram_gb,
+) -> tuple[ModelStack, OpenAIChatClient, Settings, list[str]]:
+    """The model stack, the chat client and the effective settings for `serve`, plus the
+    startup lines to print (names only, never paths). Nothing is started here: each model
+    server starts on its first lease.
+
+    Owned mode (models.toml sets llama_server_exe and model_dirs for the default chat card):
+    Hearthkeep runs llama-server itself and every chat stream leases the chat model. External
+    mode keeps Phase 1 behaviour: the chat server at chat_base_url is used as it is and stays
+    out of the GPU scheduler. ComfyUI is managed when its three paths are set and at least one
+    image card loaded.
+    """
+    from hearthkeep.models.cards import load_cards
+    from hearthkeep.models.runtime import load_runtime
+    from hearthkeep.providers.comfyui import ComfyUIClient
+    from hearthkeep.runtime.gpu import ComfyBackend, LlamaBackend
+    from hearthkeep.runtime.stack import ModelStack
+
+    data = Path(settings.data_dir)
+    rt = load_runtime(data)
+    cards, errors = load_cards(data)
+    managed: set[str] = set()
+    backends: dict = {}
+    processes: list = []
+
+    chat_card = cards.get(rt.default_chat_model)
+    owned = False
+    if rt.llama_server_exe is not None:
+        if chat_card is None or chat_card.kind != "chat":
+            _warn(
+                f"llama_server_exe is set but default_chat_model {rt.default_chat_model} has "
+                "no chat card; using the chat server at chat_base_url instead."
+            )
+        elif chat_card.id not in rt.model_dirs:
+            _warn(
+                f'llama_server_exe is set but model_dirs."{chat_card.id}" is not set in '
+                "<data>/models.toml; using the chat server at chat_base_url instead."
+            )
+        else:
+            owned = True
+
+    chat_model_id = None
+    if owned:
+        name = settings.chat_api_key_secret
+        key = ensure_chat_api_key(secrets, name)
+        process = make_llama(
+            chat_card,
+            rt,
+            data,
+            data / API_KEY_FILE,
+            api_key=lambda: ensure_chat_api_key(secrets, name),
+        )
+        base_url = f"http://{LOOPBACK}:{rt.llama_port}/v1"
+        if settings.chat_base_url.rstrip("/") != base_url:
+            _warn(
+                "chat_base_url in config.toml differs from the llama-server Hearthkeep runs "
+                f"(port {rt.llama_port} from models.toml); Hearthkeep uses its own server."
+            )
+        chat_client = OpenAIChatClient(base_url, key, _alias(chat_card))
+        settings = dataclasses.replace(settings, chat_base_url=base_url, chat_model=chat_card.id)
+        backends["llama_server"] = LlamaBackend(lambda card: process)
+        processes.append(process)
+        managed.add(chat_card.id)
+        chat_model_id = chat_card.id
+    else:
+        api_key = secrets.get(settings.chat_api_key_secret) or ""
+        chat_client = OpenAIChatClient(settings.chat_base_url, api_key, settings.chat_model)
+
+    comfy = None
+    image_ids = {c.id for c in cards.values() if c.kind == "image"}
+    if all((rt.comfyui_python, rt.comfyui_main, rt.comfyui_model_root)) and image_ids:
+        comfy_process = make_comfy(rt, data)
+        comfy = ComfyUIClient(f"http://{LOOPBACK}:{rt.comfyui_port}")
+        backends["comfyui"] = ComfyBackend(comfy_process, comfy.free)
+        processes.append(comfy_process)
+        managed |= image_ids
+
+    def describe(card: ModelCard) -> str:
+        if card.id in managed:
+            return f"{card.id} ({card.kind}, managed)"
+        if card.kind == "chat" and not owned and card.id == settings.chat_model:
+            return f"{card.id} (chat, external server)"
+        return f"{card.id} ({card.kind})"
+
+    listed = ", ".join(describe(c) for c in cards.values()) or "none"
+    lines = [f"Models: {listed}. Card problems: {len(errors)}."]
+    lines += [f"Card problem in {e.id_or_file}: {e.message}" for e in errors]
+    if owned:
+        lines.append(
+            f"Chat: Hearthkeep runs {chat_card.id} with llama-server on {LOOPBACK}:"
+            f"{rt.llama_port}, started on first use."
+        )
+    else:
+        lines.append(
+            "Chat: using the chat server at chat_base_url (external: Hearthkeep does not start "
+            "or schedule it; set llama_server_exe in <data>/models.toml to let it)."
+        )
+    if comfy is not None:
+        scope = "" if owned else " Image models only make room for each other on the GPU."
+        lines.append(
+            f"Images: ComfyUI on {LOOPBACK}:{rt.comfyui_port}, started on first use.{scope}"
+        )
+    else:
+        lines.append("Images: not set up (set the comfyui_* paths in <data>/models.toml).")
+
+    stack = ModelStack(
+        cards=cards,
+        card_errors=errors,
+        managed=frozenset(managed),
+        backends=backends,
+        processes=processes,
+        chat_model_id=chat_model_id,
+        comfy=comfy,
+        default_image_model=rt.default_image_model,
+        gpu_vram_gb=rt.gpu_vram_gb,
+        detect_vram=detect_vram,
+    )
+    return stack, chat_client, settings, lines
+
+
+def cmd_serve(
+    args: argparse.Namespace,
+    *,
+    make_llama: Callable = build_llama_process,
+    make_comfy: Callable = build_comfyui_process,
+    detect_vram: Callable[[], float | None] = detect_vram_gb,
+) -> int:
+    """`make_llama`, `make_comfy` and `detect_vram` are seams for tests."""
     from hearthkeep.api.app import create_app
     from hearthkeep.auth.insecure_dev import (
         WARNING,
@@ -79,7 +241,6 @@ def cmd_serve(args: argparse.Namespace) -> int:
         check_allowed,
     )
     from hearthkeep.auth.webauthn import PyWebAuthnVerifier
-    from hearthkeep.providers.chat import OpenAIChatClient
 
     settings = _settings(Path(args.data))
     if args.insecure_dev_auth:
@@ -97,8 +258,15 @@ def cmd_serve(args: argparse.Namespace) -> int:
         verifier = PyWebAuthnVerifier(settings)
 
     secrets = SecretStore(settings.data_dir)
-    api_key = secrets.get(settings.chat_api_key_secret) or ""
-    chat_client = OpenAIChatClient(settings.chat_base_url, api_key, settings.chat_model)
+    try:
+        stack, chat_client, settings, lines = build_model_stack(
+            settings, secrets, make_llama=make_llama, make_comfy=make_comfy,
+            detect_vram=detect_vram,
+        )  # fmt: skip
+    except ProcessError as exc:
+        print(f"error: {exc.user_message}", file=sys.stderr)
+        return EXIT_USAGE
+    print("\n".join(lines))
 
     conn = _connect(settings)
     try:
@@ -111,10 +279,12 @@ def cmd_serve(args: argparse.Namespace) -> int:
         settings,
         verifier=verifier,
         chat_client=chat_client,
-        registry=build_registry(),
+        registry=build_registry(),  # the image tool is added at startup when it can be built
         secrets=secrets,
+        models=stack,
     )
-    # Never bind anything but the loopback interface.
+    # Never bind anything but the loopback interface. On Ctrl+C uvicorn runs the app's
+    # shutdown, which stops every model server Hearthkeep started.
     host = "127.0.0.1" if settings.host == "localhost" else settings.host
     run_server(app, host, settings.port)
     return 0
