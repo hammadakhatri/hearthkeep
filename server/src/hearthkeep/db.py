@@ -89,12 +89,37 @@ MIGRATIONS: dict[int, str] = {
         detail TEXT
     );
     """,
+    2: """
+    CREATE TABLE IF NOT EXISTS images (
+        id TEXT PRIMARY KEY,
+        chat_id TEXT,
+        turn_id TEXT,
+        model_id TEXT,
+        prompt TEXT,
+        width INT,
+        height INT,
+        seed INT,
+        file_name TEXT,
+        created_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS uploads (
+        id TEXT PRIMARY KEY,
+        file_name TEXT,
+        mime TEXT,
+        width INT,
+        height INT,
+        created_at TEXT
+    );
+    """,
 }
 
 
 def utcnow() -> str:
-    """Current time as a UTC ISO-8601 string."""
-    return datetime.now(UTC).isoformat()
+    """Current time as a UTC ISO-8601 string with fixed microsecond precision.
+
+    Earlier rows may hold timestamps without microseconds; they stay valid and are not rewritten.
+    """
+    return datetime.now(UTC).isoformat(timespec="microseconds")
 
 
 def _migrate(conn: sqlite3.Connection) -> None:

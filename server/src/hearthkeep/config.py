@@ -11,7 +11,15 @@ from urllib.parse import urlparse
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 EXAMPLE_CONFIG = Path(__file__).with_name("config.example.toml")
-DATA_SUBDIRS = ("secrets", "workspace/output", "workspace/repos", "logs", "private")
+DATA_SUBDIRS = (
+    "secrets",
+    "workspace/output",
+    "workspace/output/images",
+    "workspace/uploads",
+    "workspace/repos",
+    "logs",
+    "private",
+)
 
 
 class ConfigError(Exception):

@@ -92,6 +92,8 @@ def test_init_creates_structure(tmp_path):
     init_data_dir(tmp_path)
     assert (tmp_path / "workspace" / "output").is_dir()
     assert (tmp_path / "workspace" / "repos").is_dir()
+    assert (tmp_path / "workspace" / "output" / "images").is_dir()
+    assert (tmp_path / "workspace" / "uploads").is_dir()
     for name in ("secrets", "logs", "private"):
         assert (tmp_path / name).is_dir()
     assert (tmp_path / "config.toml").exists()
