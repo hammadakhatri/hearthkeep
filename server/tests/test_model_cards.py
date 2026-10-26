@@ -48,7 +48,9 @@ def test_shipped_cards_load(tmp_path):
     assert "--api-key-file" in gemma.launch_args and "{api_key_file}" in gemma.launch_args
     assert zimage.default_steps == 8 and flux.default_steps == 4
     assert zimage.workflow == "z-image-turbo.json" and flux.workflow == "flux2-klein-4b.json"
-    assert flux.capabilities == ("photoreal",) and flux.edit_workflow is None
+    assert flux.capabilities == ("photoreal", "image-edit")
+    assert flux.edit_workflow == "flux2-klein-4b-edit.json"
+    assert zimage.edit_workflow is None
     assert zimage.capabilities == ("text-in-image", "photoreal")
     assert zimage.prefer_when and zimage.guidance
     assert all(c.source == "shipped" for c in cards.values())
@@ -136,7 +138,7 @@ def test_load_workflow_returns_copy(tmp_path):
 def test_load_workflow_errors(tmp_path):
     cards, _ = load_cards(tmp_path)
     with pytest.raises(ValueError):
-        load_workflow(cards["flux2-klein-4b"], edit=True)
+        load_workflow(cards["z-image-turbo"], edit=True)
     with pytest.raises(ValueError):
         load_workflow(cards["gemma-4-12b"])
 
@@ -357,3 +359,51 @@ def test_flux_workflow_structure(tmp_path):
     assert g["63"]["inputs"]["cfg"] == 1.0
     assert g["61"]["inputs"]["sampler_name"] == "euler"
     assert g["71"]["inputs"]["type"] == "flux2"
+
+
+def test_shipped_flux_edit_workflow_is_validated_on_load(tmp_path, monkeypatch):
+    import hearthkeep.models.cards as cards_module
+
+    cards, errors = load_cards(tmp_path)
+    assert errors == [] and cards["flux2-klein-4b"].edit_workflow == "flux2-klein-4b-edit.json"
+    # The shipped card names the edit graph, so loading fails when only that file is missing.
+    only_generate = tmp_path / "workflows"
+    only_generate.mkdir()
+    for name in ("flux2-klein-4b.json", "z-image-turbo.json"):
+        (only_generate / name).write_bytes((cards_module.WORKFLOWS_DIR / name).read_bytes())
+    monkeypatch.setattr(cards_module, "WORKFLOWS_DIR", only_generate)
+    cards, errors = load_cards(tmp_path)
+    assert "flux2-klein-4b" not in cards and "z-image-turbo" in cards
+    assert [(e.id_or_file, e.message) for e in errors] == [
+        (
+            "flux2-klein-4b.toml",
+            "edit_workflow 'flux2-klein-4b-edit.json' does not exist in the shipped workflows",
+        )
+    ]
+
+
+def test_flux_edit_workflow_structure(tmp_path):
+    g = load_workflow(load_cards(tmp_path)[0]["flux2-klein-4b"], edit=True)
+    assert _shape(g) == {
+        "70": "UNETLoader", "71": "CLIPLoader", "72": "VAELoader", "76": "LoadImage",
+        "80": "ImageScaleToTotalPixels", "74": "CLIPTextEncode", "82": "ConditioningZeroOut",
+        "122": "VAEEncode", "123": "ReferenceLatent", "121": "ReferenceLatent",
+        "63": "CFGGuider", "61": "KSamplerSelect", "62": "Flux2Scheduler",
+        "66": "EmptyFlux2LatentImage", "73": "RandomNoise", "64": "SamplerCustomAdvanced",
+        "65": "VAEDecode", "9": "SaveImage",
+    }  # fmt: skip
+    assert g["76"]["inputs"] == {"image": "{{input_image}}"}
+    assert g["80"]["inputs"]["image"] == ["76", 0]
+    assert g["122"]["inputs"] == {"pixels": ["80", 0], "vae": ["72", 0]}
+    assert g["63"]["inputs"]["positive"] == ["123", 0]
+    assert g["63"]["inputs"]["negative"] == ["121", 0]
+    assert g["63"]["inputs"]["cfg"] == 1.0
+    # The output size comes from the call, like the text-to-image graph.
+    assert g["62"]["inputs"] == {"steps": "{{steps}}", "width": "{{width}}", "height": "{{height}}"}
+    assert g["66"]["inputs"] == {"width": "{{width}}", "height": "{{height}}", "batch_size": 1}
+    assert g["73"]["inputs"]["noise_seed"] == "{{seed}}"
+    assert g["9"]["inputs"]["filename_prefix"] == "{{prefix}}"
+    text = json.dumps(g)
+    for name in ("prompt", "unet", "text_encoder", "vae"):
+        assert "{{" + name + "}}" in text, name
+    assert ".safetensors" not in text and ".png" not in text and "http" not in text

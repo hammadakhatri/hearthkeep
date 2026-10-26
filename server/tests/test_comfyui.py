@@ -288,6 +288,8 @@ def test_fill_workflow_fills_shipped_workflows():
             "steps",
             "prefix",
         }
+        if path.stem.endswith("-edit"):
+            keys.add("input_image")
         fill_workflow(graph, dict.fromkeys(keys, 1))  # raises KeyError if a placeholder is unknown
 
 
@@ -340,3 +342,25 @@ async def test_free_posts_unload_flags():
     req = fake.requests[0]
     assert (req.method, req.url.path) == ("POST", "/free")
     assert json.loads(req.content) == {"unload_models": True, "free_memory": True}
+
+
+@pytest.mark.parametrize(
+    ("data", "mime"),
+    [
+        (PNG, "image/png"),
+        (bytes([0xFF, 0xD8, 0xFF, 0xE0]) + b"jpeg-body", "image/jpeg"),
+        (b"RIFF\x10\x00\x00\x00WEBPVP8X" + b"webp-body", "image/webp"),
+    ],
+)
+async def test_upload_sends_png_jpeg_and_webp_with_their_type(data, mime):
+    fake = Fake([{}])
+    await fake.client().upload(data, "hk-photo.img")
+    body = fake.requests[0].content
+    assert f"Content-Type: {mime}".encode() in body and data in body
+
+
+async def test_upload_rejects_other_bytes():
+    fake = Fake([{}])
+    with pytest.raises(ValueError):
+        await fake.client().upload(b"GIF89a-not-allowed", "hk-photo.gif")
+    assert fake.requests == []

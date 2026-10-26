@@ -1,10 +1,11 @@
-"""Generated image records and the images folder."""
+"""Generated image records and the images folder, and the owner's uploaded photos."""
 
 from __future__ import annotations
 
 import contextlib
 import os
 import sqlite3
+import struct
 from dataclasses import dataclass
 from pathlib import Path
 from secrets import token_urlsafe
@@ -19,6 +20,11 @@ ASPECTS: dict[str, tuple[int, int]] = {
 }
 MIN_SIDE, MAX_SIDE, STEP = 512, 2048, 16
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+JPEG_SIGNATURE = b"\xff\xd8\xff"
+VP8_START_CODE = b"\x9d\x01\x2a"
+MAX_UPLOAD_BYTES = 15 * 1024 * 1024
+MAX_UPLOAD_SIDE = 4096
+UPLOAD_EXTENSIONS = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
 
 
 def validate_size(width: int, height: int) -> None:
@@ -30,6 +36,102 @@ def validate_size(width: int, height: int) -> None:
             raise ValueError(
                 f"{name} {value} must be a multiple of {STEP} between {MIN_SIDE} and {MAX_SIDE}"
             )
+
+
+@dataclass(frozen=True)
+class ImageInfo:
+    mime: str
+    ext: str
+    width: int
+    height: int
+
+
+def image_type(data: bytes) -> str | None:
+    """The type ("image/png", "image/jpeg" or "image/webp") from the first bytes, else None."""
+    if data.startswith(PNG_SIGNATURE):
+        return "image/png"
+    if data.startswith(JPEG_SIGNATURE):
+        return "image/jpeg"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _png_size(data: bytes) -> tuple[int, int] | None:
+    if len(data) < 24 or data[12:16] != b"IHDR":
+        return None
+    return struct.unpack(">II", data[16:24])
+
+
+# Start-of-frame markers carry the size; C4 (huffman), C8 (reserved) and CC (arithmetic) don't.
+_JPEG_SOF = frozenset(range(0xC0, 0xD0)) - {0xC4, 0xC8, 0xCC}
+_JPEG_NO_LENGTH = frozenset({0x01, *range(0xD0, 0xD8)})
+
+
+def _jpeg_size(data: bytes) -> tuple[int, int] | None:
+    i = 2
+    while i + 4 <= len(data):
+        if data[i] != 0xFF:
+            return None
+        marker = data[i + 1]
+        if marker == 0xFF:  # fill byte
+            i += 1
+            continue
+        if marker in _JPEG_NO_LENGTH:
+            i += 2
+            continue
+        if marker in (0xD9, 0xDA):  # end of image or start of scan before any frame header
+            return None
+        (length,) = struct.unpack(">H", data[i + 2 : i + 4])
+        if length < 2:
+            return None
+        if marker in _JPEG_SOF:
+            if i + 9 > len(data):
+                return None
+            height, width = struct.unpack(">HH", data[i + 5 : i + 9])
+            return width, height
+        i += 2 + length
+    return None
+
+
+def _webp_size(data: bytes) -> tuple[int, int] | None:
+    kind, body = data[12:16], data[20:]
+    if kind == b"VP8X" and len(body) >= 10:
+        width = int.from_bytes(body[4:7], "little") + 1
+        height = int.from_bytes(body[7:10], "little") + 1
+        return width, height
+    if kind == b"VP8L" and len(body) >= 5 and body[0] == 0x2F:
+        (bits,) = struct.unpack("<I", body[1:5])
+        return (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
+    if kind == b"VP8 " and len(body) >= 10 and body[3:6] == VP8_START_CODE:
+        width, height = struct.unpack("<HH", body[6:10])
+        return width & 0x3FFF, height & 0x3FFF
+    return None
+
+
+def image_info(data: bytes) -> ImageInfo | None:
+    """Type and size of a PNG, JPEG or WebP, read from its headers only (nothing is decoded).
+    None for any other type, or for a file whose headers can't be read."""
+    mime = image_type(data)
+    if mime is None:
+        return None
+    reader = {"image/png": _png_size, "image/jpeg": _jpeg_size, "image/webp": _webp_size}[mime]
+    try:
+        size = reader(data)
+    except struct.error:
+        return None
+    if size is None or size[0] < 1 or size[1] < 1:
+        return None
+    return ImageInfo(mime, UPLOAD_EXTENSIONS[mime], size[0], size[1])
+
+
+@dataclass
+class UploadRecord:
+    id: str
+    mime: str
+    width: int
+    height: int
+    created_at: str
 
 
 @dataclass
@@ -57,6 +159,8 @@ class ImageStore:
         self._conn = conn
         self._dir = Path(data_dir) / "workspace" / "output" / "images"
         self._dir.mkdir(parents=True, exist_ok=True)
+        self._uploads = Path(data_dir) / "workspace" / "uploads"
+        self._uploads.mkdir(parents=True, exist_ok=True)
 
     def save(
         self,
@@ -121,9 +225,58 @@ class ImageStore:
         row = self._conn.execute(
             "SELECT file_name FROM images WHERE id = ?", (image_id,)
         ).fetchone()
-        if not row:
-            return None
-        candidate = (self._dir / row["file_name"]).resolve()
-        if candidate.parent != self._dir.resolve() or not candidate.is_file():
-            return None
-        return candidate
+        return _inside(self._dir, row["file_name"]) if row else None
+
+    # ---- the owner's photos ----
+
+    def save_upload(
+        self, data: bytes, *, mime: str, ext: str, width: int, height: int
+    ) -> UploadRecord:
+        """Store an uploaded photo under a new random id. The caller has checked its type and
+        size; the file name is built from the id and the detected type only."""
+        if UPLOAD_EXTENSIONS.get(mime) != ext:
+            raise ValueError("unsupported upload type")
+        upload_id = token_urlsafe(12)
+        file_name = f"{upload_id}.{ext}"
+        final = self._uploads / file_name
+        tmp = self._uploads / f"{file_name}.tmp"
+        record = UploadRecord(upload_id, mime, width, height, db.utcnow())
+        placed = False
+        try:
+            with db.transaction(self._conn):
+                self._conn.execute(
+                    "INSERT INTO uploads (id, file_name, mime, width, height, created_at) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (upload_id, file_name, mime, width, height, record.created_at),
+                )
+                tmp.write_bytes(data)
+                os.replace(tmp, final)
+                placed = True
+        except BaseException:
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
+            if placed:
+                with contextlib.suppress(OSError):
+                    final.unlink(missing_ok=True)
+            raise
+        return record
+
+    def get_upload(self, upload_id: str) -> UploadRecord | None:
+        row = self._conn.execute(
+            "SELECT id, mime, width, height, created_at FROM uploads WHERE id = ?", (upload_id,)
+        ).fetchone()
+        return UploadRecord(**dict(row)) if row else None
+
+    def upload_path(self, upload_id: str) -> Path | None:
+        """The photo's file, only ever inside the uploads folder; None if unknown or gone."""
+        row = self._conn.execute(
+            "SELECT file_name FROM uploads WHERE id = ?", (upload_id,)
+        ).fetchone()
+        return _inside(self._uploads, row["file_name"]) if row else None
+
+
+def _inside(folder: Path, file_name: str) -> Path | None:
+    candidate = (folder / file_name).resolve()
+    if candidate.parent != folder.resolve() or not candidate.is_file():
+        return None
+    return candidate

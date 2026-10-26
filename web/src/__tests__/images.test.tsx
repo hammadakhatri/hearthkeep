@@ -1,7 +1,8 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { Chat } from '../views/Chat'
 import { IMAGES_CHAT_KEY, Images, composeMessage } from '../views/Images'
-import { bodyOf, mockFetch, type Reply } from '../test/fetch'
+import { bodyOf, headerOf, mockFetch, type Reply } from '../test/fetch'
 import { emit, FakeEventSource, installEventSource, lastSource } from '../test/eventsource'
 
 const PAGE = '/api/images?limit=24'
@@ -11,7 +12,7 @@ const models = {
     models: [
       { id: 'gemma', name: 'Local model 12B', kind: 'chat', capabilities: [], vram_gb: 9, source: 'card', resident: true, managed: true },
       { id: 'zimage', name: 'Z-Image Turbo', kind: 'image', capabilities: ['text'], vram_gb: 12, source: 'card', resident: false, managed: false },
-      { id: 'flux', name: 'FLUX klein', kind: 'image', capabilities: ['edit'], vram_gb: 10, source: 'card', resident: false, managed: false },
+      { id: 'flux', name: 'FLUX klein', kind: 'image', capabilities: ['photoreal', 'image-edit'], vram_gb: 10, source: 'card', resident: false, managed: false },
     ],
     errors: [],
     gpu: { resident: ['gemma'] },
@@ -265,5 +266,185 @@ describe('Images', () => {
     expect(writeText).toHaveBeenCalledWith('A prompt for image 1')
     expect(within(viewer).getByRole('status')).toHaveTextContent('Copied')
     delete (navigator as { clipboard?: unknown }).clipboard
+  })
+})
+
+
+// ---- the owner's own photo -------------------------------------------------------------------
+
+const photo = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'me.png', { type: 'image/png' })
+const chatC1 = { id: 'c1', title: '', think: false, created_at: '2026-10-26T10:00:00Z', active_turn: null }
+
+function fileInput(): HTMLInputElement {
+  return document.querySelector<HTMLInputElement>('input[type="file"]')!
+}
+
+function pickPhoto(file: File = photo) {
+  fireEvent.change(fileInput(), { target: { files: [file] } })
+}
+
+function userMessage(id: number, content: string) {
+  return { id, role: 'user', content, tool_calls: null, tool_call_id: null, created_at: '2026-10-26T10:00:00Z' }
+}
+
+describe('photos', () => {
+  it('chat attaches a photo and shows it in the bubble', async () => {
+    const { calls } = mockFetch({
+      'GET /api/chats': { body: [] },
+      'POST /api/chats': { status: 201, body: chatC1 },
+      'POST /api/uploads': { status: 201, body: { id: 'up1' } },
+      'POST /api/chats/c1/messages': { status: 202, body: { turn_id: 't1' } },
+    })
+    render(<Chat model="Local model 12B" />)
+    const clip = await screen.findByRole('button', { name: 'Attach a photo' })
+    expect(clip).toBeEnabled()
+    expect(fileInput()).toHaveAttribute('accept', 'image/png,image/jpeg,image/webp')
+    expect(fileInput().multiple).toBe(false)
+
+    // Uploaded as soon as it is picked, then shown as a pending chip that is announced.
+    pickPhoto()
+    const chip = await screen.findByRole('status', { name: 'Photo attached' })
+    expect(within(chip).getByRole('img', { name: 'Your photo' })).toHaveAttribute('src', '/api/uploads/up1/file')
+    const upload = calls.find((c) => c.path === '/api/uploads')!
+    expect(upload.init.method).toBe('POST')
+    expect(headerOf(upload, 'X-Hearthkeep')).toBe('1')
+    expect(upload.init.body).toBeInstanceOf(FormData)
+    expect((upload.init.body as FormData).get('file')).toBe(photo)
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Message Hearthkeep' }), {
+      target: { value: 'Make me look like a painting' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1))
+    const message = calls.find((c) => c.path === '/api/chats/c1/messages')!
+    expect(bodyOf(message)).toEqual({ text: 'Make me look like a painting\nAttached photo: up1' })
+
+    // The bubble shows the photo and the words, never the attachment line itself.
+    const bubble = document.querySelector('.me') as HTMLElement
+    expect(bubble).toHaveTextContent('Make me look like a painting')
+    expect(bubble).not.toHaveTextContent('Attached photo')
+    expect(within(bubble).getByRole('img', { name: 'Your photo' })).toHaveAttribute('src', '/api/uploads/up1/file')
+    // One photo per message: the chip is gone once it is sent.
+    expect(screen.queryByRole('status', { name: 'Photo attached' })).toBeNull()
+  })
+
+  it('chat sends a photo with no words, and Remove drops it', async () => {
+    const { calls } = mockFetch({
+      'GET /api/chats': { body: [] },
+      'POST /api/chats': { status: 201, body: chatC1 },
+      'POST /api/uploads': { status: 201, body: { id: 'up2' } },
+      'POST /api/chats/c1/messages': { status: 202, body: { turn_id: 't1' } },
+    })
+    render(<Chat model="Local model 12B" />)
+    await screen.findByRole('button', { name: 'Attach a photo' })
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+
+    pickPhoto()
+    await screen.findByRole('status', { name: 'Photo attached' })
+    fireEvent.click(screen.getByRole('button', { name: 'Remove photo' }))
+    expect(screen.queryByRole('status', { name: 'Photo attached' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+
+    pickPhoto()
+    await screen.findByRole('status', { name: 'Photo attached' })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1))
+    const message = calls.find((c) => c.path === '/api/chats/c1/messages')!
+    expect(bodyOf(message)).toEqual({ text: 'Attached photo: up2' })
+  })
+
+  it('chat shows the upload error from the server', async () => {
+    const message = 'That photo is too big. Photos can be up to 15 MB.'
+    mockFetch({
+      'GET /api/chats': { body: [] },
+      'POST /api/uploads': { status: 413, body: { reason: 'too_large', message } },
+    })
+    render(<Chat model="Local model 12B" />)
+    await screen.findByRole('button', { name: 'Attach a photo' })
+    pickPhoto()
+    expect(await screen.findByRole('alert')).toHaveTextContent(message)
+    expect(screen.queryByRole('status', { name: 'Photo attached' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+  })
+
+  it('chat bubble hides the attached-photo line and shows the thumbnail when reopened', async () => {
+    const saved = { ...chatC1, title: 'Fix this' }
+    mockFetch({
+      'GET /api/chats': { body: [saved] },
+      'GET /api/chats/c1/messages': {
+        body: [userMessage(1, 'Fix this\nAttached photo: up9\nAttached photo: not an id!\n Attached photo: up8')],
+      },
+    })
+    render(<Chat model="Local model 12B" />)
+    await waitFor(() => expect(document.querySelector('.me')).not.toBeNull())
+    const bubble = document.querySelector('.me') as HTMLElement
+    const photos = within(bubble).getAllByRole('img', { name: 'Your photo' })
+    expect(photos.map((img) => img.getAttribute('src'))).toEqual(['/api/uploads/up9/file'])
+    expect(bubble).toHaveTextContent('Fix this')
+    expect(bubble).not.toHaveTextContent('Attached photo: up9')
+    // Only lines that match exactly are photos; anything else stays as the owner wrote it.
+    expect(bubble).toHaveTextContent('Attached photo: not an id!')
+    expect(bubble).toHaveTextContent('Attached photo: up8')
+  })
+
+  it('images view use my photo selects FLUX and sends the upload id', async () => {
+    const { calls } = routes({ 'POST /api/uploads': { status: 201, body: { id: 'up1' } } })
+    render(<Images />)
+    await screen.findByRole('option', { name: 'Z-Image Turbo' })
+    expect(screen.getByRole('combobox', { name: 'Model' })).toHaveValue('auto')
+    const use = screen.getByRole('button', { name: 'Use my photo' })
+    expect(use).toBeEnabled()
+    expect(fileInput()).toHaveAttribute('accept', 'image/png,image/jpeg,image/webp')
+
+    pickPhoto()
+    const chip = await screen.findByRole('status', { name: 'Photo attached' })
+    expect(within(chip).getByRole('img', { name: 'Your photo' })).toHaveAttribute('src', '/api/uploads/up1/file')
+    // The first card that can edit photos, found from /api/models, not a fixed id.
+    expect(screen.getByRole('combobox', { name: 'Model' })).toHaveValue('flux')
+
+    await describeAndCreate('Make the sky pink')
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1))
+    const message = calls.find((c) => c.path === '/api/chats/ic1/messages')!
+    expect(bodyOf(message)).toEqual({
+      text: 'Create 4 image(s), shape square, using FLUX klein: Make the sky pink using my photo up1',
+    })
+    expect(screen.queryByRole('status', { name: 'Photo attached' })).toBeNull()
+  })
+
+  it('images view use my photo can be removed and shows upload errors', async () => {
+    let replies = 0
+    const { calls } = routes({
+      'POST /api/uploads': () => {
+        replies += 1
+        return replies === 1
+          ? { status: 415, body: { reason: 'unsupported_type', message: 'That file is not usable.' } }
+          : { status: 201, body: { id: 'up3' } }
+      },
+    })
+    render(<Images />)
+    await screen.findByRole('option', { name: 'Z-Image Turbo' })
+    pickPhoto()
+    expect(await screen.findByRole('alert')).toHaveTextContent('That file is not usable.')
+    pickPhoto()
+    await screen.findByRole('status', { name: 'Photo attached' })
+    expect(screen.queryByRole('alert')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Remove photo' }))
+    await describeAndCreate('A plain fox')
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1))
+    const message = calls.find((c) => c.path === '/api/chats/ic1/messages')!
+    expect(bodyOf(message).text).toBe('Create 4 image(s), shape square, using FLUX klein: A plain fox')
+  })
+
+  it('images view disables use my photo when no model can edit photos', async () => {
+    routes({
+      'GET /api/models': {
+        body: { ...models.body, models: models.body.models.map((m) => ({ ...m, capabilities: [] })) },
+      },
+    })
+    render(<Images />)
+    await screen.findByRole('option', { name: 'Z-Image Turbo' })
+    const use = screen.getByRole('button', { name: 'Use my photo' })
+    expect(use).toBeDisabled()
+    expect(use).toHaveAccessibleDescription('None of your image models can edit photos.')
   })
 })

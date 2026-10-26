@@ -601,3 +601,21 @@
     transform: none;
   }
 }
+
+/* ---- Use my photo -------------------------------------------------------------------- */
+
+.describe .photo-chip {
+  margin-bottom: 12px;
+  background: var(--s2);
+}
+
+.use-photo {
+  align-self: flex-start;
+}
+
+.ctl-note {
+  max-width: 220px;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+}

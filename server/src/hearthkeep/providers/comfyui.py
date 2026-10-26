@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 import httpx
 
 from hearthkeep.config import LOOPBACK_HOSTS
+from hearthkeep.images import image_type
 
 _UNREACHABLE = "Image generation isn't available right now: ComfyUI isn't reachable."
 _FAILED = "Image generation failed."
@@ -133,14 +134,19 @@ class ComfyUIClient:
         except httpx.HTTPError as e:
             raise RenderError(_FAILED, f"{type(e).__name__}: {e}") from e
 
-    async def upload(self, png: bytes, name: str) -> str:
+    async def upload(self, image: bytes, name: str) -> str:
+        """Put a PNG, JPEG or WebP (told apart by its first bytes) into ComfyUI's input folder;
+        returns the name ComfyUI stored it under, for a LoadImage node."""
         if not _UPLOAD_NAME.fullmatch(name):
             raise ValueError("upload name must be 1-64 characters of letters, digits, _ . -")
+        mime = image_type(image)
+        if mime is None:
+            raise ValueError("upload must be a PNG, JPEG or WebP image")
         try:
             async with self._http() as http:
                 resp = await http.post(
                     "/upload/image",
-                    files={"image": (name, png, "image/png")},
+                    files={"image": (name, image, mime)},
                     data={"overwrite": "true", "type": "input"},
                 )
                 if resp.status_code >= 400:

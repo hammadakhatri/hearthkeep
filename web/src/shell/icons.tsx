@@ -148,6 +148,12 @@ export const CloseIcon = (p: IconProps) => (
   </Icon>
 )
 
+export const PaperclipIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M20 11.5l-7.8 7.8a5 5 0 0 1-7.1-7.1l8.5-8.5a3.4 3.4 0 0 1 4.8 4.8l-8.4 8.4a1.7 1.7 0 0 1-2.4-2.4l7.7-7.7" />
+  </Icon>
+)
+
 export const ForwardIcon = (p: IconProps) => (
   <Icon {...p}>
     <path d="M9 5l7 7-7 7" />

@@ -779,3 +779,68 @@
     min-height: calc(100dvh - 380px);
   }
 }
+
+/* ---- The owner's photo ---------------------------------------------------------------- */
+
+.photo-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 6px 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  color: var(--fg2);
+  font-size: var(--text-sm);
+  animation: rise var(--dur) var(--ease);
+}
+
+.photo-chip img,
+.photo-chip-wait {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border-radius: var(--r-sm);
+  object-fit: cover;
+  background: var(--s3);
+}
+
+.photo-chip-wait {
+  animation: breathe 1.2s var(--ease) infinite alternate;
+}
+
+.photo-chip-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.photo-error .btn {
+  margin-left: auto;
+}
+
+.chipbtn.attach {
+  padding: 7px 9px;
+}
+
+.me-photo {
+  display: block;
+  width: min(240px, 100%);
+  max-height: 240px;
+  margin-bottom: 8px;
+  border-radius: var(--r-md);
+  object-fit: cover;
+  background: var(--s2);
+}
+
+.me-photo:last-child {
+  margin-bottom: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .photo-chip,
+  .photo-chip-wait {
+    animation: none;
+  }
+}

@@ -5,6 +5,7 @@ import { ApprovalCard } from '../components/ApprovalCard'
 import { ImageGrid, type GridImage } from '../components/ImageGrid'
 import { ImageViewer } from '../components/ImageViewer'
 import { Markdown } from '../components/Markdown'
+import { attachedPhotoLine, PhotoChip, splitPhotos, uploadUrl, usePhoto } from '../components/Photo'
 import { WorkedSteps } from '../components/WorkedSteps'
 import { Composer } from '../shell/Composer'
 import { AlertIcon, ChatsIcon, NewChatIcon } from '../shell/icons'
@@ -52,6 +53,7 @@ export function Chat({ model }: { model?: string | null }) {
   const [draftThink, setDraftThink] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const [sheetOpen, setSheetOpen] = useState(false)
+  const attach = usePhoto()
   const opening = useRef(0)
   const scroller = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
@@ -162,8 +164,11 @@ export function Chat({ model }: { model?: string | null }) {
     setSheetOpen(false)
   }
 
-  async function send(text: string): Promise<boolean> {
+  async function send(words: string): Promise<boolean> {
     setNotice(null)
+    // The photo rides along as its own line; the bubble shows it as a thumbnail.
+    const photoId = attach.photo.state === 'ready' ? attach.photo.id : null
+    const text = photoId ? [words, attachedPhotoLine(photoId)].filter(Boolean).join('\n') : words
     let chatId = current
     try {
       if (chatId === null) {
@@ -180,6 +185,7 @@ export function Chat({ model }: { model?: string | null }) {
       stick.current = true
       setItems((all) => [...all, { kind: 'user', key: `u-${turn_id}`, text }, liveTurn(turn_id, Date.now())])
       setLive({ chatId, turnId: turn_id })
+      if (photoId) attach.clear()
       const id = chatId
       setChats(
         (all) =>
@@ -237,9 +243,7 @@ export function Chat({ model }: { model?: string | null }) {
             {items.length === 0 && !loading && <EmptyChat />}
             {items.map((item) =>
               item.kind === 'user' ? (
-                <div key={item.key} className="me">
-                  {item.text}
-                </div>
+                <UserBubble key={item.key} text={item.text} />
               ) : (
                 <AssistantTurn
                   key={item.key}
@@ -257,6 +261,7 @@ export function Chat({ model }: { model?: string | null }) {
               <span>{notice}</span>
             </div>
           )}
+          <PhotoChip photo={attach.photo} onRemove={attach.clear} />
           <Composer
             onSend={send}
             busy={busy}
@@ -264,10 +269,25 @@ export function Chat({ model }: { model?: string | null }) {
             onThinkChange={setDraftThink}
             thinkLocked={current !== null}
             model={model ?? null}
+            photo={attach.photo}
+            onPickPhoto={(file) => void attach.pick(file)}
           />
         </div>
       </section>
       {sheetOpen && <ChatSheet onClose={() => setSheetOpen(false)}>{list}</ChatSheet>}
+    </div>
+  )
+}
+
+/** The owner's message: any attached photos, then the words, without the attachment lines. */
+function UserBubble({ text }: { text: string }) {
+  const { photos, text: words } = splitPhotos(text)
+  return (
+    <div className="me" data-photos={photos.length || undefined}>
+      {photos.map((id, i) => (
+        <img key={`${id}-${i}`} className="me-photo" src={uploadUrl(id)} alt="Your photo" loading="lazy" />
+      ))}
+      {words}
     </div>
   )
 }

@@ -29,6 +29,7 @@ from hearthkeep.api import (
     routes_images,
     routes_models,
     routes_settings,
+    routes_uploads,
 )
 from hearthkeep.api.common import (
     CSRF_HEADER,
@@ -305,6 +306,7 @@ def create_app(
         routes_audit,
         routes_models,
         routes_images,
+        routes_uploads,
     ):
         app.include_router(module.router)
 

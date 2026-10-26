@@ -352,3 +352,132 @@ async def test_only_the_first_png_of_a_render_is_kept(store, ctx):
     ids = image_ids(result)
     assert len(ids) == 2
     assert [store.path(i).read_bytes()[-2:] for i in ids] == [bytes([0, 0]), bytes([1, 0])]
+
+
+# ---- editing the owner's photo ----------------------------------------------------------------
+
+JPEG = b"\xff\xd8\xff\xe0" + b"owner photo bytes"
+FLUX_EDIT = replace(FLUX, capabilities=("photoreal", "image-edit"),
+                    edit_workflow="flux2-klein-4b-edit.json")  # fmt: skip
+EDIT_SENTENCE = (
+    "To edit or reuse the owner's photo, pass its id as input_image and use flux2-klein-4b."
+)
+NOT_FOUND = "I can't find that photo. Ask the owner to attach it again."
+
+
+class UploadingComfy(FakeComfy):
+    """FakeComfy that also takes uploads; ComfyUI answers with its own stored name."""
+
+    def __init__(self, gpu=None, fail_upload=None):
+        super().__init__(gpu)
+        self.uploads: list[tuple[bytes, str, str | None]] = []
+        self.fail_upload = fail_upload
+
+    async def upload(self, data, name):
+        self.uploads.append((data, name, self.gpu.held if self.gpu else None))
+        if self.fail_upload is not None:
+            raise self.fail_upload
+        return f"stored-{name}"
+
+
+def save_photo(store, data=JPEG, mime="image/jpeg", ext="jpg"):
+    return store.save_upload(data, mime=mime, ext=ext, width=800, height=600).id
+
+
+def test_description_says_how_to_edit_the_owners_photo(store):
+    tool, _, _ = make_tool(store, cards=(FLUX_EDIT, ZIMAGE))
+    assert EDIT_SENTENCE in tool.description
+    prop = tool.parameters["properties"]["input_image"]
+    assert prop["type"] == "string" and "upload id" in prop["description"]
+    assert tool.parameters["required"] == ["prompt"]
+    plain, _, _ = make_tool(store)  # no card can edit: nothing to point the model at
+    assert "input_image" not in plain.description
+
+
+async def test_edit_requires_image_edit_card(store, ctx):
+    photo = save_photo(store)
+    tool, gpu, comfy = make_tool(store, comfy=UploadingComfy(), cards=(FLUX_EDIT, ZIMAGE))
+    args = {"prompt": "make it blue", "model": ZIMAGE.id, "input_image": photo}
+    result = await tool.run(args, ctx)
+    assert result.ok is False
+    assert result.content == (
+        "Z-Image Turbo can't edit photos. To edit the owner's photo, use FLUX.2 Klein 4B "
+        "(flux2-klein-4b)."
+    )
+    assert comfy.graphs == [] and comfy.uploads == [] and gpu.log == []
+
+    no_editor, _, comfy = make_tool(store, comfy=UploadingComfy())
+    result = await no_editor.run({"prompt": "make it blue", "input_image": photo}, ctx)
+    assert (result.ok, result.content) == (False, "None of the image models here can edit photos.")
+    assert comfy.graphs == [] and comfy.uploads == []
+
+
+async def test_edit_uses_edit_workflow_and_uploads_input(store, ctx):
+    photo = save_photo(store)
+    gpu = FakeGpu()
+    comfy = UploadingComfy(gpu)
+    # The default is Z-Image, but a photo to edit picks the card that can edit.
+    tool, _, _ = make_tool(store, gpu=gpu, comfy=comfy, cards=(FLUX_EDIT, ZIMAGE))
+    result = await tool.run(
+        {"prompt": "make the bag blue", "input_image": photo, "count": 2, "seed": 3}, ctx
+    )
+    assert result.ok is True, result.content
+    assert result.content.startswith("Created 2 image(s) with FLUX.2 Klein 4B at 1024x1024.")
+    assert photo not in result.content
+    # Uploaded once, with the original bytes, under a ComfyUI-safe name, while leased.
+    assert comfy.uploads == [(JPEG, f"hk-{photo}.jpg", FLUX_EDIT.id)]
+    assert len(comfy.graphs) == 2
+    for seed, graph in zip((3, 4), comfy.graphs, strict=True):
+        assert graph["76"] == {"class_type": "LoadImage",
+                               "inputs": {"image": f"stored-hk-{photo}.jpg"}}  # fmt: skip
+        assert graph["74"]["inputs"]["text"] == "make the bag blue"
+        assert graph["73"]["inputs"]["noise_seed"] == seed
+        assert graph["62"]["inputs"] == {"steps": 4, "width": 1024, "height": 1024}
+        assert graph["70"]["inputs"]["unet_name"] == "u.safetensors"
+        assert graph["9"]["inputs"]["filename_prefix"] == "hearthkeep/turn-1"
+    assert comfy.held_during == [FLUX_EDIT.id, FLUX_EDIT.id]
+    # Saved through the image store exactly like generated images.
+    records = [store.get(i) for i in image_ids(result)]
+    assert [(r.model_id, r.seed, r.prompt) for r in records] == [
+        (FLUX_EDIT.id, 3, "make the bag blue"),
+        (FLUX_EDIT.id, 4, "make the bag blue"),
+    ]
+    assert tool.summarize({"prompt": "x", "input_image": photo, "count": 1}) == (
+        "Edit the owner's photo with FLUX.2 Klein 4B: x"
+    )
+
+
+async def test_edit_with_explicit_edit_card(store, ctx):
+    photo = save_photo(store, data=PNG, mime="image/png", ext="png")
+    tool, _, comfy = make_tool(store, comfy=UploadingComfy(), cards=(FLUX_EDIT, ZIMAGE))
+    result = await tool.run(
+        {"prompt": "x", "input_image": photo, "model": FLUX_EDIT.id, "count": 1}, ctx
+    )
+    assert result.ok is True
+    assert comfy.uploads[0][:2] == (PNG, f"hk-{photo}.png")
+
+
+@pytest.mark.parametrize("photo", ["unknown-id", "../../hk.db", "", "a" * 40])
+async def test_edit_with_unknown_upload_is_error_result(store, ctx, photo):
+    tool, gpu, comfy = make_tool(store, comfy=UploadingComfy(), cards=(FLUX_EDIT, ZIMAGE))
+    result = await tool.run({"prompt": "x", "input_image": photo}, ctx)
+    assert (result.ok, result.content) == (False, NOT_FOUND)
+    assert comfy.uploads == [] and comfy.graphs == [] and gpu.log == []
+
+
+async def test_edit_with_missing_upload_file_is_error_result(store, ctx, tmp_path):
+    photo = save_photo(store)
+    (tmp_path / "workspace" / "uploads" / f"{photo}.jpg").unlink()
+    tool, _, comfy = make_tool(store, comfy=UploadingComfy(), cards=(FLUX_EDIT, ZIMAGE))
+    result = await tool.run({"prompt": "x", "input_image": photo}, ctx)
+    assert (result.ok, result.content) == (False, NOT_FOUND)
+    assert comfy.uploads == []
+
+
+async def test_edit_upload_failure_is_error_result(store, ctx):
+    photo = save_photo(store)
+    comfy = UploadingComfy(fail_upload=RenderError("Image generation failed.", "HTTP 500"))
+    tool, _, _ = make_tool(store, comfy=comfy, cards=(FLUX_EDIT, ZIMAGE))
+    result = await tool.run({"prompt": "x", "input_image": photo}, ctx)
+    assert (result.ok, result.content) == (False, "Image generation failed.")
+    assert comfy.graphs == []

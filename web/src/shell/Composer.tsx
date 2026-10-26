@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { SendIcon, ThinkIcon } from './icons'
+import { PhotoButton, type Photo } from '../components/Photo'
+import { PaperclipIcon, SendIcon, ThinkIcon } from './icons'
 
 type Props = {
   /** Resolves true when the message was accepted (the box then clears). */
@@ -11,16 +12,21 @@ type Props = {
   /** Thinking is chosen when a chat starts; an ongoing chat keeps its choice. */
   thinkLocked: boolean
   model: string | null
+  /** The photo for the next message, when attaching one is offered. */
+  photo?: Photo
+  onPickPhoto?: (file: File) => void
 }
 
 const MAX_HEIGHT = 200
 
-/** The floating message box: text, Think, the model in use, Send. */
-export function Composer({ onSend, busy, think, onThinkChange, thinkLocked, model }: Props) {
+/** The floating message box: text, a photo, Think, the model in use, Send. */
+export function Composer({ onSend, busy, think, onThinkChange, thinkLocked, model, photo, onPickPhoto }: Props) {
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
   const box = useRef<HTMLTextAreaElement>(null)
-  const canSend = text.trim() !== '' && !busy && !sending
+  // A ready photo can go on its own; one still uploading holds the message back.
+  const hasContent = text.trim() !== '' || photo?.state === 'ready'
+  const canSend = hasContent && photo?.state !== 'uploading' && !busy && !sending
 
   // Grow with the text, up to a few lines, then scroll inside.
   useLayoutEffect(() => {
@@ -78,6 +84,11 @@ export function Composer({ onSend, busy, think, onThinkChange, thinkLocked, mode
         </span>
       )}
       <div className="composer-tools">
+        {onPickPhoto && (
+          <PhotoButton className="chipbtn opt attach" label="Attach a photo" onPick={onPickPhoto}>
+            <PaperclipIcon />
+          </PhotoButton>
+        )}
         <button
           type="button"
           className="chipbtn opt"

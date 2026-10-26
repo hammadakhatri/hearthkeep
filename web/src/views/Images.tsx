@@ -4,6 +4,7 @@ import { subscribeTurn, type AgentEvent } from '../api/events'
 import { ImageGrid, Thumb, type GridImage } from '../components/ImageGrid'
 import { ImageViewer, type ViewerImage } from '../components/ImageViewer'
 import { Markdown } from '../components/Markdown'
+import { PhotoButton, PhotoChip, usePhoto } from '../components/Photo'
 import { AlertIcon, ImagesIcon } from '../shell/icons'
 import { LOST_STREAM } from './Chat'
 import { applyEvent, liveTurn, turnImages, type AssistantItem, type ChatSummary } from './chatModel'
@@ -24,8 +25,10 @@ export const SHAPES: { id: Shape; label: string; width: number; height: number }
 ]
 const COUNTS = [1, 2, 3, 4]
 const ALT_CHARS = 140
+/** The capability a card needs to edit the owner's photo. */
+export const IMAGE_EDIT = 'image-edit'
 
-type ModelCard = { id: string; name: string; kind: string }
+type ModelCard = { id: string; name: string; kind: string; capabilities?: string[] }
 type Models = { state: 'loading' } | { state: 'ready'; cards: ModelCard[] } | { state: 'none' } | { state: 'unknown' }
 
 export type ImageRecord = {
@@ -42,19 +45,25 @@ export type ImageRecord = {
 type Run = { prompt: string; model: string | null; shape: Shape; count: number; item: AssistantItem }
 type Live = { chatId: string; turnId: string }
 
-/** The chat message that asks for images: "Create 4 image(s), shape square, using FLUX: …". */
+/**
+ * The chat message that asks for images: "Create 4 image(s), shape square, using FLUX: …",
+ * ending "using my photo {id}" when the owner's photo is to be edited.
+ */
 export function composeMessage({
   text,
   count,
   shape,
   model,
+  photo = null,
 }: {
   text: string
   count: number
   shape: Shape
   model: string | null
+  photo?: string | null
 }): string {
-  return `Create ${count} image(s), shape ${shape}${model ? `, using ${model}` : ''}: ${text.trim()}`
+  const message = `Create ${count} image(s), shape ${shape}${model ? `, using ${model}` : ''}: ${text.trim()}`
+  return photo ? `${message} using my photo ${photo}` : message
 }
 
 function storedChat(): string | null {
@@ -130,11 +139,16 @@ export function Images() {
   const opener = useRef<HTMLElement | null>(null)
   const chatId = useRef<string | null>(null)
   const cursor = useRef<string | null>(null)
-  const ids = { shape: useId(), count: useId(), text: useId() }
+  const ids = { shape: useId(), count: useId(), text: useId(), photoWhy: useId() }
+  const attach = usePhoto()
 
   const cards = models.state === 'ready' ? models.cards : []
   const notSetUp = models.state === 'none'
   const busy = sending || live !== null
+  // The first card that can edit photos is the one a photo is edited with.
+  const editor = cards.find((c) => c.capabilities?.includes(IMAGE_EDIT)) ?? null
+  const photoId = attach.photo.state === 'ready' ? attach.photo.id : null
+  const uploading = attach.photo.state === 'uploading'
 
   useEffect(() => {
     let alive = true
@@ -245,15 +259,23 @@ export function Images() {
     }
   }
 
+  function pickPhoto(file: File) {
+    if (editor) setModel(editor.id)
+    void attach.pick(file)
+  }
+
   async function create(event?: FormEvent) {
     event?.preventDefault()
     const prompt = text.trim()
-    if (!prompt || busy) return
+    if (!prompt || busy || uploading) return
     const card = cards.find((c) => c.id === model) ?? null
     setSending(true)
     setNotice(null)
     try {
-      const started = await sendToImagesChat(composeMessage({ text: prompt, count, shape, model: card?.name ?? null }))
+      const started = await sendToImagesChat(
+        composeMessage({ text: prompt, count, shape, model: card?.name ?? null, photo: photoId }),
+      )
+      if (photoId) attach.clear()
       setViewing(null)
       setRun({ prompt, model: card?.name ?? null, shape, count, item: liveTurn(started.turnId, Date.now()) })
       setLive(started)
@@ -339,6 +361,7 @@ export function Images() {
             maxLength={2000}
             enterKeyHint="go"
           />
+          <PhotoChip photo={attach.photo} onRemove={attach.clear} />
           <div className="describe-controls">
             <label className="ctl">
               <span className="label">Model</span>
@@ -382,7 +405,23 @@ export function Images() {
                 ))}
               </div>
             </div>
-            <button type="submit" className="btn primary describe-go" disabled={!text.trim() || busy}>
+            <div className="ctl">
+              <span className="label">Photo</span>
+              <PhotoButton
+                className="btn use-photo"
+                onPick={pickPhoto}
+                disabled={!editor || busy}
+                describedBy={models.state === 'ready' && !editor ? ids.photoWhy : undefined}
+              >
+                Use my photo
+              </PhotoButton>
+              {models.state === 'ready' && !editor && (
+                <span id={ids.photoWhy} className="ctl-note">
+                  None of your image models can edit photos.
+                </span>
+              )}
+            </div>
+            <button type="submit" className="btn primary describe-go" disabled={!text.trim() || busy || uploading}>
               Create
             </button>
           </div>
