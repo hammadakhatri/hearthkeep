@@ -16,6 +16,7 @@ DATA_SUBDIRS = (
     "workspace/output",
     "workspace/output/images",
     "workspace/uploads",
+    "workspace/chats",
     "workspace/repos",
     "logs",
     "private",

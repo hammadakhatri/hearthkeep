@@ -111,6 +111,25 @@ MIGRATIONS: dict[int, str] = {
         created_at TEXT
     );
     """,
+    3: """
+    CREATE TABLE IF NOT EXISTS chat_files (
+        id TEXT PRIMARY KEY,
+        chat_id TEXT,
+        name TEXT,
+        kind TEXT,
+        mime TEXT,
+        size INT,
+        status TEXT,
+        summary TEXT,
+        source TEXT,
+        file_name TEXT,
+        created_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS upload_chats (
+        upload_id TEXT PRIMARY KEY,
+        chat_id TEXT
+    );
+    """,
 }
 
 

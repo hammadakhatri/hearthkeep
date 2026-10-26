@@ -23,6 +23,7 @@ from hearthkeep.auth.enrollment import EnrollmentCodes
 from hearthkeep.auth.sessions import Session, SessionStore, StepUp, public_id
 from hearthkeep.auth.webauthn import ChallengeStore, Verifier
 from hearthkeep.config import LOOPBACK_HOSTS, Settings
+from hearthkeep.files.store import ChatFileStore
 from hearthkeep.images import ImageStore
 from hearthkeep.models.cards import CardError, ModelCard
 from hearthkeep.runtime.gpu import GpuScheduler
@@ -122,6 +123,7 @@ class Services:
     sse_keepalive: float
     gpu: GpuScheduler
     images: ImageStore
+    files: ChatFileStore
     cards: dict[str, ModelCard] = field(default_factory=dict)
     card_errors: list[CardError] = field(default_factory=list)
     managed: frozenset[str] = frozenset()  # card ids the GPU scheduler runs

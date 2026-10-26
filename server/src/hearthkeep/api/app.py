@@ -26,6 +26,7 @@ from hearthkeep.api import (
     routes_audit,
     routes_auth,
     routes_chats,
+    routes_files,
     routes_images,
     routes_models,
     routes_settings,
@@ -46,6 +47,7 @@ from hearthkeep.auth.enrollment import EnrollmentCodes
 from hearthkeep.auth.sessions import SessionStore, StepUp
 from hearthkeep.auth.webauthn import ChallengeStore, Verifier
 from hearthkeep.config import LOOPBACK_HOSTS, Settings, detect_docker
+from hearthkeep.files.store import ChatFileStore
 from hearthkeep.images import ImageStore
 from hearthkeep.runtime.stack import ModelStack
 from hearthkeep.secrets import SecretStore
@@ -264,6 +266,7 @@ def create_app(
                 sse_keepalive=sse_keepalive,
                 gpu=gpu,
                 images=images,
+                files=ChatFileStore(conn, settings.data_dir),
                 cards=dict(stack.cards),
                 card_errors=list(stack.card_errors),
                 managed=stack.managed,
@@ -307,6 +310,7 @@ def create_app(
         routes_models,
         routes_images,
         routes_uploads,
+        routes_files,
     ):
         app.include_router(module.router)
 

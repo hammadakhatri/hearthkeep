@@ -17,7 +17,9 @@ from hearthkeep import db
 from hearthkeep.agent.runner import TERMINAL_EVENTS, TurnInProgressError
 from hearthkeep.api.common import ApiError, Services, current_session, services
 from hearthkeep.auth.sessions import Session
-from hearthkeep.images import without_photo_lines
+from hearthkeep.files.checks import MAX_FILES_PER_MESSAGE, TOO_MANY
+from hearthkeep.files.store import ATTACHED_FILE_LINE
+from hearthkeep.images import ATTACHED_PHOTO_LINE, without_photo_lines
 from hearthkeep.secrets import SecretStoreError
 
 router = APIRouter(prefix="/api")
@@ -112,6 +114,15 @@ async def list_messages(chat_id: str, session: SessionDep, request: Request) -> 
     return out
 
 
+def _is_photo_line(line: str) -> bool:
+    return ATTACHED_PHOTO_LINE.fullmatch(line) is not None
+
+
+def without_file_lines(text: str) -> str:
+    """The text with its `Attached file: <id>` lines left out (exact matches only)."""
+    return "\n".join(line for line in text.split("\n") if not ATTACHED_FILE_LINE.fullmatch(line))
+
+
 @router.post("/chats/{chat_id}/messages", status_code=202)
 async def post_message(
     chat_id: str, body: NewMessageBody, session: SessionDep, request: Request
@@ -121,6 +132,14 @@ async def post_message(
     text = body.text.strip()
     if not text:
         raise ApiError(422, "empty_message")
+    lines = text.split("\n")
+    file_ids = [m.group(1) for line in lines if (m := ATTACHED_FILE_LINE.fullmatch(line))]
+    if len(file_ids) > MAX_FILES_PER_MESSAGE:
+        raise ApiError(422, "too_many_files", message=TOO_MANY)
+    attached = [hk.files.get(file_id) for file_id in file_ids]
+    if any(found is None or found.chat_id != chat_id for found in attached):
+        raise ApiError(422, "unknown_file")
+    photos = [line.removeprefix("Attached photo: ") for line in lines if _is_photo_line(line)]
     try:
         turn_id = hk.runner.start(chat_id, text, think=bool(row["think"]))
     except TurnInProgressError:
@@ -128,9 +147,18 @@ async def post_message(
     except SecretStoreError:
         # Nothing was saved: the message is refused rather than stored unredacted.
         raise ApiError(503, "secrets_unreadable", message=SECRETS_UNREADABLE) from None
+    for upload_id in photos:
+        if hk.images.get_upload(upload_id) is not None:
+            hk.conn.execute(
+                "INSERT OR IGNORE INTO upload_chats (upload_id, chat_id) VALUES (?, ?)",
+                (upload_id, chat_id),
+            )
     if not row["title"]:
-        # Attached-photo lines are not words: a photo on its own is titled "Photo".
-        title = " ".join(without_photo_lines(text).split())[:TITLE_CHARS] or PHOTO_TITLE
+        # Attached-photo and attached-file lines are not words: a message with only those is
+        # titled with its first file's name, else "Photo".
+        words = " ".join(without_photo_lines(without_file_lines(text)).split())
+        fallback = " ".join(attached[0].name.split()) if attached else PHOTO_TITLE
+        title = (words or fallback)[:TITLE_CHARS]
         hk.conn.execute("UPDATE chats SET title = ? WHERE id = ?", (title, chat_id))
     return {"turn_id": turn_id}
 
