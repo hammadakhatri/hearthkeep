@@ -46,16 +46,23 @@ def effective_level(tool: str, configured: ToolLevel, docker_available: bool) ->
 
 
 def decide(level: ToolLevel, action: ActionClass, granted_for_chat: bool) -> Decision:
-    """Pure decision: no I/O. Outward actions always need a fresh step-up approval."""
+    """Pure decision, fail closed: anything unrecognised is DENY. No I/O."""
     if level == ToolLevel.OFF:
         return Decision.DENY
-    if action == ActionClass.OUTWARD:
-        return Decision.ASK_STEP_UP
     if level == ToolLevel.ASK:
-        return Decision.ASK
-    if action == ActionClass.LOOK:
-        return Decision.RUN
-    return Decision.RUN if granted_for_chat else Decision.ASK
+        if action == ActionClass.OUTWARD:
+            return Decision.ASK_STEP_UP
+        if action in (ActionClass.LOOK, ActionClass.CHANGE_LOCAL):
+            return Decision.ASK
+        return Decision.DENY
+    if level == ToolLevel.ALLOWED:
+        if action == ActionClass.OUTWARD:
+            return Decision.ASK_STEP_UP
+        if action == ActionClass.LOOK:
+            return Decision.RUN
+        if action == ActionClass.CHANGE_LOCAL:
+            return Decision.RUN if granted_for_chat else Decision.ASK
+    return Decision.DENY
 
 
 def is_widening(old: ToolLevel, new: ToolLevel) -> bool:

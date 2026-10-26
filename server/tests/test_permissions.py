@@ -19,24 +19,60 @@ LOOK, CHANGE_LOCAL, OUTWARD = ActionClass.LOOK, ActionClass.CHANGE_LOCAL, Action
 RUN, DASK, STEP_UP, DENY = Decision.RUN, Decision.ASK, Decision.ASK_STEP_UP, Decision.DENY
 
 
+EXPECTED = {
+    (OFF, LOOK): (DENY, DENY),
+    (OFF, CHANGE_LOCAL): (DENY, DENY),
+    (OFF, OUTWARD): (DENY, DENY),
+    (ASK, LOOK): (DASK, DASK),
+    (ASK, CHANGE_LOCAL): (DASK, DASK),
+    (ASK, OUTWARD): (STEP_UP, STEP_UP),
+    (ALLOWED, LOOK): (RUN, RUN),
+    (ALLOWED, CHANGE_LOCAL): (DASK, RUN),
+    (ALLOWED, OUTWARD): (STEP_UP, STEP_UP),
+}
+
+
 @pytest.mark.parametrize(
     "level,action,granted,expected",
     [
-        (OFF, LOOK, False, DENY),
-        (OFF, CHANGE_LOCAL, True, DENY),
-        (OFF, OUTWARD, True, DENY),
-        (ASK, LOOK, False, DASK),
-        (ASK, CHANGE_LOCAL, True, DASK),
-        (ASK, OUTWARD, True, STEP_UP),
-        (ALLOWED, LOOK, False, RUN),
-        (ALLOWED, CHANGE_LOCAL, False, DASK),
-        (ALLOWED, CHANGE_LOCAL, True, RUN),
-        (ALLOWED, OUTWARD, False, STEP_UP),
-        (ALLOWED, OUTWARD, True, STEP_UP),
+        (lv, ac, g, EXPECTED[(lv, ac)][int(g)])
+        for lv in ToolLevel
+        for ac in ActionClass
+        for g in (False, True)
     ],
 )
 def test_decide_matrix(level, action, granted, expected):
     assert decide(level, action, granted) == expected
+
+
+@pytest.mark.parametrize("granted", [False, True])
+@pytest.mark.parametrize(
+    "level,action",
+    [
+        ("bogus", LOOK),
+        (ALLOWED, "bogus"),
+        (ASK, "bogus"),
+        (OFF, "bogus"),
+        ("bogus", "bogus"),
+        ("bogus", OUTWARD),
+    ],
+)
+def test_decide_fails_closed_on_unrecognised_values(level, action, granted):
+    assert decide(level, action, granted) == DENY
+
+
+def test_composed_python_without_docker_asks_with_docker_runs():
+    no_docker = effective_level("python", ALLOWED, False)
+    assert decide(no_docker, LOOK, False) == DASK
+    with_docker = effective_level("python", ALLOWED, True)
+    assert decide(with_docker, LOOK, False) == RUN
+
+
+def test_set_level_rejects_invalid_level(tmp_path):
+    conn = db.connect(tmp_path / "t.db")
+    with pytest.raises(ValueError):
+        set_level(conn, "wallet", "bogus")
+    assert conn.execute("SELECT COUNT(*) FROM tool_levels").fetchone()[0] == 0
 
 
 def test_python_forced_to_ask_without_docker():
