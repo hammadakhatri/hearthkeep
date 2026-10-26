@@ -5,6 +5,7 @@ smoke test) and is refused unless `public_origin` is a localhost origin. Never u
 """
 
 import secrets
+import sqlite3
 from urllib.parse import urlparse
 
 from hearthkeep.auth.webauthn import NewCredential, StoredCredential, b64url_encode
@@ -17,15 +18,30 @@ WARNING = (
 )
 
 
+DEV_PUBLIC_KEY = b"insecure-dev"
+
+
 class InsecureDevAuthError(Exception):
     """--insecure-dev-auth was requested for a non-localhost origin."""
 
 
-def check_allowed(settings: Settings) -> None:
+def check_allowed(settings: Settings, conn: sqlite3.Connection) -> None:
+    """Refuse dev auth for a non-localhost origin, or for a data folder that already holds a
+    real passkey (anyone could otherwise sign in as that device by sending its id)."""
     host = urlparse(settings.public_origin).hostname
     if host not in LOOPBACK_HOSTS:
         raise InsecureDevAuthError(
             "--insecure-dev-auth is only allowed when public_origin is a localhost origin"
+        )
+    real = conn.execute(
+        "SELECT 1 FROM credentials WHERE revoked_at IS NULL"
+        " AND (public_key IS NULL OR public_key != ?) LIMIT 1",
+        (DEV_PUBLIC_KEY,),
+    ).fetchone()
+    if real is not None:
+        raise InsecureDevAuthError(
+            "--insecure-dev-auth refuses to run on a data folder with a real passkey enrolled; "
+            "use a separate data folder for development"
         )
 
 
@@ -46,7 +62,7 @@ class InsecureDevVerifier:
         cred_id = response.get("id") if isinstance(response, dict) else None
         if not isinstance(cred_id, str) or not cred_id:
             cred_id = b64url_encode(secrets.token_bytes(16))
-        return NewCredential(id=cred_id, public_key=b"insecure-dev", sign_count=0)
+        return NewCredential(id=cred_id, public_key=DEV_PUBLIC_KEY, sign_count=0)
 
     def authentication_options(self, credential_ids: list[str]) -> dict:
         return {

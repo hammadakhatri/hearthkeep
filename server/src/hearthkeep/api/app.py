@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -96,9 +97,12 @@ class SecurityMiddleware:
             return
 
         started = False
+        ended = False
 
         async def send_with_headers(message: Message) -> None:
-            nonlocal started
+            nonlocal started, ended
+            if message["type"] == "http.response.body" and not message.get("more_body", False):
+                ended = True
             if message["type"] == "http.response.start":
                 started = True
                 names = {name.lower() for name, _ in message.get("headers", [])}
@@ -113,13 +117,19 @@ class SecurityMiddleware:
         try:
             await self.app(scope, receive, send_with_headers)
         except Exception as exc:
-            if started:
-                raise
-            # Only the type: the message may carry private data.
+            # Only the type, never the message or a traceback: they may carry private data.
+            # Never re-raised, so Starlette's ServerErrorMiddleware never logs it either.
             _log.error(
                 "unhandled error in %s %s: %s", scope["method"], scope["path"], type(exc).__name__
             )
-            await error_response(500, "internal_error")(scope, receive, send_with_headers)
+            if not started:
+                await error_response(500, "internal_error")(scope, receive, send_with_headers)
+            elif not ended:
+                # Headers are out: all we can do is end the body; the client sees a short stream.
+                try:
+                    await send({"type": "http.response.body", "body": b"", "more_body": False})
+                except Exception as send_exc:
+                    _log.error("could not end response: %s", type(send_exc).__name__)
 
     def _csrf_ok(self, scope: Scope) -> bool:
         headers = {}
@@ -182,6 +192,7 @@ def create_app(
     rate_limiter: RateLimiter | None = None,
     sse_keepalive: float = SSE_KEEPALIVE_SECONDS,
     approval_poll_interval: float = 0.5,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> FastAPI:
     if settings.docker_available is None:
         settings = dataclasses.replace(settings, docker_available=detect_docker())
@@ -214,6 +225,7 @@ def create_app(
             limiter=rate_limiter or RateLimiter(),
             health_check=check,
             sse_keepalive=sse_keepalive,
+            monotonic=monotonic,
         )
         try:
             yield
@@ -232,15 +244,10 @@ def create_app(
 
     @app.get("/api/health")
     async def health(request: Request) -> dict:
-        hk = services(request)
-        try:
-            reachable = bool(await hk.health_check())
-        except Exception:
-            reachable = False
         return {
             "status": "ok",
             "chat_model": settings.chat_model,
-            "chat_model_reachable": reachable,
+            "chat_model_reachable": await services(request).chat_model_reachable(),
         }
 
     for module in (routes_auth, routes_chats, routes_approvals, routes_settings, routes_audit):

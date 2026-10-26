@@ -4,6 +4,7 @@ import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Literal
 
 from hearthkeep import audit, db
 from hearthkeep.auth.enrollment import EnrollmentCodes, Purpose
@@ -94,12 +95,22 @@ class CredentialStore:
             (int(sign_count), credential_id),
         )
 
-    def revoke(self, credential_id: str, sessions: SessionStore) -> bool:
-        """Revoke an unrevoked credential and all its sessions. False if there was none."""
-        if self.get(credential_id) is None:
-            return False
-        sessions.revoke_credential(credential_id)
-        return True
+    def revoke(
+        self, credential_id: str, sessions: SessionStore, actor: str
+    ) -> Literal["revoked", "not_found", "last_device"]:
+        """Revoke an unrevoked credential and all its sessions, atomically refusing to revoke
+        the last one (that would lock the owner out of the web app)."""
+        with db.transaction(self._conn):
+            if self.get(credential_id) is None:
+                return "not_found"
+            others = self._conn.execute(
+                "SELECT COUNT(*) FROM credentials WHERE revoked_at IS NULL AND id != ?",
+                (credential_id,),
+            ).fetchone()[0]
+            if others == 0:
+                return "last_device"
+            sessions.revoke_credential_in(self._conn, credential_id, actor)
+        return "revoked"
 
 
 def complete_enrollment(

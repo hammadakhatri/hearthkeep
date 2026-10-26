@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import threading
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -27,6 +28,7 @@ from hearthkeep.tools.base import ToolRegistry
 SESSION_COOKIE = "hk_session"
 CSRF_HEADER = "x-hearthkeep"
 ENROLLMENT_CODE_TTL_MINUTES = 15
+HEALTH_CACHE_SECONDS = 5.0
 
 
 class ApiError(Exception):
@@ -46,8 +48,11 @@ def error_response(status: int, reason: str, **extra: object) -> JSONResponse:
 class RateLimiter:
     """Sliding one-minute window per (group, client) plus a global cap per group.
 
-    Behind `tailscale serve` every request may come from 127.0.0.1, so the global cap is what
-    actually bounds guessing in that setup.
+    The client is the TCP peer address (uvicorn runs with proxy_headers=False, so
+    X-Forwarded-For is ignored). Behind `tailscale serve` every request arrives from 127.0.0.1,
+    so there the global cap is what actually bounds guessing. Expired and empty windows are
+    pruned on every access and rejected attempts are never stored, so the map cannot grow
+    without bound.
     """
 
     def __init__(
@@ -64,23 +69,32 @@ class RateLimiter:
         self._hits: dict[tuple[str, str | None], deque[float]] = {}
         self._lock = threading.Lock()
 
-    def _recent(self, key: tuple[str, str | None], now: float) -> deque[float]:
-        hits = self._hits.setdefault(key, deque())
-        while hits and hits[0] <= now - self._window:
-            hits.popleft()
-        return hits
+    def _prune(self, now: float) -> None:
+        cutoff = now - self._window
+        for key in list(self._hits):
+            hits = self._hits[key]
+            while hits and hits[0] <= cutoff:
+                hits.popleft()
+            if not hits:
+                del self._hits[key]
 
     def hit(self, group: str, client: str) -> bool:
         """Record an attempt; False (and not recorded) if it exceeds a limit."""
         now = self._clock()
         with self._lock:
-            mine = self._recent((group, client), now)
-            everyone = self._recent((group, None), now)
+            self._prune(now)
+            mine = self._hits.get((group, client), ())
+            everyone = self._hits.get((group, None), ())
             if len(mine) >= self._per_client or len(everyone) >= self._global:
                 return False
-            mine.append(now)
-            everyone.append(now)
+            self._hits.setdefault((group, client), deque()).append(now)
+            self._hits.setdefault((group, None), deque()).append(now)
             return True
+
+    def size(self) -> int:
+        """Number of tracked windows (for tests and diagnostics)."""
+        with self._lock:
+            return len(self._hits)
 
 
 HealthCheck = Callable[[], Awaitable[bool]]
@@ -103,6 +117,23 @@ class Services:
     limiter: RateLimiter
     health_check: HealthCheck
     sse_keepalive: float
+    monotonic: Callable[[], float] = time.monotonic
+    health_cache: tuple[float, bool] | None = None
+    health_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    async def chat_model_reachable(self) -> bool:
+        """Cached for HEALTH_CACHE_SECONDS so /api/health cannot be used to make this server
+        fire a stream of outbound requests."""
+        async with self.health_lock:
+            now = self.monotonic()
+            if self.health_cache is not None and now - self.health_cache[0] < HEALTH_CACHE_SECONDS:
+                return self.health_cache[1]
+            try:
+                reachable = bool(await self.health_check())
+            except Exception:
+                reachable = False
+            self.health_cache = (self.monotonic(), reachable)
+            return reachable
 
     @property
     def docker_available(self) -> bool:

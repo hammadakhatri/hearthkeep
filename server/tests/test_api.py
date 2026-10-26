@@ -1,11 +1,13 @@
 import asyncio
 import io
 import json
+import logging
 import threading
 import time
 
 import pytest
 from fakes import FakeChatClient, FakeVerifier
+from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 
 from hearthkeep import audit, cli
@@ -71,7 +73,9 @@ def harness(tmp_path):
         chat: FakeChatClient
         send = SendTool()
 
-        def start(self, scripts=(), *, health=None, web_dist=None, limiter=None):
+        def start(
+            self, scripts=(), *, health=None, web_dist=None, limiter=None, monotonic=time.monotonic
+        ):
             self.chat = FakeChatClient(list(scripts))
 
             async def healthy():
@@ -86,6 +90,7 @@ def harness(tmp_path):
                 web_dist=web_dist,
                 rate_limiter=limiter,
                 approval_poll_interval=0.01,
+                monotonic=monotonic,
             )
             client = TestClient(app, base_url=ORIGIN)
             client.__enter__()
@@ -819,3 +824,139 @@ def test_cli_secrets_set_from_stdin_and_list_names_only(tmp_path, monkeypatch, c
     from hearthkeep.secrets import SecretStore
 
     assert SecretStore(data).get("chat_api_key") == "sk-local-value"
+
+
+# ---- fix round 1: hardening ------------------------------------------------------------
+
+
+def test_run_server_ignores_proxy_headers(monkeypatch):
+    import uvicorn
+
+    calls = []
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: calls.append(kw))
+    cli.run_server(object(), "127.0.0.1", 8765)
+    assert calls[0]["proxy_headers"] is False
+    assert "forwarded_allow_ips" not in calls[0]
+
+
+def test_forwarded_for_does_not_change_rate_limit_key(harness):
+    client = harness.start()
+    for i in range(10):
+        spoofed = {**CSRF, "X-Forwarded-For": f"10.0.0.{i}"}
+        response = client.post("/api/auth/login/options", headers=spoofed)
+        assert response.status_code == 409
+    spoofed = {**CSRF, "X-Forwarded-For": "10.0.0.99"}
+    limited = client.post("/api/auth/login/options", headers=spoofed)
+    assert limited.status_code == 429 and limited.json() == {"reason": "rate_limited"}
+
+
+def test_rate_limiter_map_does_not_grow():
+    now = [0.0]
+    limiter = RateLimiter(per_client=2, global_limit=3, clock=lambda: now[0])
+    results = [limiter.hit("login", f"ip{i}") for i in range(100)]
+    assert results.count(True) == 3
+    assert limiter.size() == 4  # three accepted clients plus the global window
+    now[0] = 61.0
+    assert limiter.hit("login", "ip-late") is True
+    assert limiter.size() == 2  # expired windows were pruned
+
+
+def test_cannot_revoke_last_device_and_revocation_audited_as_session(harness):
+    client = signed_in(harness)
+    last = client.delete("/api/devices/cred-1", headers=CSRF)
+    assert last.status_code == 409 and last.json() == {"reason": "last_device"}
+    assert client.get("/api/chats").status_code == 200
+    assert harness.query("SELECT revoked_at FROM credentials") == [(None,)]
+
+    token = step_up(client, "add_device")
+    code = client.post("/api/devices/add-code", json={"step_up_token": token}, headers=CSRF)
+    enroll(client, code.json()["code"], cred_id="cred-2")
+    assert client.delete("/api/devices/cred-1", headers=CSRF).status_code == 200
+    cookie = client.cookies.get("hk_session")
+    revoked = [e for e in harness.events() if e["event"] == "credential.revoked"]
+    assert [e["actor"] for e in revoked] == [f"session:{public_id(cookie)}"]
+    assert client.delete("/api/devices/cred-2", headers=CSRF).json() == {"reason": "last_device"}
+
+
+def test_sign_in_revokes_previously_presented_session(harness):
+    client = signed_in(harness)
+    enrolled = client.cookies.get("hk_session")
+    assert login(client).status_code == 200
+    logged_in = client.cookies.get("hk_session")
+    assert logged_in != enrolled
+    client.cookies.set("hk_session", enrolled)
+    assert client.get("/api/chats").status_code == 401
+    client.cookies.set("hk_session", logged_in)
+    assert client.get("/api/chats").status_code == 200
+
+    # enrolling another device from a signed-in browser replaces that session too
+    token = step_up(client, "add_device")
+    code = client.post("/api/devices/add-code", json={"step_up_token": token}, headers=CSRF)
+    enroll(client, code.json()["code"], cred_id="cred-2")
+    client.cookies.set("hk_session", logged_in)
+    assert client.get("/api/chats").status_code == 401
+
+
+def test_health_reachability_cached_for_five_seconds(harness):
+    now = [100.0]
+    probes = []
+
+    async def probe():
+        probes.append(now[0])
+        return True
+
+    client = harness.start(health=probe, monotonic=lambda: now[0])
+    for _ in range(5):
+        assert client.get("/api/health").json()["chat_model_reachable"] is True
+    assert len(probes) == 1
+    now[0] += 4.9
+    client.get("/api/health")
+    assert len(probes) == 1
+    now[0] += 0.1
+    client.get("/api/health")
+    assert len(probes) == 2
+
+
+def test_error_after_response_started_logs_type_only(harness, caplog):
+    client = harness.start()
+
+    async def broken_stream():
+        yield b"partial"
+        raise RuntimeError("secret-detail-value")
+
+    async def boom():
+        return StreamingResponse(broken_stream(), media_type="text/plain")
+
+    client.app.add_api_route("/api/test-boom", boom)
+    with caplog.at_level(logging.DEBUG):
+        response = client.get("/api/test-boom")  # must not raise into the test client
+    assert response.status_code == 200 and response.text == "partial"
+    logged = " | ".join(r.getMessage() for r in caplog.records)
+    assert "RuntimeError" in logged
+    assert "secret-detail-value" not in logged
+    assert all(r.exc_info is None for r in caplog.records)
+
+
+def test_insecure_dev_auth_refused_with_real_passkey(tmp_path, monkeypatch, capsys):
+    started = []
+    monkeypatch.setattr(cli, "run_server", lambda app, host, port: started.append(port))
+    data = tmp_path / "data"
+    write_config(data, docker_available=False)
+    assert cli.main(["enroll-code", "--data", str(data)]) == 0  # creates the database
+    conn = connect(data / DB_FILE)
+    conn.execute(
+        "INSERT INTO credentials (id, public_key, sign_count) VALUES ('dev', ?, 0)",
+        (b"insecure-dev",),
+    )
+    conn.close()
+    assert cli.main(["serve", "--data", str(data), "--insecure-dev-auth"]) == 0
+    conn = connect(data / DB_FILE)
+    conn.execute(
+        "INSERT INTO credentials (id, public_key, sign_count) VALUES ('real', ?, 0)",
+        (b"a-real-cose-key",),
+    )
+    conn.close()
+    capsys.readouterr()
+    assert cli.main(["serve", "--data", str(data), "--insecure-dev-auth"]) == 2
+    assert "real passkey" in capsys.readouterr().err
+    assert started == [8765]

@@ -102,26 +102,28 @@ class SessionStore:
             if cursor.rowcount:
                 audit.record(self._conn, "owner", "session.revoked", {})
 
-    def revoke_credential(self, credential_id: str) -> None:
+    def revoke_credential(self, credential_id: str, actor: str = "owner") -> None:
         """Revoke a passkey and every session it created."""
-        now = _iso(self._clock())
         with db.transaction(self._conn):
-            changed = self._conn.execute(
-                "UPDATE credentials SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
-                (now, credential_id),
-            ).rowcount
-            cursor = self._conn.execute(
-                "UPDATE sessions SET revoked_at = ? WHERE credential_id = ? AND revoked_at IS NULL",
-                (now, credential_id),
-            )
-            if changed:
-                audit.record(
-                    self._conn, "owner", "credential.revoked", {"credential_id": credential_id}
-                )
-            for _ in range(cursor.rowcount):
-                audit.record(
-                    self._conn, "owner", "session.revoked", {"reason": "credential_revoked"}
-                )
+            self.revoke_credential_in(self._conn, credential_id, actor)
+
+    def revoke_credential_in(
+        self, conn: sqlite3.Connection, credential_id: str, actor: str = "owner"
+    ) -> None:
+        """`revoke_credential` for a caller that holds an open `db.transaction` on `conn`."""
+        now = _iso(self._clock())
+        changed = conn.execute(
+            "UPDATE credentials SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
+            (now, credential_id),
+        ).rowcount
+        cursor = conn.execute(
+            "UPDATE sessions SET revoked_at = ? WHERE credential_id = ? AND revoked_at IS NULL",
+            (now, credential_id),
+        )
+        if changed:
+            audit.record(conn, actor, "credential.revoked", {"credential_id": credential_id})
+        for _ in range(cursor.rowcount):
+            audit.record(conn, actor, "session.revoked", {"reason": "credential_revoked"})
 
 
 class StepUp:

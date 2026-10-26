@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from hearthkeep.api.common import (
     ENROLLMENT_CODE_TTL_MINUTES,
+    SESSION_COOKIE,
     ApiError,
     Services,
     actor,
@@ -89,7 +90,11 @@ def _enroll_failed(hk: Services, request: Request, reason: str, stage: str) -> A
     return ApiError(400, reason)
 
 
-def _signed_in(hk: Services, cred: Credential, status: int = 200) -> JSONResponse:
+def _signed_in(hk: Services, request: Request, cred: Credential, status: int = 200) -> JSONResponse:
+    # Whatever session this browser presented is replaced, never left alive alongside.
+    previous = request.cookies.get(SESSION_COOKIE)
+    if previous:
+        hk.sessions.revoke(previous)
     session_id = hk.sessions.create(cred.id)
     response = JSONResponse({"device": _device(cred, cred.id)}, status_code=status)
     set_session_cookie(response, hk, session_id)
@@ -135,7 +140,7 @@ async def enroll_verify(body: EnrollVerifyBody, request: Request) -> JSONRespons
         raise ApiError(409, "credential_exists") from None
     if cred is None:
         raise _enroll_failed(hk, request, "invalid_code", "verify")
-    return _signed_in(hk, cred, status=201)
+    return _signed_in(hk, request, cred, status=201)
 
 
 # ---- login / logout ---------------------------------------------------------------------
@@ -169,7 +174,7 @@ async def login_verify(body: LoginVerifyBody, request: Request) -> JSONResponse:
         record(hk, "anonymous", "login.failed", {"client": client_ip(request)})
         raise ApiError(400, "verification_failed") from None
     hk.credentials.update_sign_count(cred.id, count)
-    return _signed_in(hk, cred)
+    return _signed_in(hk, request, cred)
 
 
 @router.post("/auth/logout")
@@ -285,8 +290,11 @@ async def list_devices(session: SessionDep, request: Request) -> list[dict]:
 @router.delete("/devices/{credential_id}")
 async def remove_device(credential_id: str, session: SessionDep, request: Request) -> JSONResponse:
     hk = services(request)
-    if not hk.credentials.revoke(credential_id, hk.sessions):
+    outcome = hk.credentials.revoke(credential_id, hk.sessions, actor(session))
+    if outcome == "not_found":
         raise ApiError(404, "not_found")
+    if outcome == "last_device":
+        raise ApiError(409, "last_device")
     response = JSONResponse({"ok": True})
     if credential_id == session.credential_id:
         clear_session_cookie(response, hk)

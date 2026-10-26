@@ -47,7 +47,9 @@ def build_registry():
 def run_server(app, host: str, port: int) -> None:  # replaced in tests
     import uvicorn
 
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    # proxy_headers=False: never derive the client address from X-Forwarded-For, so a local
+    # process cannot rotate the rate-limit key by spoofing that header.
+    uvicorn.run(app, host=host, port=port, log_level="info", proxy_headers=False)
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
@@ -63,11 +65,14 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     settings = _settings(Path(args.data))
     if args.insecure_dev_auth:
+        conn = _connect(settings)
         try:
-            check_allowed(settings)
+            check_allowed(settings, conn)
         except InsecureDevAuthError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return EXIT_USAGE
+        finally:
+            conn.close()
         print(WARNING, file=sys.stderr)
         verifier = InsecureDevVerifier()
     else:
