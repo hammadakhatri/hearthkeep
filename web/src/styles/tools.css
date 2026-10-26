@@ -169,3 +169,142 @@
     gap: 12px;
   }
 }
+
+/* Models */
+.models {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.perms-sub-head {
+  font-size: var(--text-lg);
+  font-weight: 500;
+  letter-spacing: var(--tracking-snug);
+}
+
+.models-quiet,
+.models-docs {
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+
+.models-quiet .btn.ghost {
+  padding-block: 0;
+}
+
+.model-list,
+.model-errors,
+.chips {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.model-list {
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+
+.model {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 14px 18px;
+  background: var(--s1);
+}
+
+.model + .model {
+  border-top: 1px solid var(--line);
+}
+
+.model-name {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.model-kind,
+.model-source {
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip {
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+  background: var(--s3);
+  color: var(--fg2);
+  font-size: var(--text-xs);
+}
+
+.model-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-size: var(--text-xs);
+  color: var(--fg2);
+}
+
+.model-status .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.model-status.loaded .dot {
+  background: var(--green);
+}
+
+.model-errors {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: var(--text-sm);
+  color: var(--amber);
+}
+
+.model-errors b {
+  font-weight: 600;
+}
+
+.gpu {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.gpu-text {
+  font-size: var(--text-xs);
+  color: var(--fg2);
+}
+
+.gpu-meter {
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--s3);
+  overflow: hidden;
+}
+
+.gpu-fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  transition: width var(--dur) var(--ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gpu-fill {
+    transition: none;
+  }
+}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, isApiError } from '../api/client'
 import { passkeyErrorMessage, stepUp } from '../api/webauthn'
+import { ModelList } from '../components/ModelList'
 import { TriToggle, type Level } from '../components/TriToggle'
 import { AlertIcon, InfoIcon } from '../shell/icons'
 
@@ -110,6 +111,10 @@ export function ToolsPermissions() {
           your computer always asks first. Loosening a tool asks for Face ID / Touch ID.
         </p>
       </header>
+      <ModelList />
+      <h3 id="tools-title" className="perms-sub-head">
+        Tools
+      </h3>
       {failed ? (
         <div className="note error perms-error" role="alert">
           <AlertIcon />

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
+import type { ModelsResponse } from '../api/models'
 
 type Health = {
   status: string
@@ -9,11 +10,13 @@ type Health = {
   chat_model_state?: 'ready' | 'offline' | 'starts_on_first_use'
 }
 
+export type GpuUse = { used_gb: number; total_gb: number }
+
 export type HealthState =
   | { state: 'checking' }
-  | { state: 'online'; model: string }
-  | { state: 'standby'; model: string }
-  | { state: 'offline'; model: string }
+  | { state: 'online'; model: string; gpu?: GpuUse }
+  | { state: 'standby'; model: string; gpu?: GpuUse }
+  | { state: 'offline'; model: string; gpu?: GpuUse }
   | { state: 'unreachable' }
 
 const POLL_MS = 15_000
@@ -25,17 +28,22 @@ export function useHealth(): HealthState {
   useEffect(() => {
     let alive = true
     const check = async () => {
-      try {
-        const h = await api<Health>('/api/health')
-        if (alive) {
-          const model = h.chat_model
-          if (!h.chat_model_reachable) setHealth({ state: 'offline', model })
-          else if (h.chat_model_state === 'starts_on_first_use') setHealth({ state: 'standby', model })
-          else setHealth({ state: 'online', model })
-        }
-      } catch {
-        if (alive) setHealth({ state: 'unreachable' })
+      // Models are a bonus: a failure there never changes the health state.
+      const [h, m] = await Promise.allSettled([api<Health>('/api/health'), api<ModelsResponse>('/api/models')])
+      if (!alive) return
+      if (h.status === 'rejected') {
+        setHealth({ state: 'unreachable' })
+        return
       }
+      const model = h.value.chat_model
+      const g = m.status === 'fulfilled' ? m.value.gpu : undefined
+      const gpu =
+        g && typeof g.total_gb === 'number' && typeof g.used_gb === 'number'
+          ? { used_gb: g.used_gb, total_gb: g.total_gb }
+          : undefined
+      if (!h.value.chat_model_reachable) setHealth({ state: 'offline', model, gpu })
+      else if (h.value.chat_model_state === 'starts_on_first_use') setHealth({ state: 'standby', model, gpu })
+      else setHealth({ state: 'online', model, gpu })
     }
     const onVisible = () => {
       if (document.visibilityState === 'visible') void check()
@@ -78,10 +86,25 @@ function StatusPill({ health }: { health: HealthState }) {
       title = 'The Hearthkeep server is not answering.'
       break
   }
+  const gpu = 'gpu' in health ? health.gpu : undefined
+  const gpuText =
+    gpu && gpu.total_gb > 0 ? `GPU ${gpu.used_gb.toFixed(1)} of ${gpu.total_gb.toFixed(1)} GB in use` : null
+  if (gpuText) title = `${title}. ${gpuText}`
   return (
-    <div className="status" role="status" data-state={health.state} title={title}>
+    <div
+      className="status"
+      role="status"
+      data-state={health.state}
+      title={title}
+      aria-describedby={gpuText ? 'status-gpu' : undefined}
+    >
       <span className="dot" aria-hidden="true" />
       <span className="status-text">{text}</span>
+      {gpuText && (
+        <span id="status-gpu" className="sr-only">
+          {gpuText}
+        </span>
+      )}
     </div>
   )
 }
