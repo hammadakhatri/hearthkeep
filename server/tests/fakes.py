@@ -1,5 +1,6 @@
 """Test doubles shared across test modules."""
 
+import asyncio
 import copy
 import secrets
 
@@ -10,6 +11,9 @@ from hearthkeep.auth.webauthn import (
     b64url_decode,
     b64url_encode,
 )
+from hearthkeep.models.cards import ModelCard
+from hearthkeep.runtime.gpu import GpuScheduler
+from hearthkeep.runtime.supervisor import ProcessError
 
 
 def _as_bytes(value) -> bytes | None:
@@ -90,3 +94,88 @@ class FakeChatClient:
             if isinstance(item, BaseException):
                 raise item
             yield item
+
+
+# --- GPU scheduler ---------------------------------------------------------------------------
+
+
+def card(model_id: str, vram_gb: float, kind: str = "chat") -> ModelCard:
+    provider = "llama_server" if kind == "chat" else "comfyui"
+    return ModelCard(id=model_id, name=model_id.title(), kind=kind, provider=provider,
+                     vram_gb=vram_gb)  # fmt: skip
+
+
+CHAT = card("chat", 11.0)
+IMAGE = card("image", 10.0, kind="image")
+
+
+class FakeBackend:
+    """Records every call. A load waits on `gates[id]` if one is set; `failures[id]` makes the
+    next N loads of that model raise; `ready[id] = False` simulates a crashed server."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.gates: dict[str, asyncio.Event] = {}
+        self.failures: dict[str, int] = {}
+        self.unload_failures: dict[str, int] = {}
+        self.ready: dict[str, bool] = {}
+
+    def ops(self, *kinds: str) -> list[tuple[str, str]]:
+        kinds = kinds or ("load", "unload")
+        return [c for c in self.calls if c[0] in kinds]
+
+    async def load(self, c: ModelCard) -> None:
+        self.calls.append(("load", c.id))
+        gate = self.gates.get(c.id)
+        if gate is not None:
+            await gate.wait()
+        if self.failures.get(c.id, 0):
+            self.failures[c.id] -= 1
+            raise ProcessError(f"{c.name} couldn't start.")
+        self.ready[c.id] = True
+
+    async def unload(self, c: ModelCard) -> None:
+        self.calls.append(("unload", c.id))
+        if self.unload_failures.get(c.id, 0):
+            self.unload_failures[c.id] -= 1
+            raise RuntimeError("free failed")
+        self.ready[c.id] = False
+
+    async def is_ready(self, c: ModelCard) -> bool:
+        self.calls.append(("ready", c.id))
+        return self.ready.get(c.id, False)
+
+
+async def until(condition, timeout: float = 1.0) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not condition():
+        assert loop.time() < deadline, "condition not reached in time"
+        await asyncio.sleep(0)
+
+
+async def settle() -> None:
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+
+class Holder:
+    """Holds a lease in a background task until `release()`; `entered` is set once granted."""
+
+    def __init__(self, sched: GpuScheduler, model_id: str, log: list[str] | None = None,
+                 name: str | None = None) -> None:  # fmt: skip
+        self.entered = asyncio.Event()
+        self._release = asyncio.Event()
+        self._log, self._name, self._model = log, name or model_id, model_id
+        self.task = asyncio.create_task(self._run(sched))
+
+    async def _run(self, sched: GpuScheduler) -> None:
+        async with sched.lease(self._model):
+            if self._log is not None:
+                self._log.append(self._name)
+            self.entered.set()
+            await self._release.wait()
+
+    async def release(self) -> None:
+        self._release.set()
+        await self.task

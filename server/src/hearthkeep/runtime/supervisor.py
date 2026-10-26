@@ -142,11 +142,13 @@ class ManagedProcess:
         """Spawn the server (unless our own child is already healthy) and wait until it answers.
 
         A port that something else is listening on is refused, never adopted. A concurrent
-        `stop()` interrupts the wait; a cancelled `start()` stops and reaps its child.
+        `stop()` interrupts the wait. A failed or cancelled `start()` stops and reaps the child
+        only if this call spawned it; an earlier child it merely waited on is left alone.
         """
         async with self._lock:
             if self._stop_requested.is_set():
                 raise ProcessError(f"{self.name} is being stopped.")
+            spawned = False
             if self.running:
                 if await self.is_healthy():
                     return
@@ -158,10 +160,12 @@ class ManagedProcess:
                         "llama_port (or comfyui_port) in <data>/models.toml, or stop that program."
                     )
                 await self._spawn()
+                spawned = True
             try:
                 await self._wait_ready()
             except BaseException:
-                await self._stop(_TIMEOUT_STOP)
+                if spawned:
+                    await self._stop(_TIMEOUT_STOP)
                 raise
 
     async def stop(self, timeout: float = 10.0) -> None:
@@ -216,10 +220,13 @@ class ManagedProcess:
         self._proc = proc
         self._exit_task = asyncio.ensure_future(self._log_exit(proc))
         if _IS_WINDOWS:
+            job = None
             try:
                 job = KillOnCloseJob()
                 job.assign(proc.pid)
             except OSError as exc:
+                if job is not None:
+                    job.close()  # the child is not in it; _stop below ends the child itself
                 await self._stop(_TIMEOUT_STOP)
                 raise ProcessError(
                     f"{self.name} couldn't start: Hearthkeep could not supervise it.",
@@ -296,10 +303,17 @@ class ManagedProcess:
                 self._exit_task = None
 
     def _kill(self, proc: asyncio.subprocess.Process) -> None:
-        with suppress(OSError):  # includes ProcessLookupError: it already exited
-            if self._job is not None:
+        """Kill the child now. If TerminateJobObject fails, closing the job (kill-on-close) and
+        killing the child directly follow, so `_stop` never waits on a child left running."""
+        if self._job is not None:
+            try:
                 self._job.terminate()
-            elif _IS_WINDOWS:
+                return
+            except OSError:
+                with suppress(OSError):
+                    self._job.close()
+        with suppress(OSError):  # includes ProcessLookupError: it already exited
+            if _IS_WINDOWS:
                 proc.kill()  # TerminateProcess
             else:
                 os.killpg(proc.pid, signal.SIGKILL)
@@ -343,8 +357,11 @@ def _run_icacls(argv: list[str]) -> None:
 
 
 def _icacls_exe() -> str:
+    """icacls from the Windows folder, never looked up on PATH; no SystemRoot → refuse."""
     root = os.environ.get("SystemRoot")
-    return str(Path(root) / "System32" / "icacls.exe") if root else "icacls"
+    if not root:
+        raise ProcessError(_ACL_FAILED, "SystemRoot is not set")
+    return str(Path(root) / "System32" / "icacls.exe")
 
 
 def _owner_only(path: Path, *, folder: bool) -> None:

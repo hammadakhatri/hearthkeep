@@ -227,6 +227,93 @@ async def test_cancelled_start_stops_and_reaps_child(managed):
     assert proc._proc is None and not proc.running
 
 
+async def unhealthy_own_child(managed, monkeypatch, ready_timeout: float = 0.5):
+    """A started child that stays alive but stops answering health checks."""
+    proc = managed()
+    await proc.start()
+    proc.ready_timeout = ready_timeout
+
+    async def never_healthy() -> bool:
+        return False
+
+    monkeypatch.setattr(proc, "is_healthy", never_healthy)
+    return proc
+
+
+async def test_failed_start_keeps_child_it_did_not_spawn(managed, monkeypatch):
+    proc = await unhealthy_own_child(managed, monkeypatch)
+    child = proc._proc
+    with pytest.raises(ProcessError):
+        await proc.start()  # waits on the existing child, then times out
+    assert proc._proc is child and child.returncode is None  # not this call's child: kept
+
+
+async def test_cancelled_start_keeps_child_it_did_not_spawn(managed, monkeypatch):
+    proc = await unhealthy_own_child(managed, monkeypatch, ready_timeout=30)
+    child = proc._proc
+    starting = asyncio.create_task(proc.start())
+    await asyncio.sleep(0.1)
+    starting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await starting
+    assert proc._proc is child and child.returncode is None
+
+
+class _FailingTerminateJob:
+    """A job whose TerminateJobObject fails and whose close kills nothing."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def terminate(self, exit_code: int = 1) -> None:
+        raise OSError("TerminateJobObject failed")
+
+    def close(self) -> None:
+        self.closed = True
+
+
+async def test_stop_falls_back_when_job_terminate_fails(managed):
+    proc = managed("--ignore-term")
+    await proc.start()
+    child = proc._proc
+    real_job, fake = proc._job, _FailingTerminateJob()
+    proc._job = fake
+    try:
+        await asyncio.wait_for(proc.stop(timeout=0.5), TIMEOUT)
+    finally:
+        if real_job is not None:
+            real_job.close()
+    assert fake.closed
+    assert child.returncode is not None and not proc.running
+
+
+@windows_only
+async def test_job_closed_when_assign_fails(managed, monkeypatch):
+    jobs = []
+
+    class FailingAssignJob:
+        def __init__(self) -> None:
+            self.closed = False
+            jobs.append(self)
+
+        def assign(self, pid: int) -> None:
+            raise OSError("AssignProcessToJobObject failed")
+
+        def terminate(self, exit_code: int = 1) -> None:
+            raise AssertionError("the child is not in this job")
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(supervisor, "KillOnCloseJob", FailingAssignJob)
+    proc = managed()
+    with pytest.raises(ProcessError) as exc:
+        await proc.start()
+    assert "could not supervise" in exc.value.user_message
+    assert len(jobs) == 1 and jobs[0].closed
+    assert not proc.running and proc._proc is None and proc._job is None
+
+
 async def test_cancelled_stop_still_reaps_child(managed):
     proc = managed("--ignore-term")
     await proc.start()
@@ -405,6 +492,7 @@ def fake_windows_acl(monkeypatch):
     monkeypatch.setattr(supervisor, "_run_icacls", calls.append)
     monkeypatch.setenv("USERDOMAIN", "TESTDOMAIN")
     monkeypatch.setenv("USERNAME", "owner")
+    monkeypatch.setenv("SystemRoot", str(Path("sysroot").absolute()))
     return calls
 
 
@@ -416,8 +504,17 @@ def test_key_file_gets_owner_only_acl_on_windows(tmp_path, fake_windows_acl):
     ]  # fmt: skip
     assert Path(file[1]).parent == path.parent and Path(file[1]).name.endswith(".tmp")
     assert file[2:] == ["/inheritance:r", "/grant:r", "TESTDOMAIN\\owner:F"]
-    assert folder[0].lower().endswith("icacls.exe") or folder[0] == "icacls"
+    assert folder[0] == str(Path("sysroot").absolute() / "System32" / "icacls.exe")
     assert path.read_text(encoding="utf-8") == "local-123"
+
+
+def test_icacls_fails_closed_without_systemroot(tmp_path, fake_windows_acl, monkeypatch):
+    monkeypatch.delenv("SystemRoot", raising=False)
+    with pytest.raises(ProcessError) as exc:
+        write_api_key_file(tmp_path, "local-123")
+    assert exc.value.user_message == supervisor._ACL_FAILED
+    assert fake_windows_acl == []  # no bare `icacls` looked up on PATH
+    assert not (tmp_path / "runtime" / "llama-api-key").exists()
 
 
 @pytest.mark.parametrize("failing_call", [0, 1])  # the folder ACL, then the file ACL
