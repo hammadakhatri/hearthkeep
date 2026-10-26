@@ -109,6 +109,70 @@ def test_get_and_pending_report_expired(store, clock):
     assert store.get(a.id).status == "expired"
 
 
+def test_resolve_audit_failure_rolls_back(store, monkeypatch):
+    a = _create(store)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("audit down")
+
+    monkeypatch.setattr(audit, "record", boom)
+    with pytest.raises(RuntimeError):
+        store.resolve(a.id, "s", approve=True, step_up_verified=False)
+    assert store.get(a.id).status == "pending"
+
+
+def test_create_audit_failure_inserts_nothing(store, conn, monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("audit down")
+
+    monkeypatch.setattr(audit, "record", boom)
+    with pytest.raises(RuntimeError):
+        _create(store)
+    assert conn.execute("SELECT COUNT(*) FROM approvals").fetchone()[0] == 0
+
+
+def test_stale_read_loses_to_atomic_guard(tmp_path, clock):
+    path = tmp_path / "hk.db"
+    store_a = ApprovalStore(connect(path), 10, clock)
+    store_b = ApprovalStore(connect(path), 10, clock)
+    a = _create(store_a)
+    stale = store_b._row(a.id)
+    assert stale["status"] == "pending"
+    store_a.resolve(a.id, "sa", approve=True, step_up_verified=False)
+
+    real_row = store_b._row
+    calls = []
+
+    def stale_once(approval_id):
+        calls.append(approval_id)
+        return stale if len(calls) == 1 else real_row(approval_id)
+
+    store_b._row = stale_once
+    with pytest.raises(ApprovalError) as e:
+        store_b.resolve(a.id, "sb", approve=False, step_up_verified=False)
+    assert e.value.reason == "already_resolved"
+    assert store_a.get(a.id).status == "approved"
+
+
+def test_expiry_between_check_and_update(store, clock):
+    a = _create(store)
+    original = store._expire_if_due
+    fired = []
+
+    def advance_after_check(row):
+        result = original(row)
+        if not fired:
+            fired.append(1)
+            clock.advance(minutes=11)
+        return result
+
+    store._expire_if_due = advance_after_check
+    with pytest.raises(ApprovalError) as e:
+        store.resolve(a.id, "s", approve=True, step_up_verified=False)
+    assert e.value.reason == "expired"
+    assert store.get(a.id).status == "expired"
+
+
 def test_concurrent_resolve_only_one_wins(tmp_path, clock):
     path = tmp_path / "hk.db"
     first = ApprovalStore(connect(path), 10, clock)

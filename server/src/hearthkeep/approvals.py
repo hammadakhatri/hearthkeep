@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
 
-from hearthkeep import audit
+from hearthkeep import audit, db
 from hearthkeep.permissions import ActionClass
 
 Status = Literal["pending", "approved", "declined", "expired"]
@@ -100,34 +100,35 @@ class ApprovalStore:
             created_at=now.isoformat(),
             expires_at=(now + self._ttl).isoformat(),
         )
-        self._conn.execute(
-            f"INSERT INTO approvals ({_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                approval.id,
-                chat_id,
-                turn_id,
-                tool,
-                approval.action_class,
-                summary,
-                json.dumps(detail, default=str),
-                int(requires_step_up),
-                "pending",
-                approval.created_at,
-                approval.expires_at,
-            ),
-        )
-        audit.record(
-            self._conn,
-            "agent",
-            "approval.created",
-            {
-                "approval_id": approval.id,
-                "tool": tool,
-                "action_class": approval.action_class,
-                "requires_step_up": requires_step_up,
-                "summary": summary,
-            },
-        )
+        with db.transaction(self._conn):
+            self._conn.execute(
+                f"INSERT INTO approvals ({_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    approval.id,
+                    chat_id,
+                    turn_id,
+                    tool,
+                    approval.action_class,
+                    summary,
+                    json.dumps(detail, default=str),
+                    int(requires_step_up),
+                    "pending",
+                    approval.created_at,
+                    approval.expires_at,
+                ),
+            )
+            audit.record(
+                self._conn,
+                "agent",
+                "approval.created",
+                {
+                    "approval_id": approval.id,
+                    "tool": tool,
+                    "action_class": approval.action_class,
+                    "requires_step_up": requires_step_up,
+                    "summary": summary,
+                },
+            )
         return approval
 
     def _row(self, approval_id: str) -> sqlite3.Row:
@@ -163,28 +164,36 @@ class ApprovalStore:
     def resolve(
         self, approval_id: str, session_id: str, approve: bool, step_up_verified: bool
     ) -> Approval:
-        row = self._expire_if_due(self._row(approval_id))
-        if row["status"] == "expired":
-            raise ApprovalError("expired")
-        if row["status"] != "pending":
-            raise ApprovalError("already_resolved")
-        if approve and row["requires_step_up"] and not step_up_verified:
-            raise ApprovalError("step_up_required")
         status = "approved" if approve else "declined"
-        cur = self._conn.execute(
-            "UPDATE approvals SET status = ?, resolved_at = ?, resolved_by_session = ?"
-            " WHERE id = ? AND status = 'pending'",
-            (status, self._clock().isoformat(), session_id, approval_id),
-        )
-        if cur.rowcount != 1:
-            current = self._row(approval_id)["status"]
-            raise ApprovalError("expired" if current == "expired" else "already_resolved")
-        audit.record(
-            self._conn,
-            f"session:{session_id}",
-            "approval.resolved",
-            {"approval_id": approval_id, "status": status, "tool": row["tool"]},
-        )
+        error: Reason | None = None
+        # Errors are raised after COMMIT so an expiry transition persists.
+        with db.transaction(self._conn):
+            row = self._expire_if_due(self._row(approval_id))
+            if row["status"] == "expired":
+                error = "expired"
+            elif row["status"] != "pending":
+                error = "already_resolved"
+            elif approve and row["requires_step_up"] and not step_up_verified:
+                error = "step_up_required"
+            else:
+                now = self._clock().isoformat()
+                cur = self._conn.execute(
+                    "UPDATE approvals SET status = ?, resolved_at = ?, resolved_by_session = ?"
+                    " WHERE id = ? AND status = 'pending' AND expires_at > ?",
+                    (status, now, session_id, approval_id, now),
+                )
+                if cur.rowcount == 1:
+                    audit.record(
+                        self._conn,
+                        f"session:{session_id}",
+                        "approval.resolved",
+                        {"approval_id": approval_id, "status": status, "tool": row["tool"]},
+                    )
+                else:
+                    current = self._expire_if_due(self._row(approval_id))
+                    error = "expired" if current["status"] == "expired" else "already_resolved"
+        if error:
+            raise ApprovalError(error)
         return self.get(approval_id)
 
     async def wait(self, approval_id: str) -> Approval:
