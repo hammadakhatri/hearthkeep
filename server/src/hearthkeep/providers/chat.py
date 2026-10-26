@@ -73,7 +73,8 @@ class OpenAIChatClient:
         }
         if tools:
             body["tools"] = tools
-        headers = {"Authorization": f"Bearer {self._api_key}"}
+        # No key configured (a local server without --api-key): send no Authorization at all.
+        headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
 
         calls: dict[int, dict[str, str]] = {}
         finish_reason: str | None = None

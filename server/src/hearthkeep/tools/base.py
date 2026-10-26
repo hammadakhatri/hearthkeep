@@ -53,6 +53,10 @@ class ToolRegistry:
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
 
+    def all(self) -> list[Tool]:
+        """Every registered tool, in registration order."""
+        return list(self._tools.values())
+
     def available(self, conn: sqlite3.Connection, docker_available: bool) -> list[Tool]:
         """Registered tools whose effective level is not OFF, in registration order."""
         return [

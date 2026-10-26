@@ -82,6 +82,13 @@ class TurnRunner:
         live.task.cancel()
         return True
 
+    async def shutdown(self) -> None:
+        """Cancel every running turn and wait for them to close (server shutdown only)."""
+        for live in list(self._live.values()):
+            if live.task is not None:
+                live.task.cancel()
+        await self.wait_idle()
+
     async def wait_idle(self) -> None:
         """Wait until every running turn has finished (mainly for tests and shutdown)."""
         while self._live:

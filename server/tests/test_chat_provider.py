@@ -98,6 +98,18 @@ async def test_sends_think_flag_and_auth():
     assert seen[0].url.path == "/v1/chat/completions"
 
 
+async def test_no_api_key_sends_no_authorization_header():
+    seen: list[httpx.Request] = []
+    client = OpenAIChatClient(
+        base_url="http://127.0.0.1:8080/v1",
+        api_key="",
+        model="test-model",
+        transport=httpx.MockTransport(sse_handler("sse_text.txt", seen)),
+    )
+    assert [e for e in await collect(client) if isinstance(e, TextDelta)]
+    assert "authorization" not in seen[0].headers
+
+
 async def test_omits_tools_when_empty():
     seen: list[httpx.Request] = []
     await collect(make_client(sse_handler("sse_text.txt", seen)), think=False)

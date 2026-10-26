@@ -30,6 +30,12 @@ def _hash(session_id: str) -> str:
     return hashlib.sha256(session_id.encode("utf-8")).hexdigest()
 
 
+def public_id(session_id: str) -> str:
+    """A non-secret reference to a session (its database key), safe for audit and approvals.
+    The raw id is a bearer secret and must never be stored or logged."""
+    return _hash(session_id)
+
+
 @dataclass(frozen=True)
 class Session:
     id: str  # the raw id the caller presented

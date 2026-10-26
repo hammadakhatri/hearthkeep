@@ -319,6 +319,12 @@ def test_pywebauthn_registration_options(tmp_path):
     assert len(b64url_decode(opts["challenge"])) >= 32
 
 
+def test_pywebauthn_registration_options_exclude_existing(tmp_path):
+    verifier = PyWebAuthnVerifier(_settings(tmp_path))
+    opts = verifier.registration_options(b"owner-id", ["AQIDBA"])
+    assert [c["id"] for c in opts["excludeCredentials"]] == ["AQIDBA"]
+
+
 def test_pywebauthn_authentication_options(tmp_path):
     verifier = PyWebAuthnVerifier(_settings(tmp_path))
     cid = "AQIDBA"

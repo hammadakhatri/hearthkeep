@@ -31,7 +31,7 @@ CHALLENGE_TTL = timedelta(minutes=5)
 
 Clock = Callable[[], datetime]
 Ceremony = Literal["register", "login", "step_up"]
-Binding = tuple[str, str | None, str | None]
+Binding = tuple[str, str | None, str | None, str | None]
 
 
 def _utcnow() -> datetime:
@@ -68,7 +68,9 @@ def b64url_decode(value: str) -> bytes:
 
 
 class Verifier(Protocol):
-    def registration_options(self, user_id: bytes) -> dict: ...
+    def registration_options(
+        self, user_id: bytes, exclude_credential_ids: list[str] | None = None
+    ) -> dict: ...
 
     def verify_registration(self, response: dict, challenge: bytes) -> NewCredential: ...
 
@@ -86,7 +88,9 @@ class PyWebAuthnVerifier(Verifier):
         self._rp_id = settings.rp_id
         self._origin = settings.public_origin
 
-    def registration_options(self, user_id: bytes) -> dict:
+    def registration_options(
+        self, user_id: bytes, exclude_credential_ids: list[str] | None = None
+    ) -> dict:
         options = webauthn.generate_registration_options(
             rp_id=self._rp_id,
             rp_name=RP_NAME,
@@ -97,6 +101,10 @@ class PyWebAuthnVerifier(Verifier):
                 resident_key=ResidentKeyRequirement.REQUIRED,
                 user_verification=UserVerificationRequirement.REQUIRED,
             ),
+            exclude_credentials=[
+                PublicKeyCredentialDescriptor(id=b64url_decode(cid))
+                for cid in exclude_credential_ids or []
+            ],
         )
         return options_to_json_dict(options)
 
@@ -160,6 +168,7 @@ class ChallengeStore:
         ceremony: Ceremony,
         session_id: str | None = None,
         approval_id: str | None = None,
+        purpose: str | None = None,
     ) -> str:
         now = self._clock()
         challenge_id = secrets.token_urlsafe(16)
@@ -168,7 +177,7 @@ class ChallengeStore:
             self._items[challenge_id] = (
                 challenge,
                 now + CHALLENGE_TTL,
-                (ceremony, session_id, approval_id),
+                (ceremony, session_id, approval_id, purpose),
             )
         return challenge_id
 
@@ -179,12 +188,13 @@ class ChallengeStore:
         ceremony: Ceremony,
         session_id: str | None = None,
         approval_id: str | None = None,
+        purpose: str | None = None,
     ) -> bytes | None:
         """Consume a challenge; None if unknown, expired, or bound to something else."""
         with self._lock:
             item = self._items.pop(challenge_id, None)
         if item is None or item[1] <= self._clock():
             return None
-        if item[2] != (ceremony, session_id, approval_id):
+        if item[2] != (ceremony, session_id, approval_id, purpose):
             return None
         return item[0]

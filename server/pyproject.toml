@@ -6,11 +6,16 @@ license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
     "cryptography>=50.0.2",
+    "fastapi>=0.162.0",
     "httpx>=0.28.1",
     "jsonschema>=4.26.0",
     "keyring>=25.7.0",
+    "uvicorn>=0.54.0",
     "webauthn>=3.0.1",
 ]
+
+[project.scripts]
+hearthkeep = "hearthkeep.cli:main"
 
 [dependency-groups]
 dev = [
@@ -29,6 +34,10 @@ packages = ["src/hearthkeep"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+filterwarnings = [
+    # starlette's TestClient nudges towards `httpx2`; plain httpx works and is already a dependency
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+]
 
 [tool.ruff]
 line-length = 100
