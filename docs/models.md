@@ -9,6 +9,8 @@ Two kinds of file describe your setup:
 
 `<data>` means your own Hearthkeep data folder.
 
+To install llama.cpp, ComfyUI and the shipped model files step by step, see [install.md](install.md).
+
 ## Model cards
 
 A card is a small TOML file. Hearthkeep loads the shipped cards first, then every `*.toml` in `<data>/models/cards/`. A card of yours with the same `id` as a shipped one replaces it. A card with a mistake is skipped, and the server prints what was wrong with it at start-up; the other cards still load.
@@ -181,6 +183,8 @@ Known Phase 2 limits:
 ## Troubleshooting
 
 Logs are in `<data>/logs/`: `llama-server.log` for the chat model and `comfyui.log` for the image server. Start there.
+
+For problems outside the models (ports, enrollment codes, passkeys, start-up errors), see [Troubleshooting in install.md](install.md#13-troubleshooting).
 
 - **No images, or the image tool is missing.** Check that all three `comfyui_*` paths are set in `<data>/models.toml` and point to real files.
 - **A model "couldn't be started".** Open the matching log. The usual causes are a wrong path, a missing model file, or too little free GPU memory because another program is using it.

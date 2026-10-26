@@ -9,7 +9,7 @@ This page describes what the code in this repository does today. Phase 1 is the 
 - The server binds to loopback only (`127.0.0.1` or `::1`). A `host` in `config.toml` that is not a loopback address is rejected at startup.
 - The port is set by `port` in `config.toml`. If you change it, change `public_origin` to the same port, and `rp_id` too if the host name changes: sign-in and the request checks below compare against them.
 - The chat model must also be local: `chat_base_url` has to point at `127.0.0.1`, `::1` or `localhost`, otherwise the server refuses to start. Hearthkeep only talks to local models.
-- Remote access is meant to go through your private Tailscale network (`tailscale serve` in front of the loopback port). Nothing is exposed to the public internet. If `public_origin` is not localhost it must be `https`, and the session cookie is then marked `Secure`.
+- Remote access is meant to go through your private Tailscale network (`tailscale serve` in front of the loopback port; see [install.md](install.md#7-decide-on-remote-access-before-your-first-passkey) for the setup). Nothing is exposed to the public internet. If `public_origin` is not localhost it must be `https`, and the session cookie is then marked `Secure`.
 - The server ignores `X-Forwarded-For`, so a local process cannot fake its address to dodge rate limits.
 - Hearthkeep never uses system or environment proxy settings for its local connections (to the chat model and the image server), so your chats and the chat API key cannot be routed through a proxy or VPN.
 - Every child process Hearthkeep starts (llama-server for chat, ComfyUI for images) binds to `127.0.0.1` only. A model card whose launch arguments try to bind another address (`0.0.0.0`, `::`, or a `--host` other than `127.0.0.1`) is rejected.
@@ -91,7 +91,7 @@ Keep secrets out of `config.toml`; it holds only the name of the secret to use (
 | `<data>/workspace/repos/` | Reserved for later phases |
 | `<data>/logs/`, `<data>/private/` | Logs (including the model servers' output) and private files |
 
-None of this is ever part of the repository. Back it up yourself.
+None of this is ever part of the repository. Back it up yourself: [install.md](install.md#12-backing-up) lists what matters and how the keyring key affects a restore.
 
 ## What the assistant can never do
 
