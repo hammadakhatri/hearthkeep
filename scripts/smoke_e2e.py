@@ -44,7 +44,7 @@ def check(condition: bool, message: str) -> None:
 
 class Client:
     def __init__(self, base: str, origin: str) -> None:
-        self.http = httpx.Client(base_url=base, timeout=TIMEOUT)
+        self.http = httpx.Client(base_url=base, timeout=TIMEOUT, trust_env=False)
         self.csrf = {"X-Hearthkeep": "1", "Origin": origin}
 
     def post(self, path: str, body: dict | None = None) -> httpx.Response:

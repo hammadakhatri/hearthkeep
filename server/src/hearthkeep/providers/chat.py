@@ -81,7 +81,10 @@ class OpenAIChatClient:
         done = False
 
         try:
-            async with httpx.AsyncClient(transport=self._transport, timeout=_TIMEOUT) as http:
+            # trust_env=False: never route chat history or the key through a system proxy.
+            async with httpx.AsyncClient(
+                transport=self._transport, timeout=_TIMEOUT, trust_env=False
+            ) as http:
                 async with http.stream("POST", self._url, json=body, headers=headers) as resp:
                     if resp.status_code in (401, 403):
                         raise ProviderError(_REJECTED, f"HTTP {resp.status_code} from chat model")

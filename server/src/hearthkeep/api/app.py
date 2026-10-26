@@ -74,7 +74,8 @@ def chat_model_health_check(settings: Settings) -> HealthCheck:
 
     async def check() -> bool:
         try:
-            async with httpx.AsyncClient(timeout=HEALTH_TIMEOUT_SECONDS) as http:
+            # trust_env=False: a local probe never goes through a system proxy.
+            async with httpx.AsyncClient(timeout=HEALTH_TIMEOUT_SECONDS, trust_env=False) as http:
                 response = await http.get(url)
         except Exception:
             return False
