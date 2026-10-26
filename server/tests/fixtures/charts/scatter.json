@@ -1,0 +1,59 @@
+{
+ "$schema": "https://vega.github.io/schema/vega-lite/v6.json",
+ "title": "A vs B",
+ "width": "container",
+ "data": {
+  "values": [
+   {
+    "a": 1,
+    "b": 2.5
+   },
+   {
+    "a": 2,
+    "b": 3.5
+   },
+   {
+    "a": 3,
+    "b": 1.0
+   }
+  ]
+ },
+ "layer": [
+  {
+   "mark": {
+    "type": "point"
+   },
+   "encoding": {
+    "x": {
+     "field": "a",
+     "type": "quantitative",
+     "title": "a"
+    },
+    "y": {
+     "field": "b",
+     "type": "quantitative",
+     "title": "b"
+    },
+    "tooltip": [
+     {
+      "field": "a",
+      "type": "quantitative",
+      "title": "a"
+     },
+     {
+      "field": "b",
+      "type": "quantitative",
+      "title": "b"
+     }
+    ]
+   },
+   "params": [
+    {
+     "name": "zoom",
+     "select": "interval",
+     "bind": "scales"
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,180 @@
+{
+ "$schema": "https://vega.github.io/schema/vega-lite/v6.json",
+ "title": "Balance",
+ "width": "container",
+ "data": {
+  "values": [
+   {
+    "date": "2025-01-01T00:00:00",
+    "balance": 100.0,
+    "acct[1]": "x"
+   },
+   {
+    "date": "2025-02-01T00:00:00",
+    "balance": null,
+    "acct[1]": "x"
+   },
+   {
+    "date": "2025-03-01T00:00:00",
+    "balance": 130.5,
+    "acct[1]": "y"
+   }
+  ]
+ },
+ "layer": [
+  {
+   "mark": {
+    "type": "line",
+    "point": true
+   },
+   "encoding": {
+    "x": {
+     "field": "date",
+     "type": "temporal",
+     "title": "date"
+    },
+    "y": {
+     "field": "balance",
+     "type": "quantitative",
+     "title": "balance"
+    },
+    "tooltip": [
+     {
+      "field": "date",
+      "type": "temporal",
+      "title": "date"
+     },
+     {
+      "field": "balance",
+      "type": "quantitative",
+      "title": "balance"
+     },
+     {
+      "field": "acct\\[1\\]",
+      "type": "nominal",
+      "title": "acct[1]"
+     }
+    ],
+    "color": {
+     "field": "acct\\[1\\]",
+     "type": "nominal",
+     "title": "acct[1]"
+    },
+    "opacity": {
+     "condition": {
+      "param": "legend",
+      "value": 1
+     },
+     "value": 0.2
+    }
+   },
+   "params": [
+    {
+     "name": "zoom",
+     "select": "interval",
+     "bind": "scales"
+    },
+    {
+     "name": "legend",
+     "select": {
+      "type": "point",
+      "fields": [
+       "acct\\[1\\]"
+      ]
+     },
+     "bind": "legend"
+    }
+   ]
+  },
+  {
+   "data": {
+    "values": [
+     {
+      "date": "2025-02-01",
+      "hk_label": "Rent due"
+     }
+    ]
+   },
+   "mark": {
+    "type": "rule",
+    "strokeDash": [
+     4,
+     4
+    ]
+   },
+   "encoding": {
+    "x": {
+     "field": "date",
+     "type": "temporal",
+     "title": "date"
+    },
+    "tooltip": [
+     {
+      "field": "hk_label",
+      "type": "nominal",
+      "title": "Note"
+     }
+    ]
+   }
+  },
+  {
+   "data": {
+    "values": [
+     {
+      "date": "2025-02-01",
+      "hk_label": "Rent due"
+     }
+    ]
+   },
+   "mark": {
+    "type": "text",
+    "align": "left",
+    "dx": 4,
+    "dy": -4,
+    "y": 0
+   },
+   "encoding": {
+    "x": {
+     "field": "date",
+     "type": "temporal",
+     "title": "date"
+    },
+    "text": {
+     "field": "hk_label"
+    }
+   }
+  },
+  {
+   "data": {
+    "values": [
+     {
+      "hk_from": "2025-01-15",
+      "hk_to": "2025-02-15",
+      "hk_label": "Move"
+     }
+    ]
+   },
+   "mark": {
+    "type": "rect",
+    "opacity": 0.15
+   },
+   "encoding": {
+    "x": {
+     "field": "hk_from",
+     "type": "temporal",
+     "title": "date"
+    },
+    "x2": {
+     "field": "hk_to"
+    },
+    "tooltip": [
+     {
+      "field": "hk_label",
+      "type": "nominal",
+      "title": "Note"
+     }
+    ]
+   }
+  }
+ ]
+}

@@ -1,0 +1,84 @@
+{
+ "$schema": "https://vega.github.io/schema/vega-lite/v6.json",
+ "title": "Spend by month",
+ "width": "container",
+ "data": {
+  "values": [
+   {
+    "month": "Jan",
+    "spend.total": 10.5,
+    "kind": "a"
+   },
+   {
+    "month": "Feb",
+    "spend.total": 20.0,
+    "kind": "b"
+   },
+   {
+    "month": "Mar",
+    "spend.total": 15.25,
+    "kind": "a"
+   }
+  ]
+ },
+ "layer": [
+  {
+   "mark": {
+    "type": "bar"
+   },
+   "encoding": {
+    "x": {
+     "field": "month",
+     "type": "nominal",
+     "title": "month"
+    },
+    "y": {
+     "field": "spend\\.total",
+     "type": "quantitative",
+     "title": "spend.total"
+    },
+    "tooltip": [
+     {
+      "field": "month",
+      "type": "nominal",
+      "title": "month"
+     },
+     {
+      "field": "spend\\.total",
+      "type": "quantitative",
+      "title": "spend.total"
+     },
+     {
+      "field": "kind",
+      "type": "nominal",
+      "title": "kind"
+     }
+    ],
+    "color": {
+     "field": "kind",
+     "type": "nominal",
+     "title": "kind"
+    },
+    "opacity": {
+     "condition": {
+      "param": "legend",
+      "value": 1
+     },
+     "value": 0.2
+    }
+   },
+   "params": [
+    {
+     "name": "legend",
+     "select": {
+      "type": "point",
+      "fields": [
+       "kind"
+      ]
+     },
+     "bind": "legend"
+    }
+   ]
+  }
+ ]
+}
