@@ -30,6 +30,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hearthkeep"]
+artifacts = [
+    "src/hearthkeep/models/cards/*.toml",
+    "src/hearthkeep/models/workflows/*.json",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

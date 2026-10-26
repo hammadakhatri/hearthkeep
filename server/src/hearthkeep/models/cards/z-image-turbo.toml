@@ -1,0 +1,19 @@
+id = "z-image-turbo"
+name = "Z-Image Turbo"
+kind = "image"
+provider = "comfyui"
+capabilities = ["text-in-image", "photoreal"]
+vram_gb = 10.5
+default_steps = 8
+workflow = "z-image-turbo.json"
+prefer_when = "the image contains words, or a photoreal scene"
+guidance = """
+Write plain, descriptive English. Describe the subject, the setting, the light, and the lens or style.
+Put any exact text that must appear in the image in double quotes, and say where it goes and in what style.
+Keep on-image text short, and leave clear space in the composition where the text will go.
+"""
+
+[files]
+unet = "z_image_turbo_bf16.safetensors"
+text_encoder = "qwen_3_4b.safetensors"
+vae = "ae.safetensors"

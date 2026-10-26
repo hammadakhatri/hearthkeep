@@ -1,0 +1,28 @@
+id = "gemma-4-12b"
+name = "Gemma 4 12B"
+kind = "chat"
+provider = "llama_server"
+capabilities = ["vision", "tools", "thinking"]
+vram_gb = 11.0
+context = 32768
+launch_args = [
+    "--model", "{model}",
+    "--mmproj", "{mmproj}",
+    "--alias", "gemma-4-12b",
+    "--host", "127.0.0.1",
+    "--port", "{port}",
+    "--api-key-file", "{api_key_file}",
+    "-c", "32768",
+    "-ngl", "999",
+    "--jinja",
+]
+
+[files]
+model = "gemma-4-12b-it-Q6_K.gguf"
+mmproj = "mmproj-F16.gguf"
+
+[sampling]
+temperature = 1.0
+top_k = 64
+top_p = 0.95
+min_p = 0.0

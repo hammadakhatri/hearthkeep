@@ -1,0 +1,24 @@
+# Copy to <data>/models.toml and fill in the paths for your machine.
+# Values that are empty or start with "<" are treated as unset.
+
+# Chat server (llama.cpp)
+llama_server_exe = "<path to llama-server executable>"
+llama_port = 8080
+
+# Image server (ComfyUI)
+comfyui_python = "<path to the Python used by ComfyUI>"
+comfyui_main = "<path to ComfyUI main.py>"
+comfyui_port = 8188
+# A folder containing diffusion_models/, text_encoders/, vae/ and loras/.
+# Image cards' file names are looked up inside those subfolders.
+comfyui_model_root = "<path to the ComfyUI models folder>"
+
+# Override the detected GPU memory, in GB (optional).
+# gpu_vram_gb = 16
+
+default_chat_model = "gemma-4-12b"
+default_image_model = "z-image-turbo"
+
+# Chat models: the folder holding each card's files (by card id).
+[model_dirs]
+"gemma-4-12b" = "<path to the folder with the Gemma GGUF files>"

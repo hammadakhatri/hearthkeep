@@ -1,0 +1,18 @@
+id = "flux2-klein-4b"
+name = "FLUX.2 klein 4B"
+kind = "image"
+provider = "comfyui"
+capabilities = ["photoreal"]
+vram_gb = 10.0
+default_steps = 4
+workflow = "flux2-klein-4b.json"
+prefer_when = "no text in the image, or editing the owner's own photo"
+guidance = """
+Write a rich photographic description: the subject, the materials and textures, and the lighting.
+Avoid asking for text in the image, because this model misspells it.
+"""
+
+[files]
+unet = "flux-2-klein-4b.safetensors"
+text_encoder = "qwen_3_4b.safetensors"
+vae = "flux2-vae.safetensors"
