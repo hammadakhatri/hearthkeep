@@ -9,6 +9,7 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import FastAPI, Request
@@ -41,7 +42,7 @@ from hearthkeep.auth.credentials import CredentialStore
 from hearthkeep.auth.enrollment import EnrollmentCodes
 from hearthkeep.auth.sessions import SessionStore, StepUp
 from hearthkeep.auth.webauthn import ChallengeStore, Verifier
-from hearthkeep.config import Settings, detect_docker
+from hearthkeep.config import LOOPBACK_HOSTS, Settings, detect_docker
 from hearthkeep.secrets import SecretStore
 from hearthkeep.tools.base import ToolRegistry
 
@@ -84,13 +85,23 @@ def chat_model_health_check(settings: Settings) -> HealthCheck:
     return check
 
 
+def _host_name(value: str) -> str | None:
+    """The host name of a Host header value (port and IPv6 brackets dropped), lowercased."""
+    try:
+        return urlsplit("//" + value).hostname
+    except ValueError:
+        return None
+
+
 class SecurityMiddleware:
-    """Pure ASGI (safe for streaming): security headers on every response, and CSRF checks
-    on every state-changing request (`X-Hearthkeep: 1` plus an exact `Origin` match)."""
+    """Pure ASGI (safe for streaming): security headers on every response, a Host allowlist
+    (the public_origin host and loopback names, any port: blocks DNS rebinding), and CSRF
+    checks on every state-changing request (`X-Hearthkeep: 1` plus an exact `Origin`)."""
 
     def __init__(self, app: ASGIApp, public_origin: str) -> None:
         self.app = app
         self.origin = public_origin.rstrip("/")
+        self.hosts = LOOPBACK_HOSTS | {urlsplit(self.origin).hostname}
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -111,6 +122,9 @@ class SecurityMiddleware:
                 message["headers"] = [*message.get("headers", []), *extra]
             await send(message)
 
+        if not self._host_ok(scope):
+            await error_response(400, "bad_host")(scope, receive, send_with_headers)
+            return
         if scope["method"] in UNSAFE_METHODS and not self._csrf_ok(scope):
             response = error_response(403, "csrf")
             await response(scope, receive, send_with_headers)
@@ -131,6 +145,12 @@ class SecurityMiddleware:
                     await send({"type": "http.response.body", "body": b"", "more_body": False})
                 except Exception as send_exc:
                     _log.error("could not end response: %s", type(send_exc).__name__)
+
+    def _host_ok(self, scope: Scope) -> bool:
+        hosts = [v for n, v in scope.get("headers", []) if n.lower() == b"host"]
+        if len(hosts) != 1:
+            return False
+        return _host_name(hosts[0].decode("latin-1")) in self.hosts
 
     def _csrf_ok(self, scope: Scope) -> bool:
         headers = {}

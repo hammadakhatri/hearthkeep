@@ -1004,3 +1004,39 @@ def test_unreadable_secret_store_is_a_plain_error_not_a_500(harness, monkeypatch
     }
     assert client.get(f"/api/chats/{chat_id}/messages").json() == []
     assert client.get("/api/chats").json()[0]["active_turn"] is None
+
+
+@pytest.mark.parametrize(
+    "host", ["localhost:8765", "localhost", "127.0.0.1:8765", "[::1]:8765", "LOCALHOST:9"]
+)
+def test_loopback_host_headers_accepted(harness, host):
+    client = harness.start()
+    assert client.get("/api/health", headers={"Host": host}).status_code == 200
+
+
+@pytest.mark.parametrize("host", ["evil.example", "evil.example:8765", "127.0.0.1.evil.example"])
+def test_dns_rebinding_host_rejected(harness, host):
+    client = harness.start()
+    response = client.get("/api/health", headers={"Host": host})
+    assert response.status_code == 400
+    assert response.json() == {"reason": "bad_host"}
+    assert response.headers["x-content-type-options"] == "nosniff"
+    post = client.post("/api/chats", json={}, headers={**CSRF, "Host": host})
+    assert post.status_code == 400
+
+
+def test_public_origin_host_accepted(tmp_path):
+    origin = "https://box.example.ts.net"
+    app = create_app(
+        Settings(data_dir=tmp_path, public_origin=origin, rp_id="box.example.ts.net"),
+        verifier=FakeVerifier(),
+        chat_client=FakeChatClient([]),
+        registry=registry_with(),
+        health_check=lambda: asyncio.sleep(0, True),
+        web_dist=None,
+    )
+    with TestClient(app, base_url=origin) as client:
+        assert client.get("/api/health").status_code == 200
+        assert (
+            client.get("/api/health", headers={"Host": "other.example.ts.net"}).status_code == 400
+        )
