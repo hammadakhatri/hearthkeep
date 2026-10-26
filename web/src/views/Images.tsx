@@ -12,8 +12,6 @@ import { applyEvent, liveTurn, turnImages, type AssistantItem, type ChatSummary 
 export const IMAGES_CHAT_KEY = 'hk.imagesChatId'
 export const IMAGES_CHAT_TITLE = 'Images'
 export const PAGE_SIZE = 24
-/** The setup guide for image models: docs/models.md in the Hearthkeep folder. */
-export const MODELS_GUIDE_URL = '/docs/models.md'
 
 export type Shape = 'square' | 'landscape' | 'portrait' | 'banner'
 
@@ -94,6 +92,12 @@ function altFor(record: ImageRecord): string {
   return prompt.length > ALT_CHARS ? `${prompt.slice(0, ALT_CHARS - 1)}…` : prompt
 }
 
+async function fetchPage(before: string | null): Promise<ImageRecord[]> {
+  const path = `/api/images?limit=${PAGE_SIZE}${before ? `&before=${encodeURIComponent(before)}` : ''}`
+  const { images } = await api<{ images: ImageRecord[] }>(path)
+  return images
+}
+
 /**
  * One entry per image, at the place it first appears; when the server also sent it, its
  * record (with the prompt) replaces the placeholder made while the turn ran.
@@ -121,7 +125,8 @@ export function Images() {
   const [galleryFailed, setGalleryFailed] = useState(false)
   const [hasMore, setHasMore] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
-  const [viewing, setViewing] = useState<{ list: 'run' | 'gallery'; index: number } | null>(null)
+  // The open image is tracked by id, so images arriving while it is open do not change it.
+  const [viewing, setViewing] = useState<{ list: 'run' | 'gallery'; id: string } | null>(null)
   const opener = useRef<HTMLElement | null>(null)
   const chatId = useRef<string | null>(null)
   const cursor = useRef<string | null>(null)
@@ -145,8 +150,7 @@ export function Images() {
   }, [])
 
   const loadPage = useCallback(async (before: string | null) => {
-    const path = `/api/images?limit=${PAGE_SIZE}${before ? `&before=${encodeURIComponent(before)}` : ''}`
-    const { images } = await api<{ images: ImageRecord[] }>(path)
+    const images = await fetchPage(before)
     if (images.length) cursor.current = images[images.length - 1].created_at
     setHasMore(images.length === PAGE_SIZE)
     setGallery((all) => unique([...(all ?? []), ...images]))
@@ -168,6 +172,15 @@ export function Images() {
     }
     setLoadingMore(false)
   }
+
+  /** Once a turn is done, the server knows each new image's prompt, model and size. */
+  const refreshFirst = useCallback(() => {
+    fetchPage(null)
+      .then((images) => setGallery((all) => unique([...images, ...(all ?? [])])))
+      .catch(() => {
+        // The placeholders stay; the next visit loads the full records.
+      })
+  }, [])
 
   // Follow the running turn, as Chat does; new images join the gallery as they arrive.
   useEffect(() => {
@@ -197,6 +210,7 @@ export function Images() {
           setGallery((all) => unique([...fresh, ...(all ?? [])]))
         }
         if (event.type === 'turn_done' || event.type === 'turn_error') finish()
+        if (event.type === 'turn_done') refreshFirst()
       },
       0,
       () => {
@@ -204,7 +218,7 @@ export function Images() {
         finish()
       },
     )
-  }, [live])
+  }, [live, refreshFirst])
 
   /** Post to the Images chat, creating it on first use and again if it has gone. */
   async function sendToImagesChat(message: string): Promise<Live> {
@@ -262,8 +276,16 @@ export function Images() {
     return cards.find((c) => c.id === id)?.name ?? id
   }
 
+  const runShape = run ? SHAPES.find((s) => s.id === run.shape) : undefined
   const runImages: ViewerImage[] = run
-    ? turnImages(run.item).map((id, i) => ({ id, alt: `Generated image ${i + 1}` }))
+    ? turnImages(run.item).map((id, i) => ({
+        id,
+        alt: `Generated image ${i + 1}`,
+        prompt: run.prompt,
+        model: run.model,
+        width: runShape?.width,
+        height: runShape?.height,
+      }))
     : []
   const galleryImages: ViewerImage[] = (gallery ?? []).map((r) => ({
     id: r.id,
@@ -275,10 +297,12 @@ export function Images() {
     createdAt: r.created_at,
   }))
   const viewerImages = viewing?.list === 'run' ? runImages : galleryImages
+  const viewingIndex = viewing ? viewerImages.findIndex((image) => image.id === viewing.id) : -1
 
   function openViewer(list: 'run' | 'gallery', index: number, tile: HTMLElement) {
     opener.current = tile
-    setViewing({ list, index })
+    const image = (list === 'run' ? runImages : galleryImages)[index]
+    if (image) setViewing({ list, id: image.id })
   }
 
   const showGallery = !(notSetUp && gallery !== null && gallery.length === 0)
@@ -296,13 +320,8 @@ export function Images() {
             <ImagesIcon width={26} height={26} />
           </span>
           <p className="images-setup-title">Image generation isn't set up on this PC yet.</p>
-          <p className="images-setup-sub">
-            Add an image model card and tell Hearthkeep where ComfyUI lives. The models guide (docs/models.md in
-            your Hearthkeep folder) walks through it.
-          </p>
-          <a className="btn" href={MODELS_GUIDE_URL} target="_blank" rel="noopener noreferrer">
-            How to set up image models
-          </a>
+          <p className="images-setup-sub">Add an image model card and tell Hearthkeep where ComfyUI lives.</p>
+          <p className="images-setup-sub">See docs/models.md in the Hearthkeep repository.</p>
         </div>
       ) : (
         <form className="describe" onSubmit={create} aria-label="Create images">
@@ -417,11 +436,14 @@ export function Images() {
         </section>
       )}
 
-      {viewing && viewerImages.length > 0 && (
+      {viewing && viewingIndex >= 0 && (
         <ImageViewer
           images={viewerImages}
-          index={viewing.index}
-          onIndex={(index) => setViewing((v) => (v ? { ...v, index } : v))}
+          index={viewingIndex}
+          onIndex={(index) => {
+            const image = viewerImages[index]
+            if (image) setViewing((v) => (v ? { ...v, id: image.id } : v))
+          }}
           onClose={() => setViewing(null)}
           opener={opener.current}
         />
@@ -470,15 +492,15 @@ function RunPanel({
         {step?.state === 'failed' && <span className="sr-only"> (didn't work)</span>}
       </p>
       {(hero || streaming) && (
-      <div className="run-hero" style={{ aspectRatio: ratio, ['--ar' as string]: dims.width / dims.height }}>
-        {hero ? (
-          <button type="button" className="imgtile run-hero-tile" onClick={(e) => onOpen(0, e.currentTarget)}>
-            <Thumb image={hero} eager />
-          </button>
-        ) : (
-          <span className="skeleton run-wait" aria-hidden="true" />
-        )}
-      </div>
+        <div className="run-hero" style={{ aspectRatio: ratio, ['--ar' as string]: dims.width / dims.height }}>
+          {hero ? (
+            <button type="button" className="imgtile run-hero-tile" onClick={(e) => onOpen(0, e.currentTarget)}>
+              <Thumb image={hero} eager />
+            </button>
+          ) : (
+            <span className="skeleton run-wait" aria-hidden="true" />
+          )}
+        </div>
       )}
       {rest.length + waiting > 0 && (
         <ul className="run-variants">

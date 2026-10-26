@@ -91,13 +91,16 @@ describe('Images', () => {
     expect(screen.getByText('Create 2 image(s) with FLUX klein')).toBeInTheDocument()
     emit('attachments', 2, { step_id: 's1', items: [{ kind: 'image', id: 'new1' }, { kind: 'image', id: 'new2' }] })
     emit('step_finished', 3, { step_id: 's1', ok: true, preview: 'Created 2 image(s)' })
-    emit('turn_done', 4)
     const run = screen.getByRole('region', { name: 'New images' })
     expect(within(run).getByRole('img', { name: 'Generated image 1' })).toHaveAttribute('src', '/api/images/new1/file')
+    // Prepended while the turn runs, with no refetch...
     const gallery = screen.getByRole('region', { name: 'Your images' })
     const tiles = within(gallery).getAllByRole('img')
     expect(tiles.map((t) => t.getAttribute('src'))).toEqual(['/api/images/new1/file', '/api/images/new2/file'])
     expect(calls.filter((c) => c.path === PAGE)).toHaveLength(1)
+    // ...and page 1 is fetched again once it is done, for the full records.
+    emit('turn_done', 4)
+    await waitFor(() => expect(calls.filter((c) => c.path === PAGE)).toHaveLength(2))
   })
 
   it('images view creates the Images chat once and reuses it', async () => {
@@ -184,9 +187,65 @@ describe('Images', () => {
     })
     render(<Images />)
     expect(await screen.findByText("Image generation isn't set up on this PC yet.")).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /set up image models/i })).toHaveAttribute('href')
+    expect(screen.getByText('See docs/models.md in the Hearthkeep repository.')).toBeInTheDocument()
+    expect(screen.queryByRole('link')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Create' })).toBeNull()
     expect(screen.queryByText('Your images will appear here. Describe one above to start.')).toBeNull()
+  })
+
+  it('after the turn the viewer shows the prompt and Copy prompt', async () => {
+    let pages = 0
+    routes({
+      [`GET ${PAGE}`]: () => {
+        pages += 1
+        return { body: { images: pages === 1 ? [] : [image(1, { id: 'new1', prompt: 'The prompt the model wrote' })] } }
+      },
+    })
+    render(<Images />)
+    await screen.findByRole('option', { name: 'Z-Image Turbo' })
+    fireEvent.change(screen.getByRole('combobox', { name: 'Model' }), { target: { value: 'zimage' } })
+    fireEvent.click(within(screen.getByRole('group', { name: 'Shape' })).getByRole('button', { name: 'Landscape' }))
+    await describeAndCreate('A lighthouse at dusk')
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1))
+    emit('step_started', 1, { step_id: 's1', tool: 'generate_image', summary: 'Create 4 image(s)' })
+    emit('attachments', 2, { step_id: 's1', items: [{ kind: 'image', id: 'new1' }] })
+    emit('step_finished', 3, { step_id: 's1', ok: true, preview: 'ok' })
+    emit('turn_done', 4)
+
+    // The run panel's viewer knows what was asked, with which model and at what size.
+    const run = screen.getByRole('region', { name: 'New images' })
+    fireEvent.click(within(run).getByRole('button', { name: 'Generated image 1' }))
+    let viewer = screen.getByRole('dialog', { name: 'Image 1 of 1' })
+    expect(within(viewer).getByText('A lighthouse at dusk')).toBeInTheDocument()
+    expect(within(viewer).getByText('Z-Image Turbo')).toBeInTheDocument()
+    expect(within(viewer).getByText('1536 × 864')).toBeInTheDocument()
+    expect(within(viewer).getByRole('button', { name: 'Copy prompt' })).toBeInTheDocument()
+    fireEvent.keyDown(viewer, { key: 'Escape' })
+
+    // The gallery refetches its first page once the turn is done, so the server's record wins.
+    const gallery = screen.getByRole('region', { name: 'Your images' })
+    const tile = await within(gallery).findByRole('button', { name: 'The prompt the model wrote' })
+    expect(pages).toBe(2)
+    fireEvent.click(tile)
+    viewer = screen.getByRole('dialog', { name: 'Image 1 of 1' })
+    expect(within(viewer).getByText('The prompt the model wrote')).toBeInTheDocument()
+    expect(within(viewer).getByRole('button', { name: 'Copy prompt' })).toBeInTheDocument()
+  })
+
+  it('keeps the open gallery image when a new one arrives', async () => {
+    routes({ [`GET ${PAGE}`]: { body: { images: [image(1), image(2)] } } })
+    render(<Images />)
+    const gallery = await screen.findByRole('region', { name: 'Your images' })
+    await within(gallery).findByRole('button', { name: 'A prompt for image 2' })
+    await describeAndCreate('A cat')
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1))
+    fireEvent.click(within(gallery).getByRole('button', { name: 'A prompt for image 2' }))
+    expect(screen.getByRole('dialog', { name: 'Image 2 of 2' })).toBeInTheDocument()
+
+    emit('step_started', 1, { step_id: 's1', tool: 'generate_image', summary: 'Create 4 image(s)' })
+    emit('attachments', 2, { step_id: 's1', items: [{ kind: 'image', id: 'new1' }] })
+    const viewer = screen.getByRole('dialog', { name: 'Image 3 of 3' })
+    expect(within(viewer).getByRole('img', { name: 'A prompt for image 2' })).toHaveAttribute('src', '/api/images/img2/file')
   })
 
   it('copy prompt copies the prompt text', async () => {
