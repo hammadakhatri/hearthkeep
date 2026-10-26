@@ -47,9 +47,6 @@ _PORT_PROBE_TIMEOUT = 0.5
 log = logging.getLogger(__name__)
 
 
-log = logging.getLogger(__name__)
-
-
 class ProcessError(Exception):
     """A model server could not be started or configured. `user_message` is safe to show."""
 

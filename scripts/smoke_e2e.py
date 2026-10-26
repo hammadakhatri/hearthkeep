@@ -118,7 +118,8 @@ def stream_turn(
         for line in response.iter_lines():
             # Checked on every line, keep-alive comments included, so a stalled turn that
             # keeps the connection alive still times out.
-            check(ends is None or time.monotonic() < ends, f"no result after {deadline:.0f}s")
+            if ends is not None and time.monotonic() >= ends:
+                raise SmokeError(f"no result after {deadline:.0f}s")
             if line.startswith(":"):
                 continue
             if line.startswith("event: "):
@@ -255,7 +256,8 @@ def main(argv: list[str] | None = None) -> int:
         check(health.get("chat_model_reachable") is True, f"chat model not reachable: {health}")
         sign_in(client, args.code)
     except (SmokeError, httpx.HTTPError, ValueError, KeyError) as exc:
-        print(f"FAIL setup: {exc if isinstance(exc, SmokeError) else type(exc).__name__}")
+        detail = exc if isinstance(exc, SmokeError) else type(exc).__name__
+        print(f"FAIL setup: {detail}".splitlines()[0])
         return 1
 
     state: dict = {}
