@@ -10,7 +10,7 @@ Hearthkeep is an open-source, local-first personal assistant. It runs on your ow
 
 ## Run the Phase 1 core
 
-You need Python 3.12+, [uv](https://docs.astral.sh/uv/), Node 20+, and an OpenAI-compatible chat server already running on your own machine (by default at `http://127.0.0.1:8080/v1`).
+You need Python 3.12+, [uv](https://docs.astral.sh/uv/), Node 20.19+ (or 22.12+), and an OpenAI-compatible chat server already running on your own machine (by default at `http://127.0.0.1:8080/v1`).
 
 ```
 # build the web app (the server serves web/dist)
@@ -23,7 +23,7 @@ uv sync
 uv run hearthkeep serve --data <data>
 ```
 
-On first run the data folder is created with a `config.toml` you can edit (model name, chat server address, port). If your chat server needs a key, store it with `uv run hearthkeep secrets set chat_api_key --data <data>`.
+On first run the data folder is created with a `config.toml` you can edit (model name, chat server address, port). If you change `port`, change `public_origin` to match (and `rp_id` if the host name changes). If your chat server needs a key, store it with `uv run hearthkeep secrets set chat_api_key --data <data>`.
 
 The server prints a one-time enrollment code. Open `http://localhost:8765`, enter the code within 15 minutes and create your first passkey. Lost the code? Run `uv run hearthkeep enroll-code --data <data>`. Add a second device before removing the first: the last device cannot be removed.
 
@@ -31,7 +31,7 @@ The server prints a one-time enrollment code. Open `http://localhost:8765`, ente
 
 ## Learn more
 
-- [docs/design.md](docs/design.md): design and roadmap
+- [docs/design.md](docs/design.md): design
 - [docs/security.md](docs/security.md): security model, permissions and what the assistant can never do
 - [SECURITY.md](SECURITY.md): how to report a vulnerability
 - [CONTRIBUTING.md](CONTRIBUTING.md): how to contribute

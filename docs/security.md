@@ -6,10 +6,12 @@ This page describes what the code in this repository does today. Phase 1 is the 
 
 ## Network model
 
-- The server binds to `127.0.0.1` only. A `host` in `config.toml` that is not a loopback address is rejected at startup.
+- The server binds to loopback only (`127.0.0.1` or `::1`). A `host` in `config.toml` that is not a loopback address is rejected at startup.
+- The port is set by `port` in `config.toml`. If you change it, change `public_origin` to the same port, and `rp_id` too if the host name changes: sign-in and the request checks below compare against them.
 - The chat model must also be local: `chat_base_url` has to point at `127.0.0.1`, `::1` or `localhost`, otherwise the server refuses to start. Hearthkeep only talks to local models.
 - Remote access is meant to go through your private Tailscale network (`tailscale serve` in front of the loopback port). Nothing is exposed to the public internet. If `public_origin` is not localhost it must be `https`, and the session cookie is then marked `Secure`.
 - The server ignores `X-Forwarded-For`, so a local process cannot fake its address to dodge rate limits.
+- Hearthkeep never uses system or environment proxy settings for its local connections (to the chat model), so your chats and the chat API key cannot be routed through a proxy or VPN.
 
 ## Signing in: passkeys and step-up
 
@@ -40,11 +42,12 @@ Other rules:
 
 ## Approvals
 
-When a call needs your say-so, Hearthkeep creates an approval and the assistant waits. Approvals can be resolved only from a signed-in owner session, never by the model. Resolution is a single atomic database update, so two requests cannot both win. Approvals expire after 15 minutes by default (`approval_ttl_minutes`); an expired approval is treated as declined. An approval that needs step-up cannot be approved without one.
+When a call needs your say-so, Hearthkeep creates an approval and the assistant waits. Approvals can be resolved only from a signed-in owner session, never by the model. Resolution is a single atomic database update, so two requests cannot both win. Approvals expire after 15 minutes by default (`approval_ttl_minutes`); an expired approval is treated as declined. An approval that needs step-up cannot be approved without one. No reply survives a restart: when the server starts, every pending approval is expired and any reply that was still running is ended with a note that it was interrupted.
 
 ## Web hardening
 
-- Every response carries a strict `Content-Security-Policy` (own origin only, no framing), `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`.
+- Every response carries a strict `Content-Security-Policy`: scripts, connections and everything else come only from Hearthkeep's own origin, with two exceptions, inline styles and `data:`/`blob:` images; no other site may frame it (`frame-ancestors 'none'`). Responses also carry `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`.
+- A request whose `Host` header is not the `public_origin` host or a loopback name (`127.0.0.1`, `::1`, `localhost`, any port) gets a 400. This blocks DNS-rebinding pages from talking to the server under their own name.
 - Every state-changing request (POST, PUT, PATCH, DELETE) must carry the header `X-Hearthkeep: 1` and an `Origin` that exactly matches `public_origin`; otherwise it gets a 403.
 - Sign-in and enrollment endpoints are rate limited: 10 attempts per minute per client address, and 30 per minute across all clients. Behind `tailscale serve` every request looks local, so the global cap is the one that bounds guessing.
 - Unexpected server errors are logged by type only, never with message or traceback, because those can contain private data.
