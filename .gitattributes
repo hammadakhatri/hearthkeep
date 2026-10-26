@@ -1,2 +1,4 @@
 # Hook scripts must keep LF endings so they run under sh on every platform.
 .githooks/* text eol=lf
+# The sandbox image tag hashes these files: keep their bytes the same on every platform.
+server/src/hearthkeep/sandbox/image/** text eol=lf

@@ -35,3 +35,16 @@ def memory_keyring():
     keyring.set_keyring(backend)
     yield backend
     keyring.set_keyring(previous)
+
+
+@pytest.fixture
+def sandbox_image():
+    """The built sandbox image's tag; skips when Docker or the image is missing."""
+    from hearthkeep.sandbox.image import docker_ok, image_present, image_tag
+
+    if not docker_ok():
+        pytest.skip("Docker is not running")
+    tag = image_tag()
+    if not image_present(tag):
+        pytest.skip(f"sandbox image {tag} is not built (hearthkeep sandbox build --data <data>)")
+    return tag

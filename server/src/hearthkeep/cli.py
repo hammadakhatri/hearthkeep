@@ -1,4 +1,4 @@
-"""Command line: `hearthkeep serve | enroll-code | secrets set/list`."""
+"""Command line: `hearthkeep serve | enroll-code | secrets set/list | sandbox build/status`."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ from hearthkeep.runtime.supervisor import (
     build_llama_process,
     ensure_chat_api_key,
 )
+from hearthkeep.sandbox import image as sandbox_image
 from hearthkeep.secrets import SecretStore, SecretStoreError
 
 if TYPE_CHECKING:
@@ -337,6 +338,41 @@ def cmd_secrets_list(args: argparse.Namespace) -> int:
     return 0
 
 
+SANDBOX_BUILD_INTRO = (
+    "Building the Python sandbox image. The first build downloads Python and the analysis "
+    "libraries (about 1 GB)."
+)
+
+
+def cmd_sandbox_build(args: argparse.Namespace) -> int:
+    _settings(Path(args.data))
+    print(SANDBOX_BUILD_INTRO, flush=True)
+    if not sandbox_image.docker_ok(sandbox_image.DOCKER):
+        print(
+            "error: Docker is not running or not installed. Start Docker Desktop and try again.",
+            file=sys.stderr,
+        )
+        return 1
+    tag = sandbox_image.image_tag()
+    code = sandbox_image.build_image(tag, sandbox_image.DOCKER)
+    if code != 0:
+        print(f"error: the sandbox image build failed (docker exit code {code}).", file=sys.stderr)
+        return 1
+    print(f"Sandbox image ready: {tag}")
+    return 0
+
+
+def cmd_sandbox_status(args: argparse.Namespace) -> int:
+    _settings(Path(args.data))
+    docker = sandbox_image.DOCKER
+    running = sandbox_image.docker_ok(docker)
+    tag = sandbox_image.image_tag()
+    present = running and sandbox_image.image_present(tag, docker)
+    print(f"Docker: {'running' if running else 'not found'}")
+    print(f"Sandbox image: {tag} ({'present' if present else 'missing'})")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="hearthkeep", description="Your private AI, at home.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -363,6 +399,13 @@ def build_parser() -> argparse.ArgumentParser:
     put.set_defaults(func=cmd_secrets_set)
     names = with_data(secrets_sub.add_parser("list", help="list secret names (not values)"))
     names.set_defaults(func=cmd_secrets_list)
+
+    sandbox = sub.add_parser("sandbox", help="the Python sandbox image (needs Docker)")
+    sandbox_sub = sandbox.add_subparsers(dest="sandbox_command", required=True)
+    build = with_data(sandbox_sub.add_parser("build", help="build the sandbox image (one time)"))
+    build.set_defaults(func=cmd_sandbox_build)
+    status = with_data(sandbox_sub.add_parser("status", help="show Docker and the sandbox image"))
+    status.set_defaults(func=cmd_sandbox_status)
     return parser
 
 

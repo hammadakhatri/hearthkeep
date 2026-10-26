@@ -33,11 +33,15 @@ packages = ["src/hearthkeep"]
 artifacts = [
     "src/hearthkeep/models/cards/*.toml",
     "src/hearthkeep/models/workflows/*.json",
+    "src/hearthkeep/sandbox/image/**",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "docker: needs Docker running and the sandbox image built (hearthkeep sandbox build)",
+]
 filterwarnings = [
     # starlette's TestClient nudges towards `httpx2`; plain httpx works and is already a dependency
     "ignore:Using `httpx` with `starlette.testclient` is deprecated",

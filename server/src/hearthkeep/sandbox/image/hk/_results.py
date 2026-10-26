@@ -1,0 +1,180 @@
+"""Where a script's findings go: one JSON object per line in `<out>/results.jsonl`."""
+
+from __future__ import annotations
+
+import datetime as _dt
+import decimal
+import json
+import math
+import os
+import re
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+MAX_TABLE_ROWS = 500
+FILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,119}")
+NOT_A_NUMBER = "not a number"
+
+
+def out_dir() -> Path:
+    return Path(os.environ.get("HK_OUT", "/out"))
+
+
+def emit(record: dict) -> None:
+    """Append one record to results.jsonl (strict JSON: no NaN or Infinity)."""
+    line = json.dumps(record, ensure_ascii=False, allow_nan=False)
+    path = out_dir() / "results.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
+
+
+def _is_missing(value) -> bool:
+    if value is None or value is pd.NaT:
+        return True
+    if isinstance(value, float | np.floating):
+        return not math.isfinite(float(value))
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def plain(value):
+    """A JSON-safe copy of one cell or scalar: numpy → Python, dates → ISO text, NaN → None."""
+    if isinstance(value, np.generic):
+        value = value.item()
+    if _is_missing(value):
+        return None
+    if isinstance(value, bool | int | str):
+        return value
+    if isinstance(value, float):
+        return value
+    if isinstance(value, decimal.Decimal):
+        return float(value)
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    if isinstance(value, _dt.datetime | _dt.date | _dt.time):
+        return value.isoformat()
+    if isinstance(value, pd.Timedelta | _dt.timedelta):
+        return str(value)
+    return str(value)
+
+
+def _value_record(name: str, value, *, unit, note, kind: str, page) -> dict:
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("a result needs a name")
+    if isinstance(value, np.generic):
+        value = value.item()
+    is_date = isinstance(value, _dt.date | pd.Timestamp) and value is not pd.NaT
+    if _is_missing(value):
+        value = None
+        note = NOT_A_NUMBER if note is None else f"{note} ({NOT_A_NUMBER})"
+    elif isinstance(value, bool):
+        pass
+    elif isinstance(value, int | float | str):
+        pass
+    elif isinstance(value, decimal.Decimal):
+        value = float(value)
+    elif is_date:
+        value = value.isoformat()
+    else:
+        raise TypeError(
+            f"hk.result takes a number, a date or text, not {type(value).__name__}; "
+            "use hk.table for many values"
+        )
+    return {
+        "type": "value",
+        "name": name,
+        "value": value,
+        "unit": unit,
+        "note": note,
+        "is_date": bool(is_date),
+        "kind": kind,
+        "page": page,
+    }
+
+
+def result(name: str, value, *, unit: str | None = None, note: str | None = None) -> None:
+    """Report one computed value (a number, a count, a date or a short text)."""
+    emit(_value_record(name, value, unit=unit, note=note, kind="computed", page=None))
+
+
+def document(name: str, value, *, page: int, unit: str | None = None) -> None:
+    """Report a value read straight from a document page, not computed."""
+    if not isinstance(page, int) or isinstance(page, bool) or page < 1:
+        raise ValueError("page must be a page number (1 or more)")
+    emit(_value_record(name, value, unit=unit, note=None, kind="document", page=page))
+
+
+def table(
+    name: str, df: pd.DataFrame, *, columns: list[str] | None = None, note: str | None = None
+) -> None:
+    """Report rows to show the owner (the first 500 are kept; total_rows is the real count).
+
+    row_numbers are the rows in the original file (index + the file row of the first data
+    row), so the owner can find them; they are null when that is unknown.
+    """
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError("hk.table takes a pandas DataFrame")
+    cols = list(df.columns) if columns is None else list(columns)
+    missing = [c for c in cols if c not in df.columns]
+    if missing:
+        raise KeyError(f"no such column: {missing[0]!r}")
+    kept = df[cols].head(MAX_TABLE_ROWS)
+    first = df.attrs.get("hk_first_data_row")
+    row_numbers = None
+    if isinstance(first, int) and pd.api.types.is_integer_dtype(kept.index.dtype):
+        row_numbers = [int(i) + first for i in kept.index]
+    rows = [[plain(v) for v in row] for row in kept.itertuples(index=False, name=None)]
+    emit(
+        {
+            "type": "table",
+            "name": name,
+            "columns": [str(c) for c in cols],
+            "rows": rows,
+            "row_numbers": row_numbers,
+            "note": note,
+            "total_rows": int(len(df)),
+        }
+    )
+
+
+def file(name: str, data) -> None:
+    """Save a file for the owner to download: a DataFrame as .csv (UTF-8 with BOM, so Excel
+    reads it) or .xlsx, or bytes/text as they are."""
+    if not isinstance(name, str) or not FILE_NAME.fullmatch(name):
+        raise ValueError(
+            "file names use letters, digits, spaces, dots, dashes and underscores, start with "
+            "a letter or digit and are at most 120 characters"
+        )
+    target = out_dir() / "files" / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lower = name.lower()
+    if isinstance(data, pd.DataFrame):
+        if lower.endswith(".csv"):
+            data.to_csv(target, index=False, encoding="utf-8-sig")
+        elif lower.endswith(".xlsx"):
+            data.to_excel(target, index=False, engine="openpyxl")
+        else:
+            raise ValueError("a table is saved as a .csv or .xlsx file")
+    elif isinstance(data, bytes | bytearray):
+        target.write_bytes(bytes(data))
+    elif isinstance(data, str):
+        target.write_text(data, encoding="utf-8")
+    else:
+        raise TypeError("hk.file takes a DataFrame, bytes or text")
+    emit({"type": "file", "name": name, "member": f"files/{name}"})
+
+
+def cleaned(note: str) -> None:
+    """Say what was cleaned or assumed (shown to the owner under `How I got this`)."""
+    if not isinstance(note, str) or not note.strip():
+        raise ValueError("a cleaning note needs text")
+    emit({"type": "cleaning", "note": note})
+
+
+def section(name: str) -> None:
+    emit({"type": "section", "name": name})
