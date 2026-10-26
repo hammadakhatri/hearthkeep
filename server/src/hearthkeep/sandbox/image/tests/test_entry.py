@@ -131,6 +131,21 @@ def test_entry_replaces_locked_directory_at_status_json(job):
     assert not any(name.startswith("status.json/") for name in contents)
 
 
+def test_entry_tar_skips_sparse_files(job):
+    (job.job / "main.py").write_text(
+        "import os\n"
+        "out = os.environ['HK_OUT']\n"
+        "with open(os.path.join(out, 'sparse.bin'), 'wb') as fh:\n"
+        "    fh.truncate(1 << 30)  # 1 GB that takes no space\n"
+        "open(os.path.join(out, 'fine.txt'), 'w').write('ok')\n",
+        encoding="utf-8",
+    )
+    status, contents = run(job, "script")
+    assert status["exit_code"] == 0
+    assert "sparse.bin" not in contents
+    assert contents["fine.txt"] == b"ok"
+
+
 def test_entry_tar_survives_a_file_shrinking_during_copy(job, monkeypatch):
     (job.job / "main.py").write_text(
         "import os\nopen(os.path.join(os.environ['HK_OUT'], 'big.txt'), 'w').write('y' * 1000)\n",

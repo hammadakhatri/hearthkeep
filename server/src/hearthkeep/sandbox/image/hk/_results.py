@@ -72,7 +72,7 @@ def plain(value):
     if isinstance(value, _dt.datetime | _dt.date | _dt.time):
         return value.isoformat()
     if isinstance(value, pd.Timedelta | _dt.timedelta):
-        return str(value)
+        return pd.Timedelta(value).isoformat()  # same as hk.result, e.g. P0DT1H30M0S
     return str(value)
 
 

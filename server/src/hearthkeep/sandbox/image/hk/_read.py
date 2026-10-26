@@ -15,12 +15,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from hk._results import ROW_INDEX
+from hk._results import ROW_INDEX, cleaned
 
 DELIMITERS = (",", ";", "\t", "|")
 HEADER_SCAN_ROWS = 20
 DECIMAL_COMMA = re.compile(r"[-+]?\d+(\.\d{3})*,\d+")
-DOT_THOUSANDS = re.compile(r"[-+]?\d{1,3}(\.\d{3})+")
+DOT_THOUSANDS = re.compile(r"[-+]?[1-9]\d{0,2}(\.\d{3})+")
+INT64_SAFE = 2**53  # larger whole numbers stay float rather than risk int64
 PLAIN_INTEGER = re.compile(r"[-+]?\d+")
 ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?)?")
 _SAMPLE_CHARS = 64 * 1024
@@ -160,7 +161,10 @@ def column_names(header: list) -> list[str]:
 # ---------------------------------------------------------------- typing columns
 
 
-def _text_column(values: pd.Series, delimiter: str | None) -> pd.Series:
+def _text_column(
+    values: pd.Series, delimiter: str | None, notes: list[str] | None = None
+) -> pd.Series:
+    """Type one text column. Dot-thousands conversions are named in `notes`."""
     stripped = values.map(lambda v: v.strip() if isinstance(v, str) else v)
     stripped = stripped.mask(stripped.map(_blank), np.nan)
     present = stripped.dropna()
@@ -177,7 +181,13 @@ def _text_column(values: pd.Series, delimiter: str | None) -> pd.Series:
             converted = stripped.map(
                 lambda s: float(s.replace(".", "").replace(",", ".")) if isinstance(s, str) else s
             ).astype(float)
-            if not comma.any() and converted.notna().all():
+            if dots.any() and notes is not None:
+                notes.append(
+                    f'Read "1.500" style numbers in column {values.name} as thousands '
+                    "(1.500 = 1500)."
+                )
+            whole = converted.notna().all() and (converted.abs() <= INT64_SAFE).all()
+            if not comma.any() and whole:
                 return converted.astype("int64")
             return converted
     numbers = pd.to_numeric(stripped, errors="coerce")
@@ -234,8 +244,10 @@ def read_text_table(path: Path, *, header: int | None = None) -> tuple[pd.DataFr
     df = _frame(names, records[h + 1 :], table.lines[h + 1 :])
     if not table.lines[h + 1 :]:
         df.attrs["hk_first_data_row"] = table.lines[h] + 1
+    notes: list[str] = []
     for col in df.columns:
-        df[col] = _text_column(df[col], table.delimiter)
+        df[col] = _text_column(df[col], table.delimiter, notes)
+    df.attrs["hk_read_notes"] = notes
     df.attrs["hk_header_row"] = table.lines[h]
     df.attrs["hk_encoding"] = table.encoding
     df.attrs["hk_delimiter"] = table.delimiter
@@ -358,4 +370,6 @@ def read(file: str, *, sheet: str | int | None = None, header: int | None = None
     else:
         raise ValueError(f"hk.read can't read a {kind} file")
     df.index.name = ROW_INDEX  # hk.table keeps file row numbers while this index survives
+    for note in df.attrs.pop("hk_read_notes", []):
+        cleaned(note)  # what reading assumed is part of "How I got this"
     return df

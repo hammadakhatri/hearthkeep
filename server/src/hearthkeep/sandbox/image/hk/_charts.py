@@ -64,7 +64,7 @@ def _highlight_layers(highlight, x: str, x_type: str) -> list[dict]:
                     "data": {"values": values},
                     "mark": {"type": "rule", "strokeDash": [4, 4]},
                     "encoding": {
-                        "x": {"field": field(x), "type": x_type},
+                        "x": {"field": field(x), "type": x_type, "title": x},
                         "tooltip": [{"field": "hk_label", "type": "nominal", "title": "Note"}],
                     },
                 }
@@ -74,7 +74,7 @@ def _highlight_layers(highlight, x: str, x_type: str) -> list[dict]:
                     "data": {"values": values},
                     "mark": {"type": "text", "align": "left", "dx": 4, "dy": -4, "y": 0},
                     "encoding": {
-                        "x": {"field": field(x), "type": x_type},
+                        "x": {"field": field(x), "type": x_type, "title": x},
                         "text": {"field": "hk_label"},
                     },
                 }
@@ -117,17 +117,18 @@ def _spec(mark: str, df: pd.DataFrame, x: str, y: str, color, title: str, highli
     ]
     x_type = _field_type(df[x], mark=mark)
     encoding: dict = {
-        "x": {"field": field(x), "type": x_type},
-        "y": {"field": field(y), "type": "quantitative"},
+        "x": {"field": field(x), "type": x_type, "title": x},
+        "y": {"field": field(y), "type": "quantitative", "title": y},
         "tooltip": [
-            {"field": field(f), "type": _field_type(df[f], mark="tooltip")} for f in fields
+            {"field": field(f), "type": _field_type(df[f], mark="tooltip"), "title": f}
+            for f in fields
         ],
     }
     params: list[dict] = []
     if mark in ("line", "point"):
         params.append({"name": "zoom", "select": "interval", "bind": "scales"})
     if color:
-        encoding["color"] = {"field": field(color), "type": "nominal"}
+        encoding["color"] = {"field": field(color), "type": "nominal", "title": color}
         encoding["opacity"] = {"condition": {"param": "legend", "value": 1}, "value": 0.2}
         params.append(
             {

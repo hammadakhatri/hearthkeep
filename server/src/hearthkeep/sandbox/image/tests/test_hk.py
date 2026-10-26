@@ -203,7 +203,7 @@ def test_bar_line_scatter_specs_have_zoom_legend_and_highlight(job):
     assert spec["data"]["values"][5]["Amount"] is None
     main = spec["layer"][0]
     assert main["mark"]["type"] == "line"
-    assert main["encoding"]["x"] == {"field": "Month", "type": "temporal"}
+    assert main["encoding"]["x"] == {"field": "Month", "type": "temporal", "title": "Month"}
     params = {p["name"]: p for p in main["params"]}
     assert params["zoom"] == {"name": "zoom", "select": "interval", "bind": "scales"}
     assert params["legend"]["bind"] == "legend"
@@ -430,8 +430,18 @@ def test_chart_fields_escape_dots_and_brackets(job):
     legend = next(p for p in main["params"] if p["name"] == "legend")
     assert legend["select"]["fields"] == [r"a\\b"]
     assert spec["data"]["values"][0] == {"price.gbp": 1.0, "Amount [GBP]": 3.0, slash: "x"}
+    # Axis, legend and tooltip titles show the raw column names, not the escapes.
+    assert main["encoding"]["x"]["title"] == "price.gbp"
+    assert main["encoding"]["y"]["title"] == "Amount [GBP]"
+    assert main["encoding"]["color"]["title"] == slash
+    assert [t["title"] for t in main["encoding"]["tooltip"]] == [
+        "price.gbp",
+        "Amount [GBP]",
+        slash,
+    ]
     rule = marked["layer"][1]
     assert rule["encoding"]["x"]["field"] == r"price\.gbp"
+    assert rule["encoding"]["x"]["title"] == "price.gbp"
     assert rule["data"]["values"][0] == {"price.gbp": 1.5, "hk_label": "m"}
 
 
@@ -454,12 +464,15 @@ def test_numpy_dates_and_durations_are_not_integers(job):
     hk.result("when", np.datetime64("2026-01-05T10:00:00.000000000"))
     hk.result("gap", np.timedelta64(90, "m"))
     hk.table("Dates", pd.DataFrame({"d": [np.datetime64("2026-01-05T00:00:00.000000000")]}))
+    hk.table("Gaps", pd.DataFrame({"g": [np.timedelta64(90, "m"), pd.Timedelta(days=1)]}))
     values = {r["name"]: r for r in by_type(job.results(), "value")}
     assert values["when"]["value"].startswith("2026-01-05T10:00")
     assert values["when"]["is_date"] is True
     assert values["gap"]["value"] == "P0DT1H30M0S"
     assert values["gap"]["is_date"] is False
-    assert by_type(job.results(), "table")[0]["rows"] == [["2026-01-05T00:00:00"]]
+    dates, gaps = by_type(job.results(), "table")
+    assert dates["rows"] == [["2026-01-05T00:00:00"]]
+    assert gaps["rows"] == [["P0DT1H30M0S"], ["P1DT0H0M0S"]]  # same format as hk.result
 
 
 def test_profile_knows_day_month_name_year_with_dashes():
@@ -467,7 +480,7 @@ def test_profile_knows_day_month_name_year_with_dashes():
 
     assert _date_format("12-Mar-2026") == "D Month YYYY"
     assert _date_format("12 March, 2026") == "D Month YYYY"
-    assert _date_format("12#Mar#2026") is None
+    assert _date_format("12 Mar#2026") is None  # "#" is not a separator after the month
 
 
 def test_read_semicolon_dot_thousands_integers(job):
@@ -476,3 +489,25 @@ def test_read_semicolon_dot_thousands_integers(job):
     assert df["Qty"].tolist() == [1500, 20, 12_000_000]
     assert df["Price"].tolist() == [2.5, 3.0, 4.75]
     assert df["Code"].tolist() == [1.5, 2.25, 3.0]  # not all thousands-shaped: dots are decimals
+    assert by_type(job.results(), "cleaning") == [
+        {
+            "type": "cleaning",
+            "note": 'Read "1.500" style numbers in column Qty as thousands (1.500 = 1500).',
+        }
+    ]
+
+
+def test_read_semicolon_three_place_dot_decimals_stay_decimals(job):
+    data = "Weight;Rate\n0.250;1.125\n1.125;0.500\n45.320;2\n"
+    df = hk.read(job.add("w.csv", "csv", data.encode()))
+    assert df["Weight"].tolist() == [0.25, 1.125, 45.32]
+    assert df["Rate"].tolist() == [1.125, 0.5, 2.0]
+    assert df["Weight"].dtype == float
+    assert by_type(job.results(), "cleaning") == []
+
+
+def test_read_semicolon_huge_dot_thousands_stay_float(job):
+    data = "Big;Id\n12.000.000.000.000.000;1\n1.000;2\n"
+    df = hk.read(job.add("big.csv", "csv", data.encode()))
+    assert df["Big"].dtype == float  # over 2**53: never squeezed into int64
+    assert df["Big"].tolist() == [1.2e16, 1000.0]
