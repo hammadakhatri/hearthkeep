@@ -36,6 +36,9 @@ class FakeVerifier:
     ) -> int:
         if response.get("challenge") != challenge or response.get("id") != credential.id:
             raise VerificationError("authentication failed")
-        if response["sign_count"] <= credential.sign_count:
+        count = response["sign_count"]
+        # Real passkeys often report 0 forever; only a decrease (or a repeat of a non-zero
+        # count) signals a cloned authenticator.
+        if count < credential.sign_count or (count == credential.sign_count and count != 0):
             raise VerificationError("sign count did not increase")
         return response["sign_count"]

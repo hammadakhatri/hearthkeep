@@ -1,3 +1,4 @@
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 
@@ -5,7 +6,12 @@ import pytest
 from fakes import FakeVerifier
 
 from hearthkeep import audit
-from hearthkeep.auth.enrollment import CODE_ALPHABET, EnrollmentCodes, first_device_allowed
+from hearthkeep.auth.enrollment import (
+    CODE_ALPHABET,
+    EnrollmentCodes,
+    EnrollmentError,
+    first_device_allowed,
+)
 from hearthkeep.auth.sessions import SessionStore, StepUp
 from hearthkeep.auth.webauthn import (
     ChallengeStore,
@@ -62,6 +68,8 @@ def test_first_device_code_only_when_no_credentials(conn, clock):
     assert codes.first_device_allowed() is True
     code = codes.issue("first_device", ttl_minutes=15)
     add_credential(conn)
+    with pytest.raises(EnrollmentError):
+        codes.issue("first_device", ttl_minutes=15)
     assert first_device_allowed(conn) is False
     # a first-device code cannot be redeemed once a credential exists
     assert codes.consume(code, "first_device") is False
@@ -108,7 +116,7 @@ def test_code_stored_hashed(conn, clock):
     code = codes.issue("add_device", ttl_minutes=10)
     stored = conn.execute("SELECT code_hash FROM enrollment_codes").fetchone()[0]
     assert code.lower() not in stored.lower()
-    assert len(stored) == 64
+    assert stored == hashlib.sha256(code.upper().encode()).hexdigest()
     codes.consume(code, "add_device")
     events = audit.list_events(conn)
     assert {e["event"] for e in events} >= {"enrollment.code_issued", "enrollment.code_used"}
@@ -171,6 +179,16 @@ def test_revoking_credential_kills_sessions(conn, clock):
     assert {"credential.revoked", "session.revoked"} <= events
 
 
+def test_revoke_credential_audits_only_when_changed(conn, clock):
+    add_credential(conn)
+    store = SessionStore(conn, idle_days=14, clock=clock)
+    store.revoke_credential("cred-1")
+    store.revoke_credential("cred-1")
+    store.revoke_credential("missing")
+    events = [e["event"] for e in audit.list_events(conn)]
+    assert events.count("credential.revoked") == 1
+
+
 def test_session_of_revoked_credential_rejected_even_if_session_row_live(conn, clock):
     add_credential(conn)
     store = SessionStore(conn, idle_days=14, clock=clock)
@@ -194,6 +212,14 @@ def test_step_up_token_bound_to_session_and_approval(clock):
     assert step.check(token, "sess-1", None, "approve") is False
     token = step.issue("sess-1", "appr-1", "approve")
     assert step.check(token, "sess-1", "appr-1", "approve") is True
+
+
+def test_step_up_non_ascii_input_returns_false(clock):
+    step = StepUp(clock=clock)
+    token = step.issue("sess-1", None, "p")
+    assert step.check(token, "séss-☃", None, "p") is False
+    token = step.issue("sess-é", None, "p")
+    assert step.check(token, "sess-1", None, "p") is False
 
 
 def test_step_up_token_without_approval(clock):
@@ -223,13 +249,30 @@ def test_step_up_token_single_use_and_expires(clock):
 
 def test_challenge_store_single_use_and_ttl(clock):
     store = ChallengeStore(clock=clock)
-    cid = store.put(b"chal")
-    assert store.take(cid) == b"chal"
-    assert store.take(cid) is None
-    cid = store.put(b"chal")
+    cid = store.put(b"chal", ceremony="login")
+    assert store.take(cid, ceremony="login") == b"chal"
+    assert store.take(cid, ceremony="login") is None
+    cid = store.put(b"chal", ceremony="login")
     clock.advance(minutes=5)
-    assert store.take(cid) is None
-    assert store.take("unknown") is None
+    assert store.take(cid, ceremony="login") is None
+    assert store.take("unknown", ceremony="login") is None
+
+
+def test_challenge_bound_to_ceremony_session_and_approval(clock):
+    store = ChallengeStore(clock=clock)
+    cid = store.put(b"c", ceremony="step_up", session_id="s1", approval_id="a1")
+    assert store.take(cid, ceremony="login", session_id="s1", approval_id="a1") is None
+    assert store.take(cid, ceremony="step_up", session_id="s1", approval_id="a1") is None
+    for kw in (
+        {"session_id": "s2", "approval_id": "a1"},
+        {"session_id": "s1", "approval_id": "a2"},
+        {"session_id": "s1", "approval_id": None},
+    ):
+        cid = store.put(b"c", ceremony="step_up", session_id="s1", approval_id="a1")
+        assert store.take(cid, ceremony="step_up", **kw) is None
+        assert store.take(cid, ceremony="step_up", session_id="s1", approval_id="a1") is None
+    cid = store.put(b"c", ceremony="step_up", session_id="s1", approval_id="a1")
+    assert store.take(cid, ceremony="step_up", session_id="s1", approval_id="a1") == b"c"
 
 
 def test_fake_verifier_round_trip():
@@ -240,6 +283,28 @@ def test_fake_verifier_round_trip():
     assert new.id == "c"
     with pytest.raises(VerificationError):
         v.verify_registration({"id": "c", "public_key": b"k", "challenge": b"x"}, challenge)
+
+
+def test_fake_verifier_authentication_sign_counts():
+    v = FakeVerifier()
+    ch = b"c"
+
+    def auth(count, stored):
+        cred = StoredCredential(id="c", public_key=b"k", sign_count=stored)
+        return v.verify_authentication({"id": "c", "challenge": ch, "sign_count": count}, ch, cred)
+
+    assert auth(0, 0) == 0
+    assert auth(5, 3) == 5
+    with pytest.raises(VerificationError):
+        auth(2, 3)
+    with pytest.raises(VerificationError):
+        auth(3, 3)
+    with pytest.raises(VerificationError):
+        v.verify_authentication(
+            {"id": "other", "challenge": ch, "sign_count": 9},
+            ch,
+            StoredCredential(id="c", public_key=b"k", sign_count=0),
+        )
 
 
 def _settings(tmp_path):

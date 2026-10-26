@@ -100,17 +100,18 @@ class SessionStore:
         """Revoke a passkey and every session it created."""
         now = _iso(self._clock())
         with db.transaction(self._conn):
-            self._conn.execute(
+            changed = self._conn.execute(
                 "UPDATE credentials SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
                 (now, credential_id),
-            )
+            ).rowcount
             cursor = self._conn.execute(
                 "UPDATE sessions SET revoked_at = ? WHERE credential_id = ? AND revoked_at IS NULL",
                 (now, credential_id),
             )
-            audit.record(
-                self._conn, "owner", "credential.revoked", {"credential_id": credential_id}
-            )
+            if changed:
+                audit.record(
+                    self._conn, "owner", "credential.revoked", {"credential_id": credential_id}
+                )
             for _ in range(cursor.rowcount):
                 audit.record(
                     self._conn, "owner", "session.revoked", {"reason": "credential_revoked"}
@@ -142,7 +143,7 @@ class StepUp:
         expires, bound_session, bound_approval, bound_purpose = entry
         return (
             expires > self._clock()
-            and secrets.compare_digest(bound_session, session_id)
+            and secrets.compare_digest(bound_session.encode(), session_id.encode())
             and bound_approval == approval_id
             and bound_purpose == purpose
         )

@@ -35,6 +35,10 @@ def first_device_allowed(conn: sqlite3.Connection) -> bool:
     return row is None
 
 
+class EnrollmentError(Exception):
+    """An enrollment code cannot be issued in the current state."""
+
+
 class EnrollmentCodes:
     def __init__(self, conn: sqlite3.Connection, clock: Callable[[], datetime] = _utcnow):
         self._conn = conn
@@ -44,6 +48,8 @@ class EnrollmentCodes:
         return first_device_allowed(self._conn)
 
     def issue(self, purpose: Purpose, ttl_minutes: int) -> str:
+        if purpose == "first_device" and not first_device_allowed(self._conn):
+            raise EnrollmentError("a passkey already exists; first-device enrollment is closed")
         code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
         expires = self._clock() + timedelta(minutes=ttl_minutes)
         with db.transaction(self._conn):

@@ -12,7 +12,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from typing import Literal, Protocol
 
 import webauthn
 from webauthn.helpers import options_to_json_dict
@@ -30,6 +30,8 @@ RP_NAME = "Hearthkeep"
 CHALLENGE_TTL = timedelta(minutes=5)
 
 Clock = Callable[[], datetime]
+Ceremony = Literal["register", "login", "step_up"]
+Binding = tuple[str, str | None, str | None]
 
 
 def _utcnow() -> datetime:
@@ -77,7 +79,7 @@ class Verifier(Protocol):
     ) -> int: ...
 
 
-class PyWebAuthnVerifier:
+class PyWebAuthnVerifier(Verifier):
     """Verifier backed by py_webauthn. User verification is always required."""
 
     def __init__(self, settings: Settings):
@@ -148,20 +150,41 @@ class ChallengeStore:
 
     def __init__(self, clock: Clock = _utcnow):
         self._clock = clock
-        self._items: dict[str, tuple[bytes, datetime]] = {}
+        self._items: dict[str, tuple[bytes, datetime, Binding]] = {}
         self._lock = threading.Lock()
 
-    def put(self, challenge: bytes) -> str:
+    def put(
+        self,
+        challenge: bytes,
+        *,
+        ceremony: Ceremony,
+        session_id: str | None = None,
+        approval_id: str | None = None,
+    ) -> str:
         now = self._clock()
         challenge_id = secrets.token_urlsafe(16)
         with self._lock:
             self._items = {k: v for k, v in self._items.items() if v[1] > now}
-            self._items[challenge_id] = (challenge, now + CHALLENGE_TTL)
+            self._items[challenge_id] = (
+                challenge,
+                now + CHALLENGE_TTL,
+                (ceremony, session_id, approval_id),
+            )
         return challenge_id
 
-    def take(self, challenge_id: str) -> bytes | None:
+    def take(
+        self,
+        challenge_id: str,
+        *,
+        ceremony: Ceremony,
+        session_id: str | None = None,
+        approval_id: str | None = None,
+    ) -> bytes | None:
+        """Consume a challenge; None if unknown, expired, or bound to something else."""
         with self._lock:
             item = self._items.pop(challenge_id, None)
         if item is None or item[1] <= self._clock():
+            return None
+        if item[2] != (ceremony, session_id, approval_id):
             return None
         return item[0]
