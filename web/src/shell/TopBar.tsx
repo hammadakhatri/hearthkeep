@@ -89,23 +89,26 @@ function StatusPill({ health }: { health: HealthState }) {
   const gpu = 'gpu' in health ? health.gpu : undefined
   const gpuText =
     gpu && gpu.total_gb > 0 ? `GPU ${gpu.used_gb.toFixed(1)} of ${gpu.total_gb.toFixed(1)} GB in use` : null
-  if (gpuText) title = `${title}. ${gpuText}`
+  if (gpuText) title = `${title.replace(/\.$/, '')}. ${gpuText}`
   return (
-    <div
-      className="status"
-      role="status"
-      data-state={health.state}
-      title={title}
-      aria-describedby={gpuText ? 'status-gpu' : undefined}
-    >
-      <span className="dot" aria-hidden="true" />
-      <span className="status-text">{text}</span>
+    <>
+      <div
+        className="status"
+        role="status"
+        data-state={health.state}
+        title={title}
+        aria-describedby={gpuText ? 'status-gpu' : undefined}
+      >
+        <span className="dot" aria-hidden="true" />
+        <span className="status-text">{text}</span>
+      </div>
+      {/* Outside the live region, so polling never re-announces it. */}
       {gpuText && (
         <span id="status-gpu" className="sr-only">
           {gpuText}
         </span>
       )}
-    </div>
+    </>
   )
 }
 

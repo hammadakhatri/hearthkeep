@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
 import type { ModelInfo, ModelsResponse } from '../api/models'
 
@@ -48,14 +48,23 @@ export function ModelList() {
   const [data, setData] = useState<ModelsResponse | null>(null)
   const [failed, setFailed] = useState(false)
 
+  const latest = useRef(0)
+
   const load = useCallback(() => {
+    const mine = ++latest.current
     setFailed(false)
     api<ModelsResponse>('/api/models')
-      .then(setData)
-      .catch(() => setFailed(true))
+      .then((d) => mine === latest.current && setData(d))
+      .catch(() => mine === latest.current && setFailed(true))
   }, [])
 
-  useEffect(load, [load])
+  useEffect(() => {
+    load()
+    // Unmount (or a newer load) makes any answer still in flight stale.
+    return () => {
+      latest.current++
+    }
+  }, [load])
 
   let body
   if (failed) {
@@ -85,13 +94,15 @@ export function ModelList() {
               <li key={m.id} className="model">
                 <b className="model-name">{m.name}</b>
                 <span className="model-kind">{KIND[m.kind]}</span>
-                <ul className="chips" aria-label={`${m.name} capabilities`}>
-                  {m.capabilities.map((c) => (
-                    <li key={c} className="chip">
-                      {c}
-                    </li>
-                  ))}
-                </ul>
+                {m.capabilities.length > 0 && (
+                  <ul className="chips" aria-label={`${m.name} capabilities`}>
+                    {m.capabilities.map((c) => (
+                      <li key={c} className="chip">
+                        {c}
+                      </li>
+                    ))}
+                  </ul>
+                )}
                 <span className="model-source">{SOURCE[m.source]}</span>
                 <span className={`model-status${m.resident ? ' loaded' : ''}`}>
                   <span className="dot" aria-hidden="true" />

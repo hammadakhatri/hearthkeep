@@ -136,7 +136,7 @@ export function ToolsPermissions() {
           ))}
         </ul>
       ) : (
-        <ul className="perm-list">
+        <ul className="perm-list" aria-labelledby="tools-title">
           {settings.map((setting) => (
             <ToolRow key={setting.tool} setting={setting} onSaved={saved} />
           ))}
