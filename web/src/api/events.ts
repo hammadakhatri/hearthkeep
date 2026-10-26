@@ -1,5 +1,7 @@
 /** The live event stream of one agent turn (Server-Sent Events). */
 
+import { api, isApiError } from './client'
+
 export type ApprovalStatus = 'pending' | 'approved' | 'declined' | 'expired'
 
 export type AgentEvent = { seq: number } & (
@@ -38,22 +40,35 @@ const TERMINAL: ReadonlySet<AgentEventType> = new Set(['turn_done', 'turn_error'
 /** Waits before reconnecting after a drop; the last one repeats. */
 const RETRY_MS = [500, 1000, 2000, 5000]
 
+/** Consecutive drops with no new event before giving up on the stream. */
+export const MAX_FAILURES = 5
+
+/**
+ * Why a stream gave up: the session ended (the sign-in screen is already on its way), the chat
+ * is gone, or the server stayed unreachable.
+ */
+export type StreamFailure = 'unauthenticated' | 'not_found' | 'unreachable'
+
 /**
  * Follow a turn's events. Each event reaches `onEvent` exactly once, in order: after a drop
  * the stream reopens from the last seen `seq`, and anything at or below it is ignored. Closes
- * itself after `turn_done` or `turn_error`. Returns a function that stops listening.
+ * itself after `turn_done` or `turn_error`. After a drop it checks the chat once with a plain
+ * request: a 401 or 404 ends the stream at once, and so do MAX_FAILURES drops in a row; then
+ * `onFail` says why. Returns a function that stops listening.
  */
 export function subscribeTurn(
   chatId: string,
   turnId: string,
   onEvent: (e: AgentEvent) => void,
   afterSeq = 0,
+  onFail?: (reason: StreamFailure) => void,
 ): () => void {
   let lastSeq = afterSeq
   let source: EventSource | null = null
   let timer: ReturnType<typeof setTimeout> | undefined
   let failures = 0
   let stopped = false
+  const chatPath = `/api/chats/${encodeURIComponent(chatId)}`
 
   const stop = () => {
     stopped = true
@@ -62,8 +77,27 @@ export function subscribeTurn(
     source = null
   }
 
+  const fail = (reason: StreamFailure) => {
+    if (stopped) return
+    stop()
+    onFail?.(reason)
+  }
+
+  /** An EventSource error hides the HTTP status, so ask the chat itself what is wrong. */
+  const probe = async (): Promise<StreamFailure | null> => {
+    try {
+      await api(`${chatPath}/messages`)
+      return null
+    } catch (error) {
+      // api() has already announced an expired session (UNAUTHENTICATED_EVENT) for a 401.
+      if (isApiError(error) && error.status === 401) return 'unauthenticated'
+      if (isApiError(error) && error.status === 404) return 'not_found'
+      return null // unreachable or failing: worth another try
+    }
+  }
+
   const open = () => {
-    const url = `/api/chats/${encodeURIComponent(chatId)}/turns/${encodeURIComponent(turnId)}/events?after=${lastSeq}`
+    const url = `${chatPath}/turns/${encodeURIComponent(turnId)}/events?after=${lastSeq}`
     const es = new EventSource(url)
     source = es
 
@@ -90,11 +124,22 @@ export function subscribeTurn(
       if (stopped || es !== source) return
       es.close()
       source = null
-      const wait = RETRY_MS[Math.min(failures, RETRY_MS.length - 1)]
       failures += 1
-      timer = setTimeout(() => {
-        if (!stopped) open()
-      }, wait)
+      if (failures >= MAX_FAILURES) {
+        fail('unreachable')
+        return
+      }
+      const wait = RETRY_MS[Math.min(failures - 1, RETRY_MS.length - 1)]
+      void probe().then((reason) => {
+        if (stopped) return
+        if (reason) {
+          fail(reason)
+          return
+        }
+        timer = setTimeout(() => {
+          if (!stopped) open()
+        }, wait)
+      })
     }
   }
 

@@ -95,7 +95,8 @@ function link(href: string, children: ReactNode, key: string) {
   )
 }
 
-function inline(text: string, key: string): ReactNode[] {
+/** Inline marks. Inside a link label `links` is false: no nested links or auto-linked URLs. */
+function inline(text: string, key: string, links = true): ReactNode[] {
   const out: ReactNode[] = []
   let last = 0
   let n = 0
@@ -106,14 +107,14 @@ function inline(text: string, key: string): ReactNode[] {
     if (m[1] !== undefined) {
       out.push(<code key={k}>{m[2].trim() || m[2]}</code>)
     } else if (m[3] !== undefined) {
-      const href = safeHref(m[4])
-      out.push(href ? link(href, inline(m[3], k), k) : m[0])
+      const href = links ? safeHref(m[4]) : null
+      out.push(href ? link(href, inline(m[3], k, false), k) : m[0])
     } else if (m[5] !== undefined || m[6] !== undefined) {
-      out.push(<strong key={k}>{inline(m[5] ?? m[6], k)}</strong>)
+      out.push(<strong key={k}>{inline(m[5] ?? m[6], k, links)}</strong>)
     } else if (m[7] !== undefined || m[8] !== undefined) {
-      out.push(<em key={k}>{inline(m[7] ?? m[8], k)}</em>)
+      out.push(<em key={k}>{inline(m[7] ?? m[8], k, links)}</em>)
     } else {
-      const href = safeHref(m[9])
+      const href = links ? safeHref(m[9]) : null
       out.push(href ? link(href, m[9], k) : m[9])
     }
     last = at + m[0].length

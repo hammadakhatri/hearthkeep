@@ -34,9 +34,11 @@ export function Composer({ onSend, busy, think, onThinkChange, thinkLocked, mode
     event?.preventDefault()
     if (!canSend) return
     setSending(true)
-    const accepted = await onSend(text.trim())
+    const sent = text
+    const accepted = await onSend(sent.trim())
     setSending(false)
-    if (accepted) setText('')
+    // Clear only what was sent: anything typed while it was sending stays.
+    if (accepted) setText((now) => (now === sent ? '' : now))
     box.current?.focus()
   }
 

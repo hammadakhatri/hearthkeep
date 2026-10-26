@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { api, isApiError, post } from '../api/client'
-import { subscribeTurn, type ApprovalStatus } from '../api/events'
+import { subscribeTurn, type AgentEvent, type ApprovalStatus } from '../api/events'
 import { ApprovalCard } from '../components/ApprovalCard'
 import { Markdown } from '../components/Markdown'
 import { WorkedSteps } from '../components/WorkedSteps'
@@ -19,6 +19,7 @@ import {
 
 const TITLE_CHARS = 60
 const STICK_PX = 96
+export const LOST_STREAM = 'Lost connection to this reply. Reload to see the latest.'
 
 type Live = { chatId: string; turnId: string }
 
@@ -109,15 +110,29 @@ export function Chat({ model }: { model?: string | null }) {
   useEffect(() => {
     if (!live) return
     const { chatId, turnId } = live
-    return subscribeTurn(chatId, turnId, (event) => {
+    const apply = (event: AgentEvent) =>
       setItems((all) =>
         all.map((it) => (it.kind === 'assistant' && it.turnId === turnId ? applyEvent(it, event, Date.now()) : it)),
       )
-      if (event.type === 'turn_done' || event.type === 'turn_error') {
-        setLive((l) => (l?.turnId === turnId ? null : l))
-        setChats((all) => all?.map((c) => (c.id === chatId ? { ...c, active_turn: null } : c)) ?? null)
-      }
-    })
+    const finish = () => setLive((l) => (l?.turnId === turnId ? null : l))
+    return subscribeTurn(
+      chatId,
+      turnId,
+      (event) => {
+        apply(event)
+        if (event.type === 'turn_done' || event.type === 'turn_error') {
+          finish()
+          setChats((all) => all?.map((c) => (c.id === chatId ? { ...c, active_turn: null } : c)) ?? null)
+        }
+      },
+      0,
+      () => {
+        // Gave up on the stream (signed out, chat gone, or the server stayed away): say so
+        // in the turn and let the owner use the chat again.
+        apply({ type: 'turn_error', seq: 0, message: LOST_STREAM })
+        finish()
+      },
+    )
   }, [live])
 
   // Keep the newest words in view, unless the owner has scrolled up to read.

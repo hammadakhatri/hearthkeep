@@ -1,8 +1,9 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { subscribeTurn, type AgentEvent } from '../api/events'
+import { MAX_FAILURES, subscribeTurn, type AgentEvent } from '../api/events'
 import { Markdown } from '../components/Markdown'
-import { Chat } from '../views/Chat'
+import { Composer } from '../shell/Composer'
+import { Chat, LOST_STREAM } from '../views/Chat'
 import { bodyOf, mockFetch } from '../test/fetch'
 import { emit, FakeEventSource, installEventSource, lastSource } from '../test/eventsource'
 
@@ -103,6 +104,23 @@ describe('Chat', () => {
     expect(within(card).queryByRole('button', { name: 'Approve' })).toBeNull()
   })
 
+  it('shows a lost-connection error in the turn and frees the composer when the stream gives up', async () => {
+    mockFetch({
+      'GET /api/chats': { body: [] },
+      'POST /api/chats': { status: 201, body: newChat },
+      'POST /api/chats/c1/messages': { status: 202, body: { turn_id: 't1' } },
+      'GET /api/chats/c1/messages': { status: 404, body: { reason: 'not_found' } },
+    })
+    render(<Chat model="Local model 12B" />)
+    await send('Hello')
+    emit('text_delta', 1, { text: 'Hal' })
+    act(() => lastSource().fail())
+    expect(await screen.findByRole('alert')).toHaveTextContent(LOST_STREAM)
+    expect(screen.queryByRole('status', { name: 'Hearthkeep is writing' })).toBeNull()
+    fireEvent.change(screen.getByRole('textbox', { name: 'Message Hearthkeep' }), { target: { value: 'Again' } })
+    expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled()
+  })
+
   it('says so when a turn is already running in the chat', async () => {
     mockFetch({
       'GET /api/chats': { body: [] },
@@ -163,8 +181,11 @@ describe('subscribeTurn', () => {
     vi.useRealTimers()
   })
 
-  it('reconnects event stream after drop without duplicating text', () => {
+  const chatOk = () => mockFetch({ 'GET /api/chats/c1/messages': { body: [] } })
+
+  it('reconnects event stream after drop without duplicating text', async () => {
     vi.useFakeTimers()
+    const { calls } = chatOk()
     const events: AgentEvent[] = []
     const stop = subscribeTurn('c1', 't1', (e) => events.push(e))
 
@@ -175,7 +196,9 @@ describe('subscribeTurn', () => {
     first.fail()
     expect(first.closed).toBe(true)
 
-    vi.advanceTimersByTime(5000)
+    await vi.advanceTimersByTimeAsync(5000)
+    // The drop was checked once with a plain request before reconnecting.
+    expect(calls.map((c) => c.path)).toEqual(['/api/chats/c1/messages'])
     const second = lastSource()
     expect(second).not.toBe(first)
     expect(second.url).toBe('/api/chats/c1/turns/t1/events?after=2')
@@ -193,14 +216,75 @@ describe('subscribeTurn', () => {
     stop()
   })
 
-  it('stops for good when unsubscribed', () => {
+  it('stops for good when unsubscribed', async () => {
     vi.useFakeTimers()
-    const stop = subscribeTurn('c1', 't1', () => {}, 5)
+    chatOk()
+    const onFail = vi.fn()
+    const stop = subscribeTurn('c1', 't1', () => {}, 5, onFail)
     expect(lastSource().url).toBe('/api/chats/c1/turns/t1/events?after=5')
     lastSource().fail()
     stop()
-    vi.advanceTimersByTime(60_000)
+    await vi.advanceTimersByTimeAsync(60_000)
     expect(FakeEventSource.instances).toHaveLength(1)
+    expect(onFail).not.toHaveBeenCalled()
+  })
+
+  it('gives up and announces the expired session when the drop was a 401', async () => {
+    vi.useFakeTimers()
+    mockFetch({ 'GET /api/chats/c1/messages': { status: 401, body: { reason: 'unauthenticated' } } })
+    const signedOut = vi.fn()
+    window.addEventListener('hearthkeep:unauthenticated', signedOut)
+    const onFail = vi.fn()
+    subscribeTurn('c1', 't1', () => {}, 0, onFail)
+    lastSource().fail()
+    await vi.advanceTimersByTimeAsync(60_000)
+    window.removeEventListener('hearthkeep:unauthenticated', signedOut)
+    expect(onFail).toHaveBeenCalledExactlyOnceWith('unauthenticated')
+    expect(signedOut).toHaveBeenCalledOnce()
+    expect(FakeEventSource.instances).toHaveLength(1)
+  })
+
+  it('gives up when the chat is gone (404)', async () => {
+    vi.useFakeTimers()
+    mockFetch({ 'GET /api/chats/c1/messages': { status: 404, body: { reason: 'not_found' } } })
+    const onFail = vi.fn()
+    subscribeTurn('c1', 't1', () => {}, 0, onFail)
+    lastSource().fail()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(onFail).toHaveBeenCalledExactlyOnceWith('not_found')
+    expect(FakeEventSource.instances).toHaveLength(1)
+  })
+
+  it(`gives up after ${MAX_FAILURES} drops in a row with no new event`, async () => {
+    vi.useFakeTimers()
+    chatOk()
+    const onFail = vi.fn()
+    subscribeTurn('c1', 't1', () => {}, 0, onFail)
+    for (let i = 0; i < MAX_FAILURES; i++) {
+      lastSource().fail()
+      await vi.advanceTimersByTimeAsync(10_000)
+    }
+    expect(onFail).toHaveBeenCalledExactlyOnceWith('unreachable')
+    expect(FakeEventSource.instances).toHaveLength(MAX_FAILURES)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(FakeEventSource.instances).toHaveLength(MAX_FAILURES)
+  })
+
+  it('an event in between resets the count of drops', async () => {
+    vi.useFakeTimers()
+    chatOk()
+    const onFail = vi.fn()
+    subscribeTurn('c1', 't1', () => {}, 0, onFail)
+    for (let i = 0; i < MAX_FAILURES - 1; i++) {
+      lastSource().fail()
+      await vi.advanceTimersByTimeAsync(10_000)
+    }
+    lastSource().emit('text_delta', 1, { text: 'still here' })
+    for (let i = 0; i < MAX_FAILURES - 1; i++) {
+      lastSource().fail()
+      await vi.advanceTimersByTimeAsync(10_000)
+    }
+    expect(onFail).not.toHaveBeenCalled()
   })
 })
 
@@ -238,3 +322,41 @@ describe('Markdown', () => {
   })
 })
 
+describe('Markdown links', () => {
+  it('keeps a URL-looking link label as plain text inside one link', () => {
+    const { container } = render(<Markdown text="Go to [https://a.com](https://b.com) now" />)
+    const links = container.querySelectorAll('a')
+    expect(links).toHaveLength(1)
+    expect(links[0]).toHaveAttribute('href', 'https://b.com/')
+    expect(links[0].textContent).toBe('https://a.com')
+    expect(links[0].children).toHaveLength(0)
+  })
+})
+
+describe('Composer', () => {
+  it('keeps what was typed while a message was sending', async () => {
+    let accept: (ok: boolean) => void = () => {}
+    const onSend = vi.fn(() => new Promise<boolean>((resolve) => (accept = resolve)))
+    render(
+      <Composer onSend={onSend} busy={false} think={false} onThinkChange={() => {}} thinkLocked={false} model={null} />,
+    )
+    const box = screen.getByRole('textbox', { name: 'Message Hearthkeep' })
+    fireEvent.change(box, { target: { value: 'Hi' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    expect(onSend).toHaveBeenCalledWith('Hi')
+    fireEvent.change(box, { target: { value: 'Hi there' } })
+    await act(async () => accept(true))
+    expect(box).toHaveValue('Hi there')
+  })
+
+  it('clears the box once an unchanged message is accepted', async () => {
+    const onSend = vi.fn(async () => true)
+    render(
+      <Composer onSend={onSend} busy={false} think={false} onThinkChange={() => {}} thinkLocked={false} model={null} />,
+    )
+    const box = screen.getByRole('textbox', { name: 'Message Hearthkeep' })
+    fireEvent.change(box, { target: { value: 'Hi' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(box).toHaveValue(''))
+  })
+})
