@@ -198,3 +198,42 @@ async def test_decoding_error_maps_to_unreadable():
     with pytest.raises(ProviderError) as exc:
         await collect(make_client(handler))
     assert exc.value.user_message == "The chat model sent a reply Hearthkeep couldn't read."
+
+
+TOO_LONG = "This chat is too long for the model. Start a new chat."
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # llama-server
+        {
+            "error": {
+                "code": 400,
+                "message": "the request exceeds the available context size, try increasing it",
+                "type": "exceed_context_size_error",
+            }
+        },
+        # OpenAI-style servers (vLLM, LM Studio, ...)
+        {
+            "error": {
+                "message": "This model's maximum context length is 8192 tokens.",
+                "code": "context_length_exceeded",
+            }
+        },
+        {"detail": "prompt is too long: 9000 tokens > 8192"},
+    ],
+)
+async def test_context_overflow_says_chat_is_too_long(body):
+    client = make_client(lambda r: httpx.Response(400, json=body))
+    with pytest.raises(ProviderError) as exc:
+        await collect(client)
+    assert exc.value.user_message == TOO_LONG
+
+
+async def test_other_400_is_not_reported_as_too_long():
+    body = {"error": {"message": "invalid 'tools': unknown field"}}
+    client = make_client(lambda r: httpx.Response(400, json=body))
+    with pytest.raises(ProviderError) as exc:
+        await collect(client)
+    assert exc.value.user_message == "The chat model returned an error (HTTP 400)."

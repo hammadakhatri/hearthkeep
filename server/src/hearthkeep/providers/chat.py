@@ -11,6 +11,27 @@ import httpx
 _UNREACHABLE = "The chat model isn't reachable. Make sure it's running on this PC."
 _REJECTED = "The chat model rejected Hearthkeep's key. Check the chat API key in settings."
 _UNREADABLE = "The chat model sent a reply Hearthkeep couldn't read."
+_TOO_LONG = "This chat is too long for the model. Start a new chat."
+# Wording servers use when a request does not fit the context (llama-server, OpenAI-style).
+_OVERFLOW_HINTS = (
+    "context size",
+    "context length",
+    "context window",
+    "context_length",
+    "exceed_context",
+    "too many tokens",
+    "too long",
+)
+_ERROR_BODY_LIMIT = 4096
+
+
+def _is_context_overflow(status: int, body: bytes) -> bool:
+    """A 400/413 whose error body names the context limit (anything else stays generic)."""
+    if status not in (400, 413):
+        return False
+    text = body[:_ERROR_BODY_LIMIT].decode("utf-8", errors="replace").lower()
+    return any(hint in text for hint in _OVERFLOW_HINTS)
+
 
 _TIMEOUT = httpx.Timeout(300.0, connect=5.0)
 
@@ -89,6 +110,15 @@ class OpenAIChatClient:
                     if resp.status_code in (401, 403):
                         raise ProviderError(_REJECTED, f"HTTP {resp.status_code} from chat model")
                     if resp.status_code >= 400:
+                        body = b""
+                        async for chunk in resp.aiter_bytes():
+                            body += chunk
+                            if len(body) >= _ERROR_BODY_LIMIT:
+                                break
+                        if _is_context_overflow(resp.status_code, body):
+                            raise ProviderError(
+                                _TOO_LONG, f"HTTP {resp.status_code}: context overflow"
+                            )
                         raise ProviderError(
                             f"The chat model returned an error (HTTP {resp.status_code}).",
                             f"HTTP {resp.status_code} from chat model",
