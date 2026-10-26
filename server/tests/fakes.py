@@ -1,5 +1,6 @@
 """Test doubles shared across test modules."""
 
+import copy
 import secrets
 
 from hearthkeep.auth.webauthn import (
@@ -42,3 +43,27 @@ class FakeVerifier:
         if count < credential.sign_count or (count == credential.sign_count and count != 0):
             raise VerificationError("sign count did not increase")
         return response["sign_count"]
+
+
+class FakeChatClient:
+    """Scripted chat client: each `stream` call plays the next script entry.
+
+    A script entry is a list of provider events; an Exception instance in the list is raised
+    at that point (after the events before it were yielded). Every call records a deep copy
+    of the messages and tools it was given.
+    """
+
+    def __init__(self, scripts: list[list]):
+        self.scripts = list(scripts)
+        self.calls: list[dict] = []
+
+    async def stream(self, messages, tools, think):
+        self.calls.append(
+            {"messages": copy.deepcopy(messages), "tools": copy.deepcopy(tools), "think": think}
+        )
+        if not self.scripts:
+            raise AssertionError("FakeChatClient ran out of scripted responses")
+        for item in self.scripts.pop(0):
+            if isinstance(item, BaseException):
+                raise item
+            yield item
