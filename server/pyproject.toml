@@ -4,7 +4,10 @@ version = "0.0.0"
 description = "Hearthkeep: your private AI, at home."
 license = "Apache-2.0"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "cryptography>=50.0.2",
+    "keyring>=25.7.0",
+]
 
 [dependency-groups]
 dev = [
