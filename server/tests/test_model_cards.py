@@ -217,3 +217,118 @@ def test_example_runtime_has_placeholders_only(tmp_path):
     rt = load_runtime(tmp_path)
     assert rt.llama_server_exe is None and rt.comfyui_model_root is None
     assert rt.model_dirs == {}
+
+
+def test_unreadable_card_is_reported(tmp_path):
+    (tmp_path / "models" / "cards" / "dir.toml").mkdir(parents=True)
+    put_card(tmp_path, "good.toml", GOOD_CHAT.format(id="good-one"))
+    cards, errors = load_cards(tmp_path)
+    assert "good-one" in cards
+    assert [e.id_or_file for e in errors] == ["dir.toml"]
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        '["--model", "{model}", "--bogus", "{nope}"]',
+        '["--model", "{model}", "--mmproj", "{mmproj}"]',
+        '["--model", "{model}", "--x", "{}"]',
+    ],
+)
+def test_card_rejects_bad_placeholders(tmp_path, args):
+    body = re.sub(r"launch_args = .*", f"launch_args = {args}", GOOD_CHAT.format(id="ph"))
+    put_card(tmp_path, "ph.toml", body)
+    cards, errors = load_cards(tmp_path)
+    assert "ph" not in cards
+    assert [e.id_or_file for e in errors] == ["ph.toml"]
+
+
+def test_card_accepts_known_placeholders(tmp_path):
+    args = '["--model", "{model}", "--port", "{port}", "--api-key-file", "{api_key_file}"]'
+    body = re.sub(r"launch_args = .*", f"launch_args = {args}", GOOD_CHAT.format(id="ok"))
+    put_card(tmp_path, "ok.toml", body)
+    cards, errors = load_cards(tmp_path)
+    assert "ok" in cards and errors == []
+
+
+def test_duplicate_owner_id_reports_second_file(tmp_path):
+    put_card(tmp_path, "a.toml", GOOD_CHAT.format(id="same"))
+    put_card(tmp_path, "b.toml", GOOD_CHAT.format(id="same").replace("Owner chat", "Second"))
+    cards, errors = load_cards(tmp_path)
+    assert cards["same"].name == "Owner chat"
+    assert [e.id_or_file for e in errors] == ["b.toml"]
+
+
+@pytest.mark.parametrize("name", ["../x.gguf", "sub/x.gguf", "sub\\x.gguf", "..", "C:x.gguf"])
+def test_card_rejects_paths_in_files(tmp_path, name):
+    body = GOOD_CHAT.format(id="pathy").replace("owner.gguf", name.replace("\\", "\\\\"))
+    put_card(tmp_path, "pathy.toml", body)
+    cards, errors = load_cards(tmp_path)
+    assert "pathy" not in cards and [e.id_or_file for e in errors] == ["pathy.toml"]
+
+
+IMAGE_CARD = """
+id = "img"
+name = "Img"
+kind = "image"
+provider = "comfyui"
+vram_gb = 8
+workflow = "z-image-turbo.json"
+{extra}
+[files]
+unet = "a.safetensors"
+text_encoder = "b.safetensors"
+vae = "c.safetensors"
+"""
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "",  # missing default_steps
+        "default_steps = 4\nsurprise = true",  # unknown key
+        'default_steps = 4\nedit_workflow = "missing-edit.json"',
+    ],
+)
+def test_image_card_rejections(tmp_path, extra):
+    put_card(tmp_path, "img.toml", IMAGE_CARD.format(extra=extra))
+    cards, errors = load_cards(tmp_path)
+    assert "img" not in cards and [e.id_or_file for e in errors] == ["img.toml"]
+
+
+def test_image_card_valid_baseline(tmp_path):
+    put_card(tmp_path, "img.toml", IMAGE_CARD.format(extra="default_steps = 4"))
+    cards, errors = load_cards(tmp_path)
+    assert "img" in cards and errors == []
+
+
+def _shape(graph):
+    return {k: v["class_type"] for k, v in graph.items()}
+
+
+def test_zimage_workflow_structure(tmp_path):
+    g = load_workflow(load_cards(tmp_path)[0]["z-image-turbo"])
+    assert _shape(g) == {
+        "28": "UNETLoader", "30": "CLIPLoader", "29": "VAELoader", "27": "CLIPTextEncode",
+        "33": "ConditioningZeroOut", "11": "ModelSamplingAuraFlow",
+        "13": "EmptySD3LatentImage", "3": "KSampler", "8": "VAEDecode", "9": "SaveImage",
+    }  # fmt: skip
+    assert g["11"]["inputs"]["shift"] == 3
+    ks = g["3"]["inputs"]
+    assert (ks["cfg"], ks["sampler_name"], ks["scheduler"], ks["denoise"]) == (
+        1, "res_multistep", "simple", 1
+    )
+    assert g["30"]["inputs"]["type"] == "lumina2"
+
+
+def test_flux_workflow_structure(tmp_path):
+    g = load_workflow(load_cards(tmp_path)[0]["flux2-klein-4b"])
+    assert _shape(g) == {
+        "70": "UNETLoader", "71": "CLIPLoader", "72": "VAELoader", "74": "CLIPTextEncode",
+        "76": "ConditioningZeroOut", "63": "CFGGuider", "61": "KSamplerSelect",
+        "62": "Flux2Scheduler", "66": "EmptyFlux2LatentImage", "73": "RandomNoise",
+        "64": "SamplerCustomAdvanced", "65": "VAEDecode", "9": "SaveImage",
+    }  # fmt: skip
+    assert g["63"]["inputs"]["cfg"] == 1.0
+    assert g["61"]["inputs"]["sampler_name"] == "euler"
+    assert g["71"]["inputs"]["type"] == "flux2"

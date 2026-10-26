@@ -24,6 +24,8 @@ _ALL_KEYS = {
     "prefer_when",
 }  # fmt: skip
 _WILDCARD_HOSTS = {"0.0.0.0", "::", "[::]"}
+_PLACEHOLDER_RE = re.compile(r"\{([^{}]*)\}")
+_LAUNCH_PLACEHOLDERS = {"model", "mmproj", "port", "api_key_file"}
 
 
 @dataclass(frozen=True)
@@ -137,6 +139,13 @@ def _parse(raw: dict[str, Any], source: Literal["shipped", "owner"]) -> ModelCar
                 raise _Invalid(f"{key} {value!r} does not exist in the shipped workflows")
         workflows[key] = value
 
+    for arg in launch_args:
+        for name in _PLACEHOLDER_RE.findall(arg):
+            if name not in _LAUNCH_PLACEHOLDERS:
+                raise _Invalid(f"launch_args uses unknown placeholder {{{name}}}")
+            if name in _CHAT_FILES and name not in files:
+                raise _Invalid(f"launch_args uses {{{name}}} but files.{name} is not set")
+
     if kind == "chat":
         if "model" not in files:
             raise _Invalid("a chat card needs files.model")
@@ -184,15 +193,21 @@ def _load_dir(
 ) -> None:
     if not folder.is_dir():
         return
+    seen: set[str] = set()
     for path in sorted(folder.glob("*.toml")):
         try:
             raw = tomllib.loads(path.read_text(encoding="utf-8"))
             card = _parse(raw, source)
+            if card.id in seen:
+                raise _Invalid(f"duplicate card id {card.id!r} in the same folder")
+        except OSError as exc:
+            errors.append(CardError(path.name, f"cannot read card: {exc}"))
         except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
             errors.append(CardError(path.name, f"not valid TOML: {exc}"))
         except _Invalid as exc:
             errors.append(CardError(path.name, str(exc)))
         else:
+            seen.add(card.id)
             cards[card.id] = card
 
 
