@@ -38,6 +38,11 @@ function sendError(error: unknown): string {
   return "Your message couldn't be sent. Try again."
 }
 
+/** The chat's title from its first message, as the server makes it: words only, else "Photo". */
+function titleFor(text: string): string {
+  return splitPhotos(text).text.split(/\s+/).join(' ').trim().slice(0, TITLE_CHARS) || 'Photo'
+}
+
 function lastUserIndex(messages: ServerMessage[]): number {
   for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === 'user') return i
   return -1
@@ -155,6 +160,7 @@ export function Chat({ model }: { model?: string | null }) {
   }
 
   function newChat() {
+    attach.clear()
     opening.current += 1
     setCurrent(null)
     setItems([])
@@ -191,7 +197,7 @@ export function Chat({ model }: { model?: string | null }) {
         (all) =>
           all?.map((c) =>
             c.id === id
-              ? { ...c, active_turn: turn_id, title: c.title || text.split(/\s+/).join(' ').slice(0, TITLE_CHARS) }
+              ? { ...c, active_turn: turn_id, title: c.title || titleFor(text) }
               : c,
           ) ?? null,
       )
@@ -216,7 +222,11 @@ export function Chat({ model }: { model?: string | null }) {
       chats={chats}
       failed={listFailed}
       current={current}
-      onOpen={(c) => void open(c)}
+      onOpen={(c) => {
+        // A photo picked for one chat doesn't follow the owner into another.
+        if (c.id !== current) attach.clear()
+        void open(c)
+      }}
       onNew={newChat}
       onRetry={() => void loadChats()}
     />
@@ -261,7 +271,7 @@ export function Chat({ model }: { model?: string | null }) {
               <span>{notice}</span>
             </div>
           )}
-          <PhotoChip photo={attach.photo} onRemove={attach.clear} />
+          <PhotoChip attach={attach} />
           <Composer
             onSend={send}
             busy={busy}

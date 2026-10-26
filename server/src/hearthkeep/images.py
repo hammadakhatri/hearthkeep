@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import contextlib
+import math
 import os
+import re
 import sqlite3
 import struct
 from dataclasses import dataclass
@@ -25,6 +27,13 @@ VP8_START_CODE = b"\x9d\x01\x2a"
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 MAX_UPLOAD_SIDE = 4096
 UPLOAD_EXTENSIONS = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
+# An upload id: what the server hands out (token_urlsafe), and all a lookup will accept.
+UPLOAD_ID_PATTERN = "^[A-Za-z0-9_-]{1,32}$"
+UPLOAD_ID = re.compile(UPLOAD_ID_PATTERN.strip("^$"))
+ATTACHED_PHOTO_LINE = re.compile(r"Attached photo: " + UPLOAD_ID.pattern)
+# The JPEG header scan gives up after this much data or this many segments.
+JPEG_SCAN_BYTES = 2 * 1024 * 1024
+JPEG_SCAN_SEGMENTS = 512
 
 
 def validate_size(width: int, height: int) -> None:
@@ -38,12 +47,26 @@ def validate_size(width: int, height: int) -> None:
             )
 
 
+def nearest_aspect(width: int, height: int) -> str:
+    """The ASPECTS key whose shape is closest to width x height (by log ratio)."""
+    ratio = math.log(width / height)
+    return min(ASPECTS, key=lambda k: abs(math.log(ASPECTS[k][0] / ASPECTS[k][1]) - ratio))
+
+
+def without_photo_lines(text: str) -> str:
+    """The text with its `Attached photo: <id>` lines left out (exact matches only, as the web
+    app shows them)."""
+    lines = text.split("\n")
+    return "\n".join(line for line in lines if not ATTACHED_PHOTO_LINE.fullmatch(line))
+
+
 @dataclass(frozen=True)
 class ImageInfo:
     mime: str
     ext: str
     width: int
     height: int
+    animated: bool = False
 
 
 def image_type(data: bytes) -> str | None:
@@ -57,10 +80,21 @@ def image_type(data: bytes) -> str | None:
     return None
 
 
-def _png_size(data: bytes) -> tuple[int, int] | None:
+def _png_size(data: bytes) -> tuple[int, int, bool] | None:
     if len(data) < 24 or data[12:16] != b"IHDR":
         return None
-    return struct.unpack(">II", data[16:24])
+    width, height = struct.unpack(">II", data[16:24])
+    # An APNG has an acTL chunk before its first IDAT.
+    animated, i = False, 8
+    while i + 8 <= len(data):
+        length, kind = struct.unpack(">I4s", data[i : i + 8])
+        if kind == b"IDAT":
+            break
+        if kind == b"acTL":
+            animated = True
+            break
+        i += 12 + length
+    return width, height, animated
 
 
 # Start-of-frame markers carry the size; C4 (huffman), C8 (reserved) and CC (arithmetic) don't.
@@ -68,15 +102,19 @@ _JPEG_SOF = frozenset(range(0xC0, 0xD0)) - {0xC4, 0xC8, 0xCC}
 _JPEG_NO_LENGTH = frozenset({0x01, *range(0xD0, 0xD8)})
 
 
-def _jpeg_size(data: bytes) -> tuple[int, int] | None:
-    i = 2
-    while i + 4 <= len(data):
+def _jpeg_size(data: bytes) -> tuple[int, int, bool] | None:
+    i, segments = 2, 0
+    end = min(len(data), JPEG_SCAN_BYTES)
+    while i + 4 <= end:
         if data[i] != 0xFF:
             return None
         marker = data[i + 1]
         if marker == 0xFF:  # fill byte
             i += 1
             continue
+        segments += 1
+        if segments > JPEG_SCAN_SEGMENTS:
+            return None
         if marker in _JPEG_NO_LENGTH:
             i += 2
             continue
@@ -89,40 +127,48 @@ def _jpeg_size(data: bytes) -> tuple[int, int] | None:
             if i + 9 > len(data):
                 return None
             height, width = struct.unpack(">HH", data[i + 5 : i + 9])
-            return width, height
+            return width, height, False
         i += 2 + length
     return None
 
 
-def _webp_size(data: bytes) -> tuple[int, int] | None:
+def _webp_size(data: bytes) -> tuple[int, int, bool] | None:
     kind, body = data[12:16], data[20:]
     if kind == b"VP8X" and len(body) >= 10:
         width = int.from_bytes(body[4:7], "little") + 1
         height = int.from_bytes(body[7:10], "little") + 1
-        return width, height
+        return width, height, bool(body[0] & 0x02)  # the animation flag
     if kind == b"VP8L" and len(body) >= 5 and body[0] == 0x2F:
         (bits,) = struct.unpack("<I", body[1:5])
-        return (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
+        return (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1, False
     if kind == b"VP8 " and len(body) >= 10 and body[3:6] == VP8_START_CODE:
         width, height = struct.unpack("<HH", body[6:10])
-        return width & 0x3FFF, height & 0x3FFF
+        return width & 0x3FFF, height & 0x3FFF, False
     return None
 
 
 def image_info(data: bytes) -> ImageInfo | None:
-    """Type and size of a PNG, JPEG or WebP, read from its headers only (nothing is decoded).
-    None for any other type, or for a file whose headers can't be read."""
+    """Type, size and whether it is animated, for a PNG, JPEG or WebP, read from its headers
+    only (nothing is decoded). None for any other type, or a file whose headers can't be read."""
     mime = image_type(data)
     if mime is None:
         return None
     reader = {"image/png": _png_size, "image/jpeg": _jpeg_size, "image/webp": _webp_size}[mime]
     try:
-        size = reader(data)
+        found = reader(data)
     except struct.error:
         return None
-    if size is None or size[0] < 1 or size[1] < 1:
+    if found is None or found[0] < 1 or found[1] < 1:
         return None
-    return ImageInfo(mime, UPLOAD_EXTENSIONS[mime], size[0], size[1])
+    width, height, animated = found
+    return ImageInfo(mime, UPLOAD_EXTENSIONS[mime], width, height, animated)
+
+
+@dataclass(frozen=True)
+class StagedUpload:
+    id: str
+    ext: str
+    tmp: Path
 
 
 @dataclass
@@ -234,27 +280,49 @@ class ImageStore:
     ) -> UploadRecord:
         """Store an uploaded photo under a new random id. The caller has checked its type and
         size; the file name is built from the id and the detected type only."""
-        if UPLOAD_EXTENSIONS.get(mime) != ext:
+        staged = self.write_upload_file(data, ext)
+        return self.record_upload(staged, mime=mime, width=width, height=height)
+
+    def write_upload_file(self, data: bytes, ext: str) -> StagedUpload:
+        """Step 1 of saving a photo: write it to a temporary file under a new random id. Touches
+        no database, so it may run on a worker thread (the connection may not)."""
+        if ext not in UPLOAD_EXTENSIONS.values():
             raise ValueError("unsupported upload type")
         upload_id = token_urlsafe(12)
-        file_name = f"{upload_id}.{ext}"
+        tmp = self._uploads / f"{upload_id}.{ext}.tmp"
+        try:
+            tmp.write_bytes(data)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
+            raise
+        return StagedUpload(upload_id, ext, tmp)
+
+    def record_upload(
+        self, staged: StagedUpload, *, mime: str, width: int, height: int
+    ) -> UploadRecord:
+        """Step 2: the row, and the file moved into place, together; the temporary file is
+        removed if either fails."""
+        if UPLOAD_EXTENSIONS.get(mime) != staged.ext:
+            with contextlib.suppress(OSError):
+                staged.tmp.unlink(missing_ok=True)
+            raise ValueError("unsupported upload type")
+        file_name = f"{staged.id}.{staged.ext}"
         final = self._uploads / file_name
-        tmp = self._uploads / f"{file_name}.tmp"
-        record = UploadRecord(upload_id, mime, width, height, db.utcnow())
+        record = UploadRecord(staged.id, mime, width, height, db.utcnow())
         placed = False
         try:
             with db.transaction(self._conn):
                 self._conn.execute(
                     "INSERT INTO uploads (id, file_name, mime, width, height, created_at) "
                     "VALUES (?,?,?,?,?,?)",
-                    (upload_id, file_name, mime, width, height, record.created_at),
+                    (staged.id, file_name, mime, width, height, record.created_at),
                 )
-                tmp.write_bytes(data)
-                os.replace(tmp, final)
+                os.replace(staged.tmp, final)
                 placed = True
         except BaseException:
             with contextlib.suppress(OSError):
-                tmp.unlink(missing_ok=True)
+                staged.tmp.unlink(missing_ok=True)
             if placed:
                 with contextlib.suppress(OSError):
                     final.unlink(missing_ok=True)

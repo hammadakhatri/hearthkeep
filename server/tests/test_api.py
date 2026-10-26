@@ -1055,3 +1055,16 @@ def test_public_origin_host_accepted(tmp_path):
         assert (
             client.get("/api/health", headers={"Host": "other.example.ts.net"}).status_code == 400
         )
+
+
+def test_first_message_title_leaves_out_attached_photo_lines(harness):
+    script = [[TextDelta("Done."), StreamDone("stop")], [TextDelta("Done."), StreamDone("stop")]]
+    client = signed_in(harness, script)
+    photo_only = new_chat(client)
+    turn_id = say(client, photo_only, "Attached photo: abc_123").json()["turn_id"]
+    read_events(client, photo_only, turn_id)
+    worded = new_chat(client)
+    turn_id = say(client, worded, "Paint this\nAttached photo: abc_123").json()["turn_id"]
+    read_events(client, worded, turn_id)
+    titles = {c["id"]: c["title"] for c in client.get("/api/chats").json()}
+    assert titles == {photo_only: "Photo", worded: "Paint this"}

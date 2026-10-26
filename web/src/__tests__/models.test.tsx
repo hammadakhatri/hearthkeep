@@ -139,7 +139,10 @@ describe('status pill', () => {
   it('status pill describes gpu use', async () => {
     mockFetch({ 'GET /api/health': healthy, 'GET /api/models': { body: base } })
     render(<AppShell onSignOut={() => {}} />)
-    const pill = await screen.findByRole('status')
+    // The chat's photo live region is a status too: pick the pill by its own text.
+    const pill = (await screen.findByText('Local model 12B', { selector: '.status-text' })).closest<HTMLElement>(
+      '[role="status"]',
+    )!
     await waitFor(() => expect(pill).toHaveAttribute('title', expect.stringContaining('GPU 9.3 of 24.0 GB in use')))
     const desc = document.getElementById(pill.getAttribute('aria-describedby')!)!
     expect(desc).toHaveTextContent('GPU 9.3 of 24.0 GB in use')

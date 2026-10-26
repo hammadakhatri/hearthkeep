@@ -28,10 +28,13 @@ export function splitPhotos(text: string): { photos: string[]; text: string } {
   return { photos, text: kept.join('\n').trim() }
 }
 
+/** An uploaded photo as the server describes it. */
+export type Uploaded = { id: string; width: number; height: number }
+
 export type Photo =
   | { state: 'none' }
   | { state: 'uploading' }
-  | { state: 'ready'; id: string }
+  | ({ state: 'ready' } & Uploaded)
   | { state: 'failed'; message: string }
 
 function uploadError(error: unknown): string {
@@ -43,30 +46,49 @@ function uploadError(error: unknown): string {
   return "Your photo couldn't be uploaded. Try again."
 }
 
-/** One photo, uploaded as soon as it is picked. A newer pick or a clear wins over a slow upload. */
+/**
+ * One photo, uploaded as soon as it is picked. A newer pick or a clear wins over a slow upload.
+ * `announcement` is what the live region says: "Photo attached" or "Photo removed".
+ */
 export function usePhoto() {
   const [photo, setPhoto] = useState<Photo>({ state: 'none' })
+  const [announcement, setAnnouncement] = useState('')
   const latest = useRef(0)
 
-  const pick = useCallback(async (file: File) => {
+  /** Resolves with the upload once it is ready, or null if it failed or was replaced. */
+  const pick = useCallback(async (file: File): Promise<Uploaded | null> => {
     const token = ++latest.current
     setPhoto({ state: 'uploading' })
+    setAnnouncement('')
     const form = new FormData()
     form.append('file', file)
     try {
-      const { id } = await api<{ id: string }>('/api/uploads', { method: 'POST', body: form })
-      if (token === latest.current) setPhoto({ state: 'ready', id })
+      const up = await api<Uploaded>('/api/uploads', { method: 'POST', body: form })
+      if (token !== latest.current) return null
+      setPhoto({ state: 'ready', id: up.id, width: up.width, height: up.height })
+      setAnnouncement('Photo attached')
+      return up
     } catch (error) {
       if (token === latest.current) setPhoto({ state: 'failed', message: uploadError(error) })
+      return null
     }
   }, [])
 
+  /** Drop the photo quietly: it was sent, or the owner moved to another chat. */
   const clear = useCallback(() => {
     latest.current += 1
     setPhoto({ state: 'none' })
+    setAnnouncement('')
   }, [])
 
-  return { photo, pick, clear }
+  /** The owner took the photo away. */
+  const remove = useCallback(() => {
+    latest.current += 1
+    setPhoto({ state: 'none' })
+    setAnnouncement('Photo removed')
+  }, [])
+
+  return { photo, announcement, pick, clear, remove }
 }
 
 /** A button that opens the file picker for one photo. */
@@ -115,32 +137,38 @@ export function PhotoButton({
   )
 }
 
-/** The picked photo while it uploads and once it is ready, with Remove; or why it failed. */
-export function PhotoChip({ photo, onRemove }: { photo: Photo; onRemove: () => void }) {
-  if (photo.state === 'none') return null
-  if (photo.state === 'failed') {
-    return (
-      <div className="note error photo-error" role="alert">
-        <AlertIcon />
-        <span>{photo.message}</span>
-        <button type="button" className="btn ghost" onClick={onRemove}>
-          Dismiss
-        </button>
-      </div>
-    )
-  }
-  const label = photo.state === 'ready' ? 'Photo attached' : 'Uploading your photo'
+/**
+ * The picked photo while it uploads and once it is ready, with Remove; or why it failed. The
+ * live region is always mounted (and visually hidden) so its changes are announced.
+ */
+export function PhotoChip({ attach }: { attach: ReturnType<typeof usePhoto> }) {
+  const { photo, announcement, remove, clear } = attach
   return (
-    <div className="photo-chip" role="status" aria-label={label}>
-      {photo.state === 'ready' ? (
-        <img src={uploadUrl(photo.id)} alt="Your photo" width={36} height={36} />
-      ) : (
-        <span className="photo-chip-wait" aria-hidden="true" />
-      )}
-      <span className="photo-chip-text">{photo.state === 'ready' ? 'Photo attached' : 'Uploading your photo…'}</span>
-      <button type="button" className="iconbtn photo-chip-remove" aria-label="Remove photo" onClick={onRemove}>
-        <CloseIcon />
-      </button>
-    </div>
+    <>
+      <span className="sr-only" role="status" data-testid="photo-status">
+        {announcement}
+      </span>
+      {photo.state === 'failed' ? (
+        <div className="note error photo-error" role="alert">
+          <AlertIcon />
+          <span>{photo.message}</span>
+          <button type="button" className="btn ghost" onClick={clear}>
+            Dismiss
+          </button>
+        </div>
+      ) : photo.state !== 'none' ? (
+        <div className="photo-chip">
+          {photo.state === 'ready' ? (
+            <img src={uploadUrl(photo.id)} alt="Your photo" width={36} height={36} />
+          ) : (
+            <span className="photo-chip-wait" aria-hidden="true" />
+          )}
+          <span className="photo-chip-text">{photo.state === 'ready' ? 'Photo attached' : 'Uploading your photo…'}</span>
+          <button type="button" className="iconbtn photo-chip-remove" aria-label="Remove photo" onClick={remove}>
+            <CloseIcon />
+          </button>
+        </div>
+      ) : null}
+    </>
   )
 }

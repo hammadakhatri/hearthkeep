@@ -8,7 +8,16 @@ import re
 import secrets
 import sqlite3
 
-from hearthkeep.images import ASPECTS, UPLOAD_EXTENSIONS, ImageStore, validate_size
+from hearthkeep.images import (
+    ASPECTS,
+    UPLOAD_EXTENSIONS,
+    UPLOAD_ID,
+    UPLOAD_ID_PATTERN,
+    ImageStore,
+    UploadRecord,
+    nearest_aspect,
+    validate_size,
+)
 from hearthkeep.models.cards import ModelCard, load_workflow
 from hearthkeep.permissions import ActionClass
 from hearthkeep.providers.comfyui import RenderError, fill_workflow
@@ -22,7 +31,6 @@ SEED_RANGE = 2**31
 SAVE_FAILED = "Hearthkeep couldn't save the image."
 STYLE_SENTENCE = "Write the prompt in that model's style. Put any on-image text in double quotes."
 _PREFIX_UNSAFE = re.compile(r"[^A-Za-z0-9_/-]")
-_UPLOAD_ID = re.compile(r"[A-Za-z0-9_-]{1,32}")
 EDIT_CAPABILITY = "image-edit"
 PHOTO_NOT_FOUND = "I can't find that photo. Ask the owner to attach it again."
 NO_EDITOR = "None of the image models here can edit photos."
@@ -86,7 +94,7 @@ class GenerateImageTool:
                 },
                 "input_image": {
                     "type": "string",
-                    "maxLength": 64,
+                    "pattern": UPLOAD_ID_PATTERN,
                     "description": "The upload id of the owner's photo to edit or reuse "
                     "(from an 'Attached photo:' line).",
                 },
@@ -121,23 +129,23 @@ class GenerateImageTool:
         names = " or ".join(f"{c.name} ({c.id})" for c in self._editors)
         return None, f"{card.name} can't edit photos. To edit the owner's photo, use {names}."
 
-    def _photo(self, upload_id: object) -> tuple[bytes, str] | None:
-        """The photo's bytes and file extension, looked up by id; the path comes from the
-        store alone. None when the id is malformed, unknown, or its file is gone."""
-        if not isinstance(upload_id, str) or not _UPLOAD_ID.fullmatch(upload_id):
+    def _photo(self, upload_id: object) -> tuple[bytes, str, UploadRecord] | None:
+        """The photo's bytes, file extension and record, looked up by id; the path comes from
+        the store alone. None when the id is malformed, unknown, or its file is gone."""
+        if not isinstance(upload_id, str) or not UPLOAD_ID.fullmatch(upload_id):
             return None
         found = self._store.get_upload(upload_id)
         path = self._store.upload_path(upload_id) if found else None
         if found is None or path is None:
             return None
         try:
-            return path.read_bytes(), UPLOAD_EXTENSIONS[found.mime]
+            return path.read_bytes(), UPLOAD_EXTENSIONS[found.mime], found
         except (OSError, KeyError):
             return None
 
     async def run(self, args: dict, ctx: ToolContext) -> ToolResult:
         photo_id = args.get("input_image")
-        photo: tuple[bytes, str] | None = None
+        photo: tuple[bytes, str, UploadRecord] | None = None
         if photo_id is not None:
             card, problem = self._edit_card(args.get("model"))
             if card is None:
@@ -148,7 +156,11 @@ class GenerateImageTool:
         else:
             card = self._cards[args.get("model") or self._default]
         prompt = args["prompt"]
-        aspect_w, aspect_h = ASPECTS[args.get("aspect", "square")]
+        aspect = args.get("aspect", "square")
+        if photo is not None and not {"aspect", "width", "height"} & args.keys():
+            # Nothing asked about the shape: keep the photo's.
+            aspect = nearest_aspect(photo[2].width, photo[2].height)
+        aspect_w, aspect_h = ASPECTS[aspect]
         width, height = args.get("width", aspect_w), args.get("height", aspect_h)
         try:
             validate_size(width, height)
@@ -179,7 +191,7 @@ class GenerateImageTool:
                 async with self._gpu.lease(card.id):
                     if photo is not None and comfy_name is None:
                         # Inside the lease: ComfyUI is only sure to be running while leased.
-                        data, ext = photo
+                        data, ext, _ = photo
                         comfy_name = await self._comfy.upload(data, f"hk-{photo_id}.{ext}")
                     if comfy_name is not None:
                         values["input_image"] = comfy_name

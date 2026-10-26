@@ -380,8 +380,8 @@ class UploadingComfy(FakeComfy):
         return f"stored-{name}"
 
 
-def save_photo(store, data=JPEG, mime="image/jpeg", ext="jpg"):
-    return store.save_upload(data, mime=mime, ext=ext, width=800, height=600).id
+def save_photo(store, data=JPEG, mime="image/jpeg", ext="jpg", width=1000, height=1000):
+    return store.save_upload(data, mime=mime, ext=ext, width=width, height=height).id
 
 
 def test_description_says_how_to_edit_the_owners_photo(store):
@@ -389,6 +389,7 @@ def test_description_says_how_to_edit_the_owners_photo(store):
     assert EDIT_SENTENCE in tool.description
     prop = tool.parameters["properties"]["input_image"]
     assert prop["type"] == "string" and "upload id" in prop["description"]
+    assert prop["pattern"] == "^[A-Za-z0-9_-]{1,32}$" and "maxLength" not in prop
     assert tool.parameters["required"] == ["prompt"]
     plain, _, _ = make_tool(store)  # no card can edit: nothing to point the model at
     assert "input_image" not in plain.description
@@ -481,3 +482,34 @@ async def test_edit_upload_failure_is_error_result(store, ctx):
     result = await tool.run({"prompt": "x", "input_image": photo}, ctx)
     assert (result.ok, result.content) == (False, "Image generation failed.")
     assert comfy.graphs == []
+
+
+@pytest.mark.parametrize(
+    ("size", "args", "expected"),
+    [
+        ((1600, 900), {}, (1536, 864)),  # landscape
+        ((900, 1600), {}, (864, 1536)),  # portrait
+        ((1000, 980), {}, (1024, 1024)),  # near square
+        ((3000, 1200), {}, (1536, 640)),  # banner
+        ((900, 1600), {"aspect": "banner"}, (1536, 640)),  # an explicit aspect wins
+        ((900, 1600), {"width": 1024}, (1024, 1024)),  # so does an explicit side
+    ],
+)
+async def test_edit_keeps_the_photos_shape(store, ctx, size, args, expected):
+    photo = save_photo(store, width=size[0], height=size[1])
+    tool, _, comfy = make_tool(store, comfy=UploadingComfy(), cards=(FLUX_EDIT, ZIMAGE))
+    result = await tool.run({"prompt": "x", "input_image": photo, "count": 1, **args}, ctx)
+    assert result.ok, result.content
+    assert f"at {expected[0]}x{expected[1]}." in result.content
+    assert comfy.graphs[0]["66"]["inputs"]["width"] == expected[0]
+    assert comfy.graphs[0]["66"]["inputs"]["height"] == expected[1]
+
+
+def test_input_image_schema_rejects_paths(store):
+    import jsonschema
+
+    tool, _, _ = make_tool(store, cards=(FLUX_EDIT, ZIMAGE))
+    jsonschema.validate({"prompt": "x", "input_image": "Abc_12-3"}, tool.parameters)
+    for bad in ("../hk.db", "a" * 33, "", "a.png"):
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate({"prompt": "x", "input_image": bad}, tool.parameters)

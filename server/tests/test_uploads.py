@@ -157,7 +157,7 @@ def test_upload_accepts_png_jpeg_webp(start, tmp_path, data, mime, ext, size):
     response = upload(client, data, name="My Family Photo.gif", mime="application/octet-stream")
     assert response.status_code == 201, response.text
     upload_id = response.json()["id"]
-    assert set(response.json()) == {"id"}
+    assert response.json() == {"id": upload_id, "width": size[0], "height": size[1]}
     stored = tmp_path / "workspace" / "uploads" / f"{upload_id}.{ext}"
     assert stored.read_bytes() == data
     [row] = rows(tmp_path, "SELECT * FROM uploads")
@@ -291,3 +291,97 @@ def test_upload_file_rejects_bad_ids_and_requires_session(start, tmp_path):
     signed_out = start(sign_in=False)
     response = signed_out.get(f"/api/uploads/{upload_id}/file")
     assert response.status_code == 401 and response.json() == {"reason": "unauthenticated"}
+
+
+# ---- fix round 1 -------------------------------------------------------------------------------
+
+STILL_ONLY = "Hearthkeep can only use still photos."
+
+
+def apng(width: int, height: int) -> bytes:
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    actl = struct.pack(">II", 2, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr) + _chunk(b"acTL", actl)
+        + _chunk(b"IDAT", zlib.compress(b"\x00" * 16)) + _chunk(b"IEND", b"")
+    )  # fmt: skip
+
+
+def animated_webp(width: int, height: int) -> bytes:
+    flags = bytes([0x02, 0, 0, 0])  # the animation bit
+    data = flags + (width - 1).to_bytes(3, "little") + (height - 1).to_bytes(3, "little")
+    return _riff(b"VP8X" + struct.pack("<I", len(data)) + data)
+
+
+def test_png_with_actl_after_idat_is_still_a_still_photo(start):
+    # Only an acTL before the first IDAT makes an animated PNG.
+    ihdr = struct.pack(">IIBBBBB", 20, 20, 8, 2, 0, 0, 0)
+    data = (
+        b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", zlib.compress(b"\x00"))
+        + _chunk(b"acTL", struct.pack(">II", 2, 0)) + _chunk(b"IEND", b"")
+    )  # fmt: skip
+    assert upload(start(), data).status_code == 201
+
+
+@pytest.mark.parametrize("data", [apng(64, 64), animated_webp(64, 64)])
+def test_upload_rejects_animated_images(start, tmp_path, data):
+    response = upload(start(), data)
+    assert response.status_code == 415
+    assert response.json() == {"reason": "animated", "message": STILL_ONLY}
+    assert rows(tmp_path, "SELECT * FROM uploads") == []
+
+
+def _jpeg_tail(width=640, height=480) -> bytes:
+    return b"\xff\xc0" + struct.pack(">HBHHB", 17, 8, height, width, 3) + bytes(9) + b"\xff\xd9"
+
+
+def test_jpeg_scan_is_bounded():
+    # A frame header after a long run of fill bytes, or after very many segments, is not looked
+    # for: the scan stops at 2 MiB or 512 segments.
+    fill = b"\xff\xd8" + b"\xff" * (2 * MB + 10) + _jpeg_tail()
+    assert image_info(fill) is None
+    comments = b"\xff\xd8" + b"\xff\xfe\x00\x02" * 600 + _jpeg_tail()
+    assert image_info(comments) is None
+    few = b"\xff\xd8" + b"\xff\xfe\x00\x02" * 100 + b"\xff" * 1000 + _jpeg_tail()
+    assert image_info(few).width == 640
+
+
+def test_upload_rejects_jpeg_with_endless_fill_bytes(start):
+    data = b"\xff\xd8" + b"\xff" * (3 * MB) + _jpeg_tail()
+    response = upload(start(), data)
+    assert response.status_code == 415 and response.json()["reason"] == "unsupported_type"
+
+
+def test_upload_keeps_file_bytes_that_contain_the_boundary(start, tmp_path):
+    client = start()
+    boundary = b"hkBoundary42"
+    # The boundary text inside the photo, without a CRLF in front, is not a delimiter.
+    data = png(10, 10) + b"--" + boundary + b"--tail\r\nmore--" + boundary + b"x"
+    body = (
+        b"--" + boundary + b"\r\n"
+        b'Content-Disposition: form-data; name="file"; filename="a.png"\r\n'
+        b"Content-Type: image/png\r\n\r\n" + data + b"\r\n--" + boundary + b"--\r\n"
+    )
+    response = client.post(
+        "/api/uploads",
+        content=body,
+        headers={**CSRF, "Content-Type": f"multipart/form-data; boundary={boundary.decode()}"},
+    )
+    assert response.status_code == 201, response.text
+    upload_id = response.json()["id"]
+    assert (tmp_path / "workspace" / "uploads" / f"{upload_id}.png").read_bytes() == data
+
+
+def test_upload_parses_and_writes_off_the_event_loop(start, monkeypatch):
+    import hearthkeep.api.routes_uploads as routes
+
+    offloaded: list[str] = []
+    real = routes.run_in_threadpool
+
+    async def recording(func, *args, **kwargs):
+        offloaded.append(func.__name__)
+        return await real(func, *args, **kwargs)
+
+    monkeypatch.setattr(routes, "run_in_threadpool", recording)
+    assert upload(start(), png(10, 10)).status_code == 201
+    assert offloaded == ["parse_upload", "write_upload_file"]

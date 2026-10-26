@@ -24,6 +24,16 @@ export const SHAPES: { id: Shape; label: string; width: number; height: number }
   { id: 'banner', label: 'Banner', width: 1536, height: 640 },
 ]
 const COUNTS = [1, 2, 3, 4]
+
+/** The shape closest to a photo's, by log ratio: the same rule the image tool uses. */
+export function nearestShape(width: number, height: number): Shape {
+  const ratio = Math.log(width / height)
+  let best = SHAPES[0]
+  for (const s of SHAPES) {
+    if (Math.abs(Math.log(s.width / s.height) - ratio) < Math.abs(Math.log(best.width / best.height) - ratio)) best = s
+  }
+  return best.id
+}
 const ALT_CHARS = 140
 /** The capability a card needs to edit the owner's photo. */
 export const IMAGE_EDIT = 'image-edit'
@@ -259,9 +269,11 @@ export function Images() {
     }
   }
 
-  function pickPhoto(file: File) {
+  async function pickPhoto(file: File) {
     if (editor) setModel(editor.id)
-    void attach.pick(file)
+    // Start from the photo's own shape; the owner can still pick another.
+    const up = await attach.pick(file)
+    if (up) setShape(nearestShape(up.width, up.height))
   }
 
   async function create(event?: FormEvent) {
@@ -361,7 +373,7 @@ export function Images() {
             maxLength={2000}
             enterKeyHint="go"
           />
-          <PhotoChip photo={attach.photo} onRemove={attach.clear} />
+          <PhotoChip attach={attach} />
           <div className="describe-controls">
             <label className="ctl">
               <span className="label">Model</span>
@@ -409,7 +421,7 @@ export function Images() {
               <span className="label">Photo</span>
               <PhotoButton
                 className="btn use-photo"
-                onPick={pickPhoto}
+                onPick={(file) => void pickPhoto(file)}
                 disabled={!editor || busy}
                 describedBy={models.state === 'ready' && !editor ? ids.photoWhy : undefined}
               >

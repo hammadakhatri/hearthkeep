@@ -17,6 +17,7 @@ from hearthkeep import db
 from hearthkeep.agent.runner import TERMINAL_EVENTS, TurnInProgressError
 from hearthkeep.api.common import ApiError, Services, current_session, services
 from hearthkeep.auth.sessions import Session
+from hearthkeep.images import without_photo_lines
 from hearthkeep.secrets import SecretStoreError
 
 router = APIRouter(prefix="/api")
@@ -24,6 +25,7 @@ router = APIRouter(prefix="/api")
 SessionDep = Annotated[Session, Depends(current_session)]
 MESSAGE_MAX_CHARS = 20000
 TITLE_CHARS = 60
+PHOTO_TITLE = "Photo"
 SECRETS_UNREADABLE = "Hearthkeep couldn't read its stored secrets. Check the server."
 
 
@@ -115,7 +117,8 @@ async def post_message(
         # Nothing was saved: the message is refused rather than stored unredacted.
         raise ApiError(503, "secrets_unreadable", message=SECRETS_UNREADABLE) from None
     if not row["title"]:
-        title = " ".join(text.split())[:TITLE_CHARS]
+        # Attached-photo lines are not words: a photo on its own is titled "Photo".
+        title = " ".join(without_photo_lines(text).split())[:TITLE_CHARS] or PHOTO_TITLE
         hk.conn.execute("UPDATE chats SET title = ? WHERE id = ?", (title, chat_id))
     return {"turn_id": turn_id}
 
