@@ -1,10 +1,12 @@
 import asyncio
+import json
 from datetime import UTC, datetime
 
 import pytest
 from fakes import FakeChatClient
 
-from hearthkeep.agent.loop import AgentLoop, load_history
+from hearthkeep import audit
+from hearthkeep.agent.loop import AgentLoop, _Turn, load_history
 from hearthkeep.agent.runner import TurnInProgressError, TurnRunner
 from hearthkeep.approvals import ApprovalStore
 from hearthkeep.config import Settings
@@ -47,40 +49,104 @@ async def collect(runner, turn_id, after_seq=0):
     return [e async for e in runner.subscribe(CHAT, turn_id, after_seq=after_seq)]
 
 
-async def test_turn_survives_subscriber_disconnect(conn, approvals, tmp_path):
-    runner, client = make_runner(conn, approvals, tmp_path, tool_turn())
-    turn_id = runner.start(CHAT, "what time is it?", think=False)
+def note_turn(*after):
+    return [
+        [ToolCallRequest("c1", "note", '{"text": "x"}'), StreamDone("tool_calls")],
+        [TextDelta("Saved."), StreamDone("stop")],
+        *after,
+    ]
 
-    first: list[dict] = []
+
+async def wait_for(predicate):
+    for _ in range(1000):
+        if predicate():
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError("condition never became true")
+
+
+async def test_turn_survives_subscriber_disconnect(conn, approvals, tmp_path):
+    runner, client = make_runner(conn, approvals, tmp_path, note_turn())
+    turn_id = runner.start(CHAT, "note x", think=False)
+
+    seen: list[dict] = []
 
     async def subscriber():
         async for event in runner.subscribe(CHAT, turn_id):
-            first.append(event)
-            await asyncio.sleep(3600)  # stalls until cancelled
+            seen.append(event)
 
     task = asyncio.create_task(subscriber())
-    while not first:
-        await asyncio.sleep(0)
+    # the turn is now blocked waiting on the approval; disconnect mid-turn
+    await wait_for(lambda: any(e["type"] == "approval_required" for e in seen))
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+    assert runner.active_turn(CHAT) == turn_id
 
+    approval_id = next(e for e in seen if e["type"] == "approval_required")["approval_id"]
+    approvals.resolve(approval_id, "s", approve=True, step_up_verified=False)
     await runner.wait_idle()
+
     replay = await collect(runner, turn_id)
     assert [e["seq"] for e in replay] == list(range(1, len(replay) + 1))
     assert [e["type"] for e in replay] == [
         "step_started",
+        "approval_required",
+        "approval_resolved",
         "step_finished",
-        "text_delta",
         "text_delta",
         "turn_done",
     ]
-    assert replay[0] == first[0]
+    assert replay[: len(seen)] == seen
     # the user message was persisted before the model saw it; the answer after
-    assert client.calls[0]["messages"][-1] == {"role": "user", "content": "what time is it?"}
+    assert client.calls[0]["messages"][-1] == {"role": "user", "content": "note x"}
     history = load_history(conn, CHAT)
     assert [m["role"] for m in history] == ["user", "assistant", "tool", "assistant"]
-    assert history[-1]["content"] == "It is noon."
+    assert history[-1]["content"] == "Saved."
+
+
+async def test_cancelled_turn_leaves_well_formed_history(conn, approvals, tmp_path):
+    again = [TextDelta("Hello again."), StreamDone("stop")]
+    runner, client = make_runner(conn, approvals, tmp_path, note_turn()[:1] + [again])
+    turn_id = runner.start(CHAT, "note x", think=False)
+    await wait_for(lambda: len(approvals.pending()) == 1)
+    approval_id = approvals.pending()[0].id
+
+    assert runner.cancel(turn_id) is True
+    await runner.wait_idle()
+
+    events = await collect(runner, turn_id)
+    assert events[-1]["type"] == "turn_error"
+    assert approvals.get(approval_id).status == "expired"  # M2: no orphan pending approval
+
+    second = runner.start(CHAT, "hello?", think=False)
+    assert [e["type"] for e in await collect(runner, second)] == ["text_delta", "turn_done"]
+    sent = client.calls[-1]["messages"]
+    asked = [c["id"] for m in sent if m.get("tool_calls") for c in m["tool_calls"]]
+    answered = [m["tool_call_id"] for m in sent if m["role"] == "tool"]
+    assert asked == answered == ["c1"]
+    tool_msg = next(m for m in sent if m["role"] == "tool")
+    assert json.loads(tool_msg["content"]) == {"error": "This step was interrupted"}
+
+
+async def test_runner_records_crashed_turn(conn, approvals, tmp_path):
+    runner, _ = make_runner(conn, approvals, tmp_path, [])
+
+    async def crashing_run_turn(chat_id, turn_id, history, think):
+        yield runner._loop._emit(_Turn(chat_id, turn_id), "text_delta", text="hi")
+        raise RuntimeError("secret detail")
+
+    runner._loop.run_turn = crashing_run_turn
+    turn_id = runner.start(CHAT, "hi", think=False)
+    await runner.wait_idle()
+
+    events = await collect(runner, turn_id)
+    assert [(e["type"], e["seq"]) for e in events] == [("text_delta", 1), ("turn_error", 2)]
+    assert "secret" not in events[-1]["message"]
+    failed = [e for e in audit.list_events(conn) if e["event"] == "turn.failed"]
+    assert [(e["actor"], e["detail"]) for e in failed] == [
+        ("agent", {"error_type": "RuntimeError"})
+    ]
 
 
 async def test_subscribe_after_seq_skips_seen_events(conn, approvals, tmp_path):

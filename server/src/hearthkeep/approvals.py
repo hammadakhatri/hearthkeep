@@ -126,7 +126,6 @@ class ApprovalStore:
                     "tool": tool,
                     "action_class": approval.action_class,
                     "requires_step_up": requires_step_up,
-                    "summary": summary,
                 },
             )
         return approval

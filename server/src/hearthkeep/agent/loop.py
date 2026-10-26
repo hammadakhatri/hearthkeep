@@ -9,6 +9,7 @@ request, the event log or the message history.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import uuid
 from collections.abc import AsyncIterator
@@ -61,6 +62,9 @@ SECRETS_UNREADABLE = (
 )
 UNEXPECTED = "Something went wrong while answering. Please try again."
 INVALID_CALL_SUMMARY = "Invalid tool call"
+INTERRUPTED = json.dumps({"error": "This step was interrupted"})
+
+_log = logging.getLogger(__name__)
 
 
 def redact(value: Any, secrets: list[str]) -> Any:
@@ -86,15 +90,43 @@ def load_history(conn: sqlite3.Connection, chat_id: str) -> list[dict]:
         " WHERE chat_id = ? ORDER BY id",
         (chat_id,),
     ).fetchall()
-    history = []
+    history: list[dict] = []
+    unanswered: list[str] = []  # tool_call ids of the latest assistant message
+
+    def answer_rest() -> None:
+        history.extend(
+            {"role": "tool", "tool_call_id": i, "content": INTERRUPTED} for i in unanswered
+        )
+        unanswered.clear()
+
     for row in rows:
         message: dict = {"role": row["role"], "content": row["content"] or ""}
-        if row["tool_calls"]:
-            message["tool_calls"] = json.loads(row["tool_calls"])
         if row["tool_call_id"]:
             message["tool_call_id"] = row["tool_call_id"]
+        if message["role"] == "tool":
+            if message.get("tool_call_id") in unanswered:
+                unanswered.remove(message["tool_call_id"])
+            history.append(message)
+            continue
+        answer_rest()  # every tool call is answered before the next non-tool message
+        if row["tool_calls"]:
+            message["tool_calls"] = json.loads(row["tool_calls"])
+            unanswered.extend(c.get("id") for c in message["tool_calls"] if c.get("id"))
         history.append(message)
+    answer_rest()
     return history
+
+
+def record_turn_failure(conn: sqlite3.Connection, exc: BaseException) -> None:
+    """Audit a turn-level failure. Only the exception type: its text may carry secrets."""
+    try:
+        audit.record(conn, "agent", "turn.failed", {"error_type": type(exc).__name__})
+    except Exception as audit_exc:
+        _log.error(
+            "turn failed (%s) and could not be audited (%s)",
+            type(exc).__name__,
+            type(audit_exc).__name__,
+        )
 
 
 def save_message(conn: sqlite3.Connection, chat_id: str, message: dict, secrets: list[str]) -> None:
@@ -176,7 +208,8 @@ class AgentLoop:
                 return
             async for event in self._turn(turn, history, think):
                 yield event
-        except Exception:
+        except Exception as exc:
+            record_turn_failure(self._conn, exc)
             yield self._emit(turn, "turn_error", message=UNEXPECTED)
 
     def secret_values(self) -> list[str]:
@@ -241,23 +274,33 @@ class AgentLoop:
             self._save(turn, assistant)
 
             hit_limit = False
-            for call in calls:
-                if steps >= limit:
-                    hit_limit = True
-                    content = _error(STEP_LIMIT_CALL)
-                else:
-                    steps += 1
-                    outcome = _Outcome()
-                    async for event in self._handle_call(turn, call, outcome):
-                        yield event
-                    content = outcome.content
-                tool_message = {
-                    "role": "tool",
-                    "tool_call_id": call.id,
-                    "content": redact(content, turn.secrets),
-                }
-                messages.append(tool_message)
-                self._save(turn, tool_message)
+            answered = 0
+            try:
+                for call in calls:
+                    if steps >= limit:
+                        hit_limit = True
+                        content = _error(STEP_LIMIT_CALL)
+                    else:
+                        steps += 1
+                        outcome = _Outcome()
+                        async for event in self._handle_call(turn, call, outcome):
+                            yield event
+                        content = outcome.content
+                    tool_message = {
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "content": redact(content, turn.secrets),
+                    }
+                    messages.append(tool_message)
+                    self._save(turn, tool_message)
+                    answered += 1
+            finally:
+                # Cancelled or failed mid-round: answer the rest so the persisted history
+                # stays well-formed. Synchronous on purpose (safe during cancellation).
+                for call in calls[answered:]:
+                    self._save(
+                        turn, {"role": "tool", "tool_call_id": call.id, "content": INTERRUPTED}
+                    )
 
             if hit_limit:
                 final = STEP_LIMIT_MESSAGE.format(limit=limit)
@@ -294,7 +337,7 @@ class AgentLoop:
             yield self._step_finished(turn, step_id, ok, outcome.content)
             return
 
-        decision, level = self._decide(turn, tool, action)
+        decision = self._decide(turn, tool, action)
         if decision == Decision.RUN:
             ok, outcome.content = await self._run(turn, tool, args, decision)
         elif decision in (Decision.ASK, Decision.ASK_STEP_UP):
@@ -321,7 +364,8 @@ class AgentLoop:
                 turn, "approval_resolved", approval_id=approval.id, status=resolved.status
             )
             if resolved.status == "approved":
-                if self._level(tool) == ToolLevel.OFF:  # turned off while waiting
+                level = self._level(tool)  # re-read: the owner may have changed it meanwhile
+                if level == ToolLevel.OFF:
                     ok, outcome.content = self._deny(tool)
                 else:
                     if action == ActionClass.CHANGE_LOCAL and level == ToolLevel.ALLOWED:
@@ -361,7 +405,7 @@ class AgentLoop:
     def _level(self, tool: Tool) -> ToolLevel:
         return effective_level(tool.level_key, get_level(self._conn, tool.level_key), self._docker)
 
-    def _decide(self, turn: _Turn, tool: Tool, action: ActionClass) -> tuple[Decision, ToolLevel]:
+    def _decide(self, turn: _Turn, tool: Tool, action: ActionClass) -> Decision:
         level = self._level(tool)
         granted = (
             self._conn.execute(
@@ -370,7 +414,7 @@ class AgentLoop:
             ).fetchone()
             is not None
         )
-        return decide(level, action, granted), level
+        return decide(level, action, granted)
 
     def _deny(self, tool: Tool) -> tuple[bool, str]:
         audit.record(

@@ -470,3 +470,50 @@ async def test_unexpected_client_failure_ends_turn_with_generic_error(
     events = await drain(loop, user("hi"))
     assert types(events) == ["text_delta", "turn_error"]
     assert "boom" not in events[-1]["message"]
+    failed = [e for e in audit.list_events(conn) if e["event"] == "turn.failed"]
+    assert [(e["actor"], e["detail"]) for e in failed] == [
+        ("agent", {"error_type": "RuntimeError"})
+    ]
+
+
+async def test_grant_uses_level_read_after_the_wait(conn, settings, approvals, registry, tmp_path):
+    client = FakeChatClient(
+        [
+            [call("note", {"text": "x"}), StreamDone("tool_calls")],
+            [TextDelta("ok"), StreamDone("stop")],
+        ]
+    )
+    loop = make_loop(client, registry, approvals, conn, settings)
+
+    def narrow_then_approve(event):
+        set_level(conn, "demo", ToolLevel.ASK)
+        approvals.resolve(event["approval_id"], "s", approve=True, step_up_verified=False)
+
+    await drain(loop, user("note x"), on_approval=narrow_then_approve)
+    assert conn.execute("SELECT COUNT(*) FROM chat_grants").fetchone()[0] == 0
+    # the owner approved this one call, so it still ran
+    notes = (tmp_path / "workspace" / "output" / "notes.txt").read_text(encoding="utf-8")
+    assert notes.splitlines() == ["x"]
+
+
+def test_load_history_answers_orphan_tool_calls(conn):
+    from hearthkeep.agent.loop import save_message
+
+    calls = [
+        {"id": i, "type": "function", "function": {"name": "clock", "arguments": "{}"}}
+        for i in ("a", "b")
+    ]
+    save_message(conn, CHAT, {"role": "assistant", "content": "", "tool_calls": calls}, [])
+    save_message(conn, CHAT, {"role": "tool", "tool_call_id": "a", "content": "done"}, [])
+    save_message(conn, CHAT, {"role": "user", "content": "next"}, [])
+    save_message(conn, CHAT, {"role": "assistant", "content": "", "tool_calls": calls[:1]}, [])
+
+    history = load_history(conn, CHAT)
+    stub = json.dumps({"error": "This step was interrupted"})
+    assert [(m["role"], m.get("tool_call_id"), m["content"]) for m in history[1:]] == [
+        ("tool", "a", "done"),
+        ("tool", "b", stub),
+        ("user", None, "next"),
+        ("assistant", None, ""),
+        ("tool", "a", stub),
+    ]

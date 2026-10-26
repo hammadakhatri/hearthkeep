@@ -15,7 +15,13 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
 from hearthkeep import db
-from hearthkeep.agent.loop import UNEXPECTED, AgentLoop, load_history, save_message
+from hearthkeep.agent.loop import (
+    UNEXPECTED,
+    AgentLoop,
+    load_history,
+    record_turn_failure,
+    save_message,
+)
 
 TERMINAL_EVENTS = frozenset({"turn_done", "turn_error"})
 
@@ -62,10 +68,19 @@ class TurnRunner:
         history = load_history(self._conn, chat_id)
         turn_id = uuid.uuid4().hex
         live = _Live(chat_id, turn_id)
+        live.task = asyncio.create_task(self._drive(live, history, think))
+        # Registered only once the task exists; the task cannot run before we return.
         self._live[turn_id] = live
         self._by_chat[chat_id] = turn_id
-        live.task = asyncio.create_task(self._drive(live, history, think))
         return turn_id
+
+    def cancel(self, turn_id: str) -> bool:
+        """Stop a running turn. Returns False if it is not running."""
+        live = self._live.get(turn_id)
+        if live is None or live.task is None or live.task.done():
+            return False
+        live.task.cancel()
+        return True
 
     async def wait_idle(self) -> None:
         """Wait until every running turn has finished (mainly for tests and shutdown)."""
@@ -104,19 +119,28 @@ class TurnRunner:
             async for event in self._loop.run_turn(live.chat_id, live.turn_id, history, think):
                 last_type = event["type"]
                 live.notify()
-        except Exception:
-            last_type = None  # fall through: record the failure below
+        except Exception as exc:
+            last_type = None  # fall through: close the turn below
+            record_turn_failure(self._conn, exc)
         finally:
             if last_type not in TERMINAL_EVENTS:
-                self._record_crash(live)
+                self._close_unfinished(live)
             self._live.pop(live.turn_id, None)
             if self._by_chat.get(live.chat_id) == live.turn_id:
                 del self._by_chat[live.chat_id]
             live.notify()
 
-    def _record_crash(self, live: _Live) -> None:
-        """Last-resort terminal event so subscribers never wait forever."""
+    def _close_unfinished(self, live: _Live) -> None:
+        """A turn that ended without a terminal event (crashed or cancelled): expire its
+        pending approvals and persist a last-resort turn_error so subscribers never wait
+        forever."""
         try:
+            now = db.utcnow()
+            self._conn.execute(
+                "UPDATE approvals SET status = 'expired', resolved_at = ?"
+                " WHERE chat_id = ? AND turn_id = ? AND status = 'pending'",
+                (now, live.chat_id, live.turn_id),
+            )
             seq = self._conn.execute(
                 "SELECT COALESCE(MAX(seq), 0) FROM turn_events WHERE chat_id = ? AND turn_id = ?",
                 (live.chat_id, live.turn_id),
@@ -124,13 +148,7 @@ class TurnRunner:
             self._conn.execute(
                 "INSERT INTO turn_events (chat_id, turn_id, seq, type, data, created_at)"
                 " VALUES (?, ?, ?, 'turn_error', ?, ?)",
-                (
-                    live.chat_id,
-                    live.turn_id,
-                    seq + 1,
-                    json.dumps({"message": UNEXPECTED}),
-                    db.utcnow(),
-                ),
+                (live.chat_id, live.turn_id, seq + 1, json.dumps({"message": UNEXPECTED}), now),
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            record_turn_failure(self._conn, exc)

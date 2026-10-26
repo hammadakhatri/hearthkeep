@@ -231,7 +231,12 @@ def test_resolutions_are_audited(store, conn):
     events = {e["event"]: e for e in audit.list_events(conn)}
     created = events["approval.created"]
     assert created["actor"] == "agent"
-    assert created["detail"]["approval_id"] == a.id
+    assert created["detail"] == {
+        "approval_id": a.id,
+        "tool": "github",
+        "action_class": "outward",
+        "requires_step_up": False,
+    }  # no summary: it can carry tool arguments
     resolved = events["approval.resolved"]
     assert resolved["actor"] == "session:sess-secret-id"
     assert resolved["detail"] == {"approval_id": a.id, "status": "approved", "tool": "github"}
