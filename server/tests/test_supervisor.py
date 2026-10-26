@@ -675,3 +675,36 @@ async def test_comfyui_start_writes_paths_yaml(tmp_path):
         assert "base_path:" in yaml_path.read_text(encoding="utf-8")
     finally:
         await proc.stop(timeout=1)
+
+
+def test_llama_refuses_paths_of_260_characters_on_windows(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(supervisor, "_on_windows", lambda: True)
+    long_dir = tmp_path / ("d" * 240)
+    rt = llama_rt(tmp_path, model_dirs={"bare": tmp_path / "m"})
+    key_file = long_dir / "runtime" / "llama-api-key"
+    with pytest.raises(ProcessError) as caught:
+        build_llama_process(
+            bare_card("--model", "{model}"), rt, tmp_path, key_file, api_key=key_source()
+        )
+    assert "shorter path" in caught.value.user_message
+    assert str(long_dir) not in caught.value.user_message
+    assert str(long_dir) not in str(caught.value)
+    assert str(long_dir) not in caplog.text
+
+
+def test_llama_refuses_long_model_paths_on_windows(tmp_path, monkeypatch):
+    monkeypatch.setattr(supervisor, "_on_windows", lambda: True)
+    rt = llama_rt(tmp_path, model_dirs={"bare": tmp_path / ("m" * 250)})
+    with pytest.raises(ProcessError) as caught:
+        build_llama_process(
+            bare_card("--model", "{model}"), rt, tmp_path, tmp_path / "k", api_key=key_source()
+        )
+    assert "shorter path" in caught.value.user_message
+
+
+def test_llama_allows_long_paths_off_windows(tmp_path, monkeypatch):
+    monkeypatch.setattr(supervisor, "_on_windows", lambda: False)
+    rt = llama_rt(tmp_path, model_dirs={"bare": tmp_path / ("m" * 250)})
+    build_llama_process(
+        bare_card("--model", "{model}"), rt, tmp_path, tmp_path / "k", api_key=key_source()
+    )

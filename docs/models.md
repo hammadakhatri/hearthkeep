@@ -89,7 +89,7 @@ vae = "ae.safetensors"
 | `guidance` | no | Text that teaches the chat model how to write a prompt for this model. It becomes part of the image tool's description. |
 | `prefer_when` | no | A short phrase saying when the chat model should pick this model (for example "the image contains words"). |
 
-**`launch_args` placeholders.** Only four are filled in: `{model}`, `{mmproj}`, `{port}` and `{api_key_file}`. `{model}` and `{mmproj}` become the matching `files` entry inside the folder you list in `models.toml`; `{port}` is `llama_port`; `{api_key_file}` is a key file Hearthkeep generates for the run. Any other braces are passed through untouched, so JSON values such as `--chat-template-kwargs` work as written. If you use `{model}` or `{mmproj}`, the card must list that file. Hearthkeep refuses a card that tries to listen on anything other than `127.0.0.1`: `--host` must be followed by `127.0.0.1`, and `0.0.0.0` or `::` is rejected anywhere in the arguments.
+**`launch_args` placeholders.** Only four are filled in: `{model}`, `{mmproj}`, `{port}` and `{api_key_file}`. `{model}` and `{mmproj}` become the matching `files` entry inside the folder you list in `models.toml`; `{port}` is `llama_port`; `{api_key_file}` is a key file Hearthkeep generates for the run (on Windows its path must stay under 260 characters, see Troubleshooting). `--port` and `--api-key-file` must use `{port}` and `{api_key_file}` (a different value is refused), and `--api-key` is not allowed: Hearthkeep supplies the key itself. These rules are checked when the model starts, not when the card is loaded. On Windows the key file's path must stay short; see Troubleshooting. Any other braces are passed through untouched, so JSON values such as `--chat-template-kwargs` work as written. If you use `{model}` or `{mmproj}`, the card must list that file. Hearthkeep refuses a card that tries to listen on anything other than `127.0.0.1`: `--host` must be followed by `127.0.0.1`, and `0.0.0.0` or `::` is rejected anywhere in the arguments.
 
 ### Adding your own card
 
@@ -146,14 +146,14 @@ default_image_model = "z-image-turbo"
 - Chat is managed by Hearthkeep when `llama_server_exe` and a `model_dirs` entry for the chat model are set. Hearthkeep starts `llama-server` when it is first needed and stops it when Hearthkeep stops.
 - Images are managed when `comfyui_python`, `comfyui_main` and `comfyui_model_root` are all set. The image file names from the cards are looked up in the `diffusion_models`, `text_encoders` and `vae` folders under `comfyui_model_root`.
 - Without `models.toml`, Hearthkeep talks to the chat server already running at `chat_base_url` in `config.toml`, and image generation is off.
-- `gpu_vram_gb` is only needed if Hearthkeep cannot detect your GPU's memory (it asks `nvidia-smi`).
+- Hearthkeep asks `nvidia-smi` (so an NVIDIA GPU) how much GPU memory you have. If that fails it assumes 16 GB and logs a warning. Set `gpu_vram_gb` whenever it guesses wrong.
 - An unknown key or a wrong type in `models.toml` stops the server at start-up with a message naming the key.
 
 ## GPU switching
 
 A chat model and an image model usually do not fit in the GPU's memory together, so Hearthkeep swaps them. A small scheduler keeps track of what is loaded and what each model needs (`vram_gb`, plus about 1.5 GB kept free for the system).
 
-- **Chat pauses while images render.** When the assistant makes an image, the chat model is unloaded to make room, the image is rendered, and the chat model is loaded again when something needs it. Anything you type in the meantime waits its turn.
+- **Chat pauses while images render.** When the assistant makes an image, the chat model is unloaded to make room, the image is rendered, and the chat model is loaded again when something needs it. Anything you type in the meantime waits its turn: an image waits for a chat reply that is already in progress, and a chat waits for an image that is being rendered.
 - **The first image after a chat takes longer**, and so does **the first chat after images**, because a model has to be loaded from disk. Later requests of the same kind are quick.
 - Several images in one request are rendered one after another. Chat can run between two of them.
 - If a model needs more memory than your GPU has, Hearthkeep says so instead of trying.
@@ -183,5 +183,6 @@ Logs are in `<data>/logs/`: `llama-server.log` for the chat model and `comfyui.l
 - **No images, or the image tool is missing.** Check that all three `comfyui_*` paths are set in `<data>/models.toml` and point to real files.
 - **A model "couldn't be started".** Open the matching log. The usual causes are a wrong path, a missing model file, or too little free GPU memory because another program is using it.
 - **A card does not show up.** Look at the start-up output: skipped cards are listed with the reason. Common ones are a file name that contains a path, a missing `files` entry, or a `workflow` name that is not one of the shipped files.
+- **"Hearthkeep's data folder path is too long for llama-server on Windows".** On Windows, `<data>\runtime\llama-api-key` (and the model file paths) must each stay under 260 characters. Move the data folder to a shorter path.
 - **The first image is slow.** That is the model swap described above.
 - **Port already in use.** Change `llama_port` or `comfyui_port` in `models.toml`.

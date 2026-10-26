@@ -10,7 +10,7 @@ Hearthkeep is an open-source, local-first personal assistant. It runs on your ow
 
 ## Run Hearthkeep
 
-You need Python 3.12+, [uv](https://docs.astral.sh/uv/), Node 20.19+ (or 22.12+), and an OpenAI-compatible chat server already running on your own machine (by default at `http://127.0.0.1:8080/v1`).
+You need Python 3.12+, [uv](https://docs.astral.sh/uv/) and Node 20.19+ (or 22.12+). For the models, either point Hearthkeep at an OpenAI-compatible chat server already running on your own machine (by default `http://127.0.0.1:8080/v1`), or let Hearthkeep start the models itself. The second way needs llama.cpp (chat) and/or ComfyUI (images) installed, and an NVIDIA GPU so Hearthkeep can detect its memory. See [docs/models.md](docs/models.md).
 
 ```
 # build the web app (the server serves web/dist)

@@ -116,6 +116,9 @@ def stream_turn(
         check(response.status_code == 200, f"events failed: HTTP {response.status_code}")
         event, data = None, None
         for line in response.iter_lines():
+            # Checked on every line, keep-alive comments included, so a stalled turn that
+            # keeps the connection alive still times out.
+            check(ends is None or time.monotonic() < ends, f"no result after {deadline:.0f}s")
             if line.startswith(":"):
                 continue
             if line.startswith("event: "):
@@ -123,8 +126,6 @@ def stream_turn(
             elif line.startswith("data: "):
                 data = json.loads(line[6:])
             elif line == "" and event is not None:
-                if ends is not None:
-                    check(time.monotonic() < ends, f"no result after {deadline:.0f}s")
                 yield event, data
                 if event in ("turn_done", "turn_error") or event == stop_on:
                     return
@@ -253,33 +254,46 @@ def main(argv: list[str] | None = None) -> int:
         health = client.get("/api/health").json()
         check(health.get("chat_model_reachable") is True, f"chat model not reachable: {health}")
         sign_in(client, args.code)
-    except (SmokeError, httpx.HTTPError) as exc:
-        print(f"FAIL setup: {exc}")
+    except (SmokeError, httpx.HTTPError, ValueError, KeyError) as exc:
+        print(f"FAIL setup: {exc if isinstance(exc, SmokeError) else type(exc).__name__}")
         return 1
 
     state: dict = {}
+    # (name, run, the step it needs to have passed)
     steps = [
-        ("clock tool", lambda: check_clock(client)),
-        ("note approval", lambda: check_note_approval(client)),
+        ("clock tool", lambda: check_clock(client), None),
+        ("note approval", lambda: check_note_approval(client), None),
     ]
     if args.images:
         steps += [
-            ("image", lambda: check_image(client, state)),
-            ("chat after image", lambda: check_chat_after_image(client, state)),
+            ("image", lambda: check_image(client, state), None),
+            ("chat after image", lambda: check_chat_after_image(client, state), "image"),
         ]
     if args.edit:
-        steps.append(("edit", lambda: check_edit(client, state)))
-    failed = False
-    for name, run in steps:
+        steps.append(("edit", lambda: check_edit(client, state), "image"))
+    failed_steps: set[str] = set()
+    for name, run, needs in steps:
+        if needs in failed_steps:
+            failed_steps.add(name)
+            print(f"SKIP {name} (the {needs} step failed)")
+            continue
         started = time.monotonic()
         try:
             run()
-        except (SmokeError, httpx.HTTPError) as exc:
-            failed = True
-            print(f"FAIL {name}: {exc}")
+        except httpx.TimeoutException:
+            failed_steps.add(name)
+            print(f"FAIL {name}: no result after {TIMEOUT.read:.0f}s")
+        except (SmokeError, httpx.HTTPError, ValueError, KeyError) as exc:
+            failed_steps.add(name)
+            detail = (
+                str(exc)
+                if isinstance(exc, (SmokeError, httpx.HTTPError))
+                else (f"unexpected response ({type(exc).__name__})")
+            )
+            print(f"FAIL {name}: {detail}".splitlines()[0])
         else:
             print(f"OK {name} ({time.monotonic() - started:.1f}s)")
-    return 1 if failed else 0
+    return 1 if failed_steps else 0
 
 
 if __name__ == "__main__":

@@ -56,7 +56,7 @@ When a call needs your say-so, Hearthkeep creates an approval and the assistant 
 ## Images and photo uploads
 
 - Generated images and uploaded photos are served only to a signed-in owner session, with `X-Content-Type-Options: nosniff` and a private cache header. A request without a session gets nothing.
-- Uploads are checked by content, not by name: the type is read from the file's magic bytes and its size from the parsed headers (PNG, JPEG or WebP only). The upload is size-capped while it is being read (15 MB), so an oversized request is dropped before it is held in memory. Photos over 4096 pixels on a side are refused, and animated files (animated PNG or WebP) are rejected.
+- Uploads are checked by content, not by name: the type is read from the file's magic bytes and its size from the parsed headers (PNG, JPEG or WebP only). The server stops reading once an upload is over the limit (15 MB), so an oversized request is dropped early. Photos over 4096 pixels on a side are refused, and animated files (animated PNG or WebP) are rejected.
 - The client's file name is never stored or used. The server picks the id and builds the path itself, and only ids of the exact shape it hands out are accepted.
 - The model can only refer to an upload by its id, and the id is looked up in the database. It cannot name a path or a file.
 - Generating an image and uploading a photo are **Look** actions: they stay on this PC and need no approval. Nothing is sent anywhere.
@@ -98,7 +98,7 @@ None of this is ever part of the repository. Back it up yourself.
 - Approve its own requests, or change its own permissions. Both require your signed-in session.
 - Raise a tool's permission level.
 - Talk to a model server or listen on any address outside your own machine.
-- Read your secrets through any tool: Phase 1 has no tool that touches the secret store, and `secrets list` prints names only.
+- Read your secrets through any tool. No tool touches the secret store, and `secrets list` prints names only.
 - Edit or erase the audit log.
 - Change Hearthkeep's own code or configuration.
 

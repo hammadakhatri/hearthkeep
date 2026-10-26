@@ -8,6 +8,7 @@ POSIX each one leads its own session and is stopped as a process group.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import secrets
 import shlex
@@ -41,6 +42,12 @@ _TIMEOUT_STOP = 5.0
 # connect phase is capped well below the overall 2 s probe timeout.
 _HEALTH_TIMEOUT = httpx.Timeout(2.0, connect=0.5)
 _PORT_PROBE_TIMEOUT = 0.5
+
+
+log = logging.getLogger(__name__)
+
+
+log = logging.getLogger(__name__)
 
 
 class ProcessError(Exception):
@@ -456,6 +463,26 @@ def _llama_env() -> dict[str, str]:
     }
 
 
+WINDOWS_MAX_PATH = 260
+_PATH_TOO_LONG = (
+    "Hearthkeep's data folder path is too long for llama-server on Windows (it must stay "
+    "under 260 characters). Move the data folder to a shorter path."
+)
+
+
+def _on_windows() -> bool:
+    return os.name == "nt"
+
+
+def _check_windows_path_lengths(paths: list[str]) -> None:
+    """llama-server can't open a path of 260 characters or more on Windows. Fail before
+    spawning, with a message that never contains the path (only its length is logged)."""
+    longest = max(len(p) for p in paths)
+    if _on_windows() and longest >= WINDOWS_MAX_PATH:
+        log.warning("a llama-server path is %d characters long (limit %d)", longest, 259)
+        raise ProcessError(_PATH_TOO_LONG, f"path of {longest} characters")
+
+
 def build_llama_process(
     card: ModelCard,
     rt: RuntimeConfig,
@@ -479,6 +506,9 @@ def build_llama_process(
     key_file = Path(api_key_file).absolute()
     values = {"port": str(rt.llama_port), "api_key_file": str(key_file)}
     values.update({key: str(folder / name) for key, name in card.files.items()})
+    _check_windows_path_lengths(
+        [values["api_key_file"], *(str(folder / name) for name in card.files.values())]
+    )
 
     def fill(match) -> str:
         if match.group(1) not in values:
