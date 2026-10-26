@@ -146,6 +146,28 @@ def test_entry_tar_skips_sparse_files(job):
     assert contents["fine.txt"] == b"ok"
 
 
+def test_entry_tar_keeps_small_files_that_report_no_blocks(job, monkeypatch):
+    # Some filesystems store tiny files inline and report st_blocks == 0; only large
+    # members are judged sparse.
+    (job.job / "main.py").write_text(
+        "import os\nopen(os.path.join(os.environ['HK_OUT'], 'tiny.txt'), 'w').write('tiny')\n",
+        encoding="utf-8",
+    )
+    real_fstat = hk_entry.os.fstat
+
+    class NoBlocks:
+        def __init__(self, info):
+            self._info = info
+
+        def __getattr__(self, name):
+            return 0 if name == "st_blocks" else getattr(self._info, name)
+
+    monkeypatch.setattr(hk_entry.os, "fstat", lambda fd: NoBlocks(real_fstat(fd)))
+    status, contents = run(job, "script")
+    assert status["exit_code"] == 0
+    assert contents["tiny.txt"] == b"tiny"
+
+
 def test_entry_tar_survives_a_file_shrinking_during_copy(job, monkeypatch):
     (job.job / "main.py").write_text(
         "import os\nopen(os.path.join(os.environ['HK_OUT'], 'big.txt'), 'w').write('y' * 1000)\n",

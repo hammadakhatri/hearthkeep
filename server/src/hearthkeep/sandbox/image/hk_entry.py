@@ -31,8 +31,9 @@ DEFAULT_DPI = 150
 MIN_DPI, MAX_DPI = 50, 300
 MAX_PAGE_SIDE = 2000
 _CHUNK = 65_536
-MAX_MEMBER_BYTES = 300 * 1024 * 1024  # the whole tar may be no bigger
+MAX_MEMBER_BYTES = 300 * 1024 * 1024  # a single tar member is capped at 300 MB
 SPARSE_RATIO = 8  # allocated space under 1/8 of the size: a sparse file
+SPARSE_MIN_BYTES = 1 << 20  # only members over 1 MiB are judged sparse
 
 if str(HK_DIR) not in sys.path:  # run with -I, so PYTHONPATH is ignored
     sys.path.insert(0, str(HK_DIR))
@@ -245,7 +246,7 @@ def _add_file(tar: tarfile.TarFile, path: Path, name: str) -> None:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_MEMBER_BYTES:
             return
-        if info.st_blocks * 512 * SPARSE_RATIO < info.st_size:
+        if info.st_size > SPARSE_MIN_BYTES and info.st_blocks * 512 * SPARSE_RATIO < info.st_size:
             return  # sparse: a huge size that costs the script nothing to make
         member = tarfile.TarInfo(name)
         member.size = info.st_size

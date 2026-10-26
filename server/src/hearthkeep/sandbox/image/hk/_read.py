@@ -59,6 +59,7 @@ class TextTable:
     delimiter: str | None
     records: list[list[str]] = field(default_factory=list)
     lines: list[int] = field(default_factory=list)  # 1-based file line of each record
+    notes: list[str] = field(default_factory=list)  # what typing the columns assumed
 
 
 def decode(data: bytes) -> tuple[str, str]:
@@ -244,10 +245,8 @@ def read_text_table(path: Path, *, header: int | None = None) -> tuple[pd.DataFr
     df = _frame(names, records[h + 1 :], table.lines[h + 1 :])
     if not table.lines[h + 1 :]:
         df.attrs["hk_first_data_row"] = table.lines[h] + 1
-    notes: list[str] = []
     for col in df.columns:
-        df[col] = _text_column(df[col], table.delimiter, notes)
-    df.attrs["hk_read_notes"] = notes
+        df[col] = _text_column(df[col], table.delimiter, table.notes)
     df.attrs["hk_header_row"] = table.lines[h]
     df.attrs["hk_encoding"] = table.encoding
     df.attrs["hk_delimiter"] = table.delimiter
@@ -357,8 +356,10 @@ def read(file: str, *, sheet: str | int | None = None, header: int | None = None
     """
     entry = find(file)
     kind, path = entry.get("kind"), Path(entry["path"])
+    notes: list[str] = []
     if kind in ("csv", "txt"):
-        df = read_text_table(path, header=header)[0]
+        df, table = read_text_table(path, header=header)
+        notes = table.notes
     elif kind == "xlsx":
         df = read_xlsx(path, sheet=sheet, header=header)
     elif kind == "xls":
@@ -370,6 +371,6 @@ def read(file: str, *, sheet: str | int | None = None, header: int | None = None
     else:
         raise ValueError(f"hk.read can't read a {kind} file")
     df.index.name = ROW_INDEX  # hk.table keeps file row numbers while this index survives
-    for note in df.attrs.pop("hk_read_notes", []):
+    for note in notes:
         cleaned(note)  # what reading assumed is part of "How I got this"
     return df

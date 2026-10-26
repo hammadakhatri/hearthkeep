@@ -497,6 +497,21 @@ def test_read_semicolon_dot_thousands_integers(job):
     ]
 
 
+def test_reading_notes_are_emitted_once_and_never_left_behind(job):
+    from hk._read import read_text_table
+
+    fid = job.add("q.csv", "csv", b"Qty;Name\n1.500;a\n20;b\n")
+    path = job.manifest["files"][0]["path"]
+    report = inspect(path, "csv")
+    df, _ = read_text_table(path)
+    assert report["ok"] is True
+    assert job.results() == []  # inspecting or the low-level reader report nothing
+    assert not any("note" in key for key in df.attrs)
+    hk.read(fid)
+    assert len(by_type(job.results(), "cleaning")) == 1
+    assert not any("note" in key for key in hk.read(fid).attrs)
+
+
 def test_read_semicolon_three_place_dot_decimals_stay_decimals(job):
     data = "Weight;Rate\n0.250;1.125\n1.125;0.500\n45.320;2\n"
     df = hk.read(job.add("w.csv", "csv", data.encode()))
