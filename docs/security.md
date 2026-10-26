@@ -1,6 +1,6 @@
-# Hearthkeep security model (Phase 1)
+# Hearthkeep security model (Phase 2)
 
-This page describes what the code in this repository does today. Phase 1 is the secure core: sign-in, permissions, approvals, audit and secrets, plus two demo tools. The six real tools (budget, news and search, files, Python, images, GitHub) arrive in later phases and are not part of this release.
+This page describes what the code in this repository does today. Phase 1 is the secure core: sign-in, permissions, approvals, audit and secrets. Phase 2 adds local models and images: a process supervisor, GPU switching, image generation and photo uploads. Budget, news and search, files, Python and GitHub tools arrive in later phases and are not part of this release.
 
 `<data>` below means your own Hearthkeep data folder.
 
@@ -11,7 +11,8 @@ This page describes what the code in this repository does today. Phase 1 is the 
 - The chat model must also be local: `chat_base_url` has to point at `127.0.0.1`, `::1` or `localhost`, otherwise the server refuses to start. Hearthkeep only talks to local models.
 - Remote access is meant to go through your private Tailscale network (`tailscale serve` in front of the loopback port). Nothing is exposed to the public internet. If `public_origin` is not localhost it must be `https`, and the session cookie is then marked `Secure`.
 - The server ignores `X-Forwarded-For`, so a local process cannot fake its address to dodge rate limits.
-- Hearthkeep never uses system or environment proxy settings for its local connections (to the chat model), so your chats and the chat API key cannot be routed through a proxy or VPN.
+- Hearthkeep never uses system or environment proxy settings for its local connections (to the chat model and the image server), so your chats and the chat API key cannot be routed through a proxy or VPN.
+- Every child process Hearthkeep starts (llama-server for chat, ComfyUI for images) binds to `127.0.0.1` only. A model card whose launch arguments try to bind another address (`0.0.0.0`, `::`, or a `--host` other than `127.0.0.1`) is rejected.
 
 ## Signing in: passkeys and step-up
 
@@ -38,7 +39,7 @@ Other rules:
 - Unknown tools default to Ask. Anything the engine does not recognise is denied (it fails closed).
 - Tools that need a sandbox (Python, GitHub tests) are treated as Ask when Docker is not available.
 - Lowering a level needs only a normal session. Raising one (Off to Ask, or Ask to Allowed) needs a step-up.
-- Phase 1 ships only demo tools: `clock` (Look) and `note` (Change local, writes `<data>/workspace/output/notes.txt`). They exist to exercise the Allowed and Ask paths end to end.
+- The demo tools are `clock` (Look) and `note` (Change local, writes `<data>/workspace/output/notes.txt`); they exercise the Allowed and Ask paths end to end. `generate_image` is Look.
 
 ## Approvals
 
@@ -51,6 +52,15 @@ When a call needs your say-so, Hearthkeep creates an approval and the assistant 
 - Every state-changing request (POST, PUT, PATCH, DELETE) must carry the header `X-Hearthkeep: 1` and an `Origin` that exactly matches `public_origin`; otherwise it gets a 403.
 - Sign-in and enrollment endpoints are rate limited: 10 attempts per minute per client address, and 30 per minute across all clients. Behind `tailscale serve` every request looks local, so the global cap is the one that bounds guessing.
 - Unexpected server errors are logged by type only, never with message or traceback, because those can contain private data.
+
+## Images and photo uploads
+
+- Generated images and uploaded photos are served only to a signed-in owner session, with `X-Content-Type-Options: nosniff` and a private cache header. A request without a session gets nothing.
+- Uploads are checked by content, not by name: the type is read from the file's magic bytes and its size from the parsed headers (PNG, JPEG or WebP only). The upload is size-capped while it is being read (15 MB), so an oversized request is dropped before it is held in memory. Photos over 4096 pixels on a side are refused, and animated files (animated PNG or WebP) are rejected.
+- The client's file name is never stored or used. The server picks the id and builds the path itself, and only ids of the exact shape it hands out are accepted.
+- The model can only refer to an upload by its id, and the id is looked up in the database. It cannot name a path or a file.
+- Generating an image and uploading a photo are **Look** actions: they stay on this PC and need no approval. Nothing is sent anywhere.
+- Known Phase 2 limits: uploads do not expire, and ComfyUI keeps its own copy of a photo you edit in its `input` folder. See [models.md](models.md).
 
 ## Audit log
 
@@ -75,8 +85,10 @@ Keep secrets out of `config.toml`; it holds only the name of the secret to use (
 | `<data>/hearthkeep.db` | Chats, approvals, audit log, devices, permission levels |
 | `<data>/secrets/` | Encrypted secret store |
 | `<data>/workspace/output/` | Files the assistant produces |
+| `<data>/workspace/output/images/` | Images the assistant generated |
+| `<data>/workspace/uploads/` | Photos you uploaded |
 | `<data>/workspace/repos/` | Reserved for later phases |
-| `<data>/logs/`, `<data>/private/` | Logs and private files |
+| `<data>/logs/`, `<data>/private/` | Logs (including the model servers' output) and private files |
 
 None of this is ever part of the repository. Back it up yourself.
 
