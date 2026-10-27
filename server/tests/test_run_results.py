@@ -290,12 +290,13 @@ def test_huge_integers_become_null():
         value(name="Big", value=big),
         value(name="Neg", value=-big),
         value(name="Edge", value=2**63),
+        value(name="NegEdge", value=-(2**63)),
         value(name="Fine", value=2**62),
         table(rows=[[big], [-(2**62)]], total_rows=2),
     )
     res = parse_results(raw, set())
     assert res.problems == []
-    assert [v.value for v in res.values] == [None, None, 2**63, 2**62]
+    assert [v.value for v in res.values] == [None, None, None, -(2**63), 2**62]
     assert res.values[0].note == "not a number"
     assert res.tables[0].rows == [[None], [-(2**62)]]
 
@@ -322,3 +323,12 @@ def test_five_mb_cut_reports_the_first_ignored_line():
     assert res.sections == {"first"}
     assert any(p.startswith("line 3: ") and "5 MB" in p for p in res.problems)
     assert any(p.startswith("line 2: ") and "5 MB" not in p for p in res.problems)
+
+
+def test_exactly_five_mb_with_final_newline_is_fine():
+    first = lines({"type": "section", "name": "first"})
+    pad = b" " * (5 * 1024 * 1024 - len(first))
+    raw = first + pad + b"\n"  # 5 MB of content, then the final newline
+    assert len(raw) == 5 * 1024 * 1024 + 1
+    res = parse_results(raw, set())
+    assert res.problems == [] and res.sections == {"first"}

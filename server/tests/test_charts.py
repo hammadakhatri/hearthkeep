@@ -292,7 +292,10 @@ def test_selection_event_strings_rejected(key):
         rejected(base(params=[{"name": "p", "select": {"type": "point", key: bad}}]))
         rejected(base(params=[{"name": "p", "select": {"type": "interval", key: bad}}]))
     validate_chart_spec(base(params=[{"name": "p", "select": {"type": "interval", key: False}}]))
-    validate_chart_spec(base(params=[{"name": "p", "select": {"type": "interval", key: True}}]))
+    if key in ("on", "clear"):
+        rejected(base(params=[{"name": "p", "select": {"type": "interval", key: True}}]))
+    else:
+        validate_chart_spec(base(params=[{"name": "p", "select": {"type": "interval", key: True}}]))
 
 
 def test_format_and_format_type_restricted():
@@ -393,3 +396,98 @@ def test_transform_companions_are_per_op():
         {"window": [{"op": "rank", "as": "r"}], "as": "x"},
     ):
         rejected(base(transform=[bad]))
+
+
+# ---- fix round 2 ----
+
+
+def test_derived_image_fields_rejected():
+    rejected(base(transform=[{"fold": ["a", "b"], "as": ["k", "image"]}]))
+    rejected(base(transform=[{"window": [{"op": "rank", "as": "image"}]}]))
+    rejected(base(transform=[{"joinaggregate": [{"op": "sum", "field": "a", "as": "image"}]}]))
+    rejected(base(transform=[{"aggregate": [{"op": "sum", "field": "a", "as": " Image "}]}]))
+    rejected(base(transform=[{"bin": True, "field": "a", "as": "IMAGE"}]))
+    rejected(base(transform=[{"timeUnit": "month", "field": "a", "as": "image"}]))
+    rejected(base(transform=[{"fold": ["image"], "as": ["k", "v"]}]))
+    rejected(base(transform=[{"aggregate": [], "groupby": ["image"]}]))
+    rejected(base(encoding={"tooltip": [{"field": "image"}]}))
+    rejected(base(encoding={"tooltip": {"field": "a", "title": " image\n"}}))
+    rejected(base(mark={"type": "text", "text": "IMAGE"}))
+    validate_chart_spec(base(encoding={"tooltip": [{"field": "images"}, {"field": "my image"}]}))
+    validate_chart_spec(base(data={"values": [{"a": "image"}]}))  # a row value is only data
+
+
+@pytest.mark.parametrize("key", ["selection", "Selection"])
+def test_legacy_selection_rejected(key):
+    rejected(base(**{key: {"brush": {"type": "interval", "on": "[mousedown[datum.a>1], x]"}}}))
+    rejected(base(layer=[{"mark": "point", key: {"b": {"type": "interval"}}}]))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "u\\72l(x)",
+        "\\75\\72\\6c(x)",
+        "ur\\6c (x)",
+        "url\\28 x)",
+        "\\75rl\\28x\\29",
+        "a\\b(c)",
+    ],
+)
+def test_css_escapes_rejected_outside_rows(text):
+    rejected(base(title=text))
+    rejected(base(encoding={"x": {"field": "a", "title": text}}))
+    validate_chart_spec(base(data={"values": [{"a": text}]}))
+    validate_chart_spec(base(title="Cost\\.total", encoding={"x": {"field": "a\\[1\\]"}}))
+
+
+@pytest.mark.parametrize("channel", ["color", "fill", "stroke", "shape", "opacity", "size"])
+def test_null_scale_on_paint_channels_rejected(channel):
+    rejected(base(encoding={channel: {"field": "a", "scale": None}}))
+    rejected(base(encoding={channel: {"field": "a", "scale": {"type": "identity"}}}))
+    validate_chart_spec(base(encoding={channel: {"field": "a", "scale": {"scheme": "blues"}}}))
+    validate_chart_spec(base(encoding={"x": {"field": "a", "scale": None}}))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "https:evil",
+        "HTTP:\\\\evil",
+        "  https:/x",
+        "\t\nhttps:x",
+        "ftp:x",
+        "FILE:x",
+        "file:\\\\x",
+        "\\\\server\\share",
+        "data:text/csv;base64,AAA",
+        "data: text/html,x",
+        "data:,x",
+        "data:  ,x",
+        "x data:image/png;base64,AA",
+    ],
+)
+def test_schemes_outside_rows_rejected(text):
+    rejected(base(title=text))
+    validate_chart_spec(base(data={"values": [{"a": text}]}))
+
+
+def test_plain_titles_with_scheme_words_pass():
+    for title in ("Data: monthly", "File: statement", "Data:  weekly totals", "Http: notes"):
+        validate_chart_spec(base(title=title))
+
+
+def test_selection_triggers_only_false():
+    for key in ("on", "clear"):
+        validate_chart_spec(base(params=[{"name": "p", "select": {"type": "point", key: False}}]))
+        rejected(base(params=[{"name": "p", "select": {"type": "point", key: True}}]))
+
+
+def test_format_rejects_long_digit_runs():
+    def axis(f: str) -> dict:
+        return base(encoding={"x": {"field": "a", "axis": {"format": f}}})
+
+    rejected(axis("0>99999,"))
+    rejected(axis("1234"))
+    validate_chart_spec(axis("0>999,.2f"))
+    validate_chart_spec(axis("%Y-%m-%d"))

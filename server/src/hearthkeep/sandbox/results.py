@@ -107,7 +107,7 @@ def _non_finite(x: object) -> bool:
     if isinstance(x, bool):
         return False
     if isinstance(x, int):
-        return abs(x) > MAX_INT
+        return x >= MAX_INT or x < -MAX_INT
     return isinstance(x, float) and not math.isfinite(x)
 
 
@@ -209,7 +209,7 @@ def _file(rec: dict, members: set[str]) -> FileRef:
 def _bounded(raw: bytes) -> tuple[list[bytes], list[str]]:
     """The lines to read, plus problems for what was cut (by size or by line count)."""
     cut: list[tuple[int, str]] = []
-    if len(raw) > MAX_BYTES:
+    if len(raw) > MAX_BYTES and not (len(raw) == MAX_BYTES + 1 and raw.endswith(b"\n")):
         kept = raw[:MAX_BYTES]
         if raw[MAX_BYTES : MAX_BYTES + 1] == b"\n":
             kept = raw[: MAX_BYTES + 1]  # the 5 MB ends exactly on a line

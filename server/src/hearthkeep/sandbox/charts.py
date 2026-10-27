@@ -5,20 +5,21 @@ rule is: nothing in it may make the browser fetch anything, or run an expression
 checks are a deny-list for the fetch-capable keys plus an allow-list for the shapes that
 could still reach one (data, transforms, params, conditions):
 
-* no `config` (the app supplies its own theme at render time)
+* no `config` (the app supplies its own theme at render time) and no legacy `selection`
 * every `data` object is `{"values": [objects], "name"?}`; no `url`, `format`, `datasets`
 * no `url`, `href`, `usermeta`, `loader`, `$ref` keys and no `image` mark
 * no Vega expressions: the keys `expr`, `signal`, `calculate` and anything ending in
   `expr` (`labelExpr`, ...); `test` only as `{"param": ...}` inside a `condition`
 * transforms are limited to filter (field predicates), aggregate, bin, timeUnit, fold,
   window and joinaggregate
-* params bind only to `scales` or `legend`; selection `on`, `clear`, `toggle`, `translate`
-  and `zoom` are booleans only (no event or expression strings)
-* `formatType` is `number`, `time` or `utc`; `format` is short text with no `(`, `[` or `{`
+* params bind only to `scales` or `legend`; selection `on` and `clear` are `false` only; `toggle`,
+  `translate` and `zoom` are booleans (no event or expression strings)
+* `formatType` is `number`, `time` or `utc`; `format` is short text, no `( [ {`, no 4+ digit run
 * no string holds a URL (`http(s)://`, `ftp://`, `file://`, `javascript:`, `data:x`, a leading
   `//`) or a CSS `url(`, in keys or values, except `$schema`; string values in data rows may
   look like URLs (Vega never loads them) but their keys may not
-* no `image` key in data rows and no title `image` (tooltip images)
+* no `image` key in data rows and no string `image` outside rows (tooltip images through
+  derived fields); paint channels keep their scale (no `scale: null`); no CSS escapes of `url(`
 * limits: 1 MiB serialized, 5,000 rows per dataset, 20,000 rows in total, depth 20
 """
 
@@ -48,14 +49,19 @@ _FORBIDDEN_KEYS = {
     "loader",
     "$ref",
     "config",
+    "selection",
     "expr",
     "signal",
     "calculate",
 }
 _BOUNDARY = r"(?<![A-Za-z0-9+.-])"
 _URL_SCHEME = re.compile(
-    _BOUNDARY + r"(?:(?:https?|ftp|file)://|javascript:|data:(?=\S))", re.IGNORECASE
+    _BOUNDARY + r"(?:(?:https?|ftp|file)://|javascript:|data:\s*(?:[\w.+-]+/|,))", re.IGNORECASE
 )
+_SCHEME_START = re.compile(r"(?:https?|ftp|file):(?=\S)", re.IGNORECASE)
+_CSS_ESCAPE = re.compile(r"\\([0-9a-fA-F]{1,6})[ \t\n\r\f]?|\\(.)", re.DOTALL)
+_DIGIT_RUN = re.compile(r"\d{4,}")
+_PAINT_CHANNELS = {"color", "fill", "stroke", "shape", "opacity", "size"}
 _STRIP_IN_SCHEME = re.compile(r"[\t\r\n\x00]")
 _LEADING_JUNK = re.compile(r"^[\s\x00-\x1f\x7f\u200b-\u200f\u2028\u2029\ufeff]+")
 _CSS_URL = re.compile(r"url\s*\(", re.IGNORECASE)
@@ -103,7 +109,7 @@ _BIND_VALUES = {"scales", "legend"}
 
 
 class ChartError(Exception):
-    """The chart spec breaks a rule; the message says which, never what the content was."""
+    """The chart spec breaks a rule; the message names it, quoting at most 40 characters."""
 
 
 def _bad(message: str) -> ChartError:
@@ -121,7 +127,25 @@ def _has_url(text: str) -> bool:
     plain = _STRIP_IN_SCHEME.sub("", text)
     if _URL_SCHEME.search(plain):
         return True
-    return _LEADING_JUNK.sub("", plain).startswith("//")
+    start = _LEADING_JUNK.sub("", plain)
+    return start.startswith(("//", "\\\\")) or bool(_SCHEME_START.match(start))
+
+
+def _css_unescape(text: str) -> str:
+    def one(m: re.Match) -> str:
+        if m.group(1):
+            code = int(m.group(1), 16)
+            return chr(code) if 0 < code <= 0x10FFFF else "\ufffd"
+        return m.group(2)
+
+    return _CSS_ESCAPE.sub(one, text)
+
+
+def _has_css_url(text: str) -> bool:
+    """A CSS url( written plainly or with escapes (u\\72l(, url\\28 ), or a backslash with ( )."""
+    if _CSS_URL.search(text):
+        return True
+    return "\\" in text and ("(" in text or bool(_CSS_URL.search(_css_unescape(text))))
 
 
 def _check_text(text: str, *, what: str) -> None:
@@ -155,8 +179,10 @@ class _Walker:
                 return
             if _has_url(node):
                 raise _bad(f"a text in {_q(where)} looks like a URL: {_q(node)}")
-            if _CSS_URL.search(node):
+            if _has_css_url(node):
                 raise _bad(f"a text in {_q(where)} has a CSS url(): {_q(node)}")
+            if node.strip().casefold() == "image":
+                raise _bad(f"the text 'image' in {_q(where)} is not allowed")
         elif isinstance(node, bool) or node is None or isinstance(node, int):
             return
         elif isinstance(node, float):
@@ -182,6 +208,11 @@ class _Walker:
             lowered = key.lower()
             if lowered in _FORBIDDEN_KEYS or lowered.endswith("expr"):
                 raise _bad(f"the key {_q(key)} is not allowed")
+            if lowered in _PAINT_CHANNELS and isinstance(child, dict) and "scale" in child:
+                scale = child["scale"]
+                identity = isinstance(scale, dict) and str(scale.get("type")).lower() == "identity"
+                if scale is None or identity:
+                    raise _bad(f"the {_q(key)} channel needs a scale (no null or identity)")
             if lowered.endswith("formattype"):
                 if not isinstance(child, str) or child not in _FORMAT_TYPES:
                     raise _bad("formatType must be 'number', 'time' or 'utc'")
@@ -216,6 +247,8 @@ class _Walker:
     def _format(value: object) -> None:
         if not isinstance(value, str) or len(value) > MAX_FORMAT or any(c in value for c in "([{"):
             raise _bad(f"a format is text of at most {MAX_FORMAT} characters without ( [ {{")
+        if _DIGIT_RUN.search(value):
+            raise _bad("a format may not hold a run of 4 or more digits")
 
     @staticmethod
     def _title(value: object) -> None:
@@ -311,6 +344,9 @@ class _Walker:
             kind = select.get("type")
             if not set(select) <= _SELECT_KEYS:
                 raise _bad("a selection has a key that is not allowed")
+            for key in ("on", "clear"):
+                if key in select and select[key] is not False:
+                    raise _bad(f"selection '{key}' can only be false")
             for key in _SELECT_BOOLEANS:
                 if key in select and not isinstance(select[key], bool):
                     raise _bad(f"selection '{key}' must be true or false, not an event string")
