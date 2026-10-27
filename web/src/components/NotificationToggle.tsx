@@ -11,6 +11,7 @@ import {
 import { AlertIcon, InfoIcon } from '../shell/icons'
 
 const BLOCKED = "Notifications are blocked for this site. Allow them in the browser's site settings."
+export const PUSH_OFF = "Notifications aren't turned on for this Hearthkeep. Things sent here still appear in the tray."
 const HOME_SCREEN = 'On iPhone, add Hearthkeep to your Home Screen first, then turn this on there.'
 
 function errorMessage(error: unknown): string {
@@ -28,16 +29,19 @@ export function NotificationToggle() {
   const [busy, setBusy] = useState(false)
   const [blocked, setBlocked] = useState(() => support === 'supported' && notificationsBlocked())
   const [error, setError] = useState<string | null>(null)
+  // The server has push switched off: a plain note, not an error.
+  const [unavailable, setUnavailable] = useState(false)
 
   useEffect(() => {
     if (support !== 'supported') return
     let live = true
     notificationsEnabled()
       .then((enabled) => live && setOn(enabled))
-      .catch(() => {
+      .catch((e) => {
         if (!live) return
         setOn(false)
-        setError("Couldn't check notifications on this device.")
+        if (isApiError(e, 'push_unavailable')) setUnavailable(true)
+        else setError("Couldn't check notifications on this device.")
       })
     return () => {
       live = false
@@ -57,6 +61,7 @@ export function NotificationToggle() {
       }
     } catch (e) {
       if (e instanceof NotificationsBlockedError) setBlocked(true)
+      else if (isApiError(e, 'push_unavailable')) setUnavailable(true)
       else setError(errorMessage(e))
     }
     setBusy(false)
@@ -82,6 +87,12 @@ export function NotificationToggle() {
             <span>This browser can't show notifications from Hearthkeep.</span>
           </div>
         )}
+        {unavailable && (
+          <div className="note info">
+            <InfoIcon />
+            <span>{PUSH_OFF}</span>
+          </div>
+        )}
         {blocked && (
           <div className="note error" role="alert">
             <AlertIcon />
@@ -102,7 +113,7 @@ export function NotificationToggle() {
         aria-checked={checked}
         aria-labelledby={labelId}
         aria-describedby={hintId}
-        disabled={support !== 'supported' || on === null || busy || blocked}
+        disabled={support !== 'supported' || on === null || busy || blocked || unavailable}
         onClick={toggle}
       >
         <span className="switch-knob" aria-hidden="true" />

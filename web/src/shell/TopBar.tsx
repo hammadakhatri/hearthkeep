@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import type { ModelsResponse } from '../api/models'
+import { SentIcon } from './icons'
 
 type Health = {
   status: string
@@ -112,14 +113,49 @@ function StatusPill({ health }: { health: HealthState }) {
   )
 }
 
-export function TopBar({ title, health }: { title: string; health: HealthState }) {
+/** "Sent to you" with the number of unread things: hidden at 0, 9+ above 9. */
+function SentButton({ unread, onOpen }: { unread: number; onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      className="icon-btn sent-button"
+      data-sent-opener
+      aria-haspopup="dialog"
+      aria-label={unread > 0 ? `Sent to you, ${unread} unread` : 'Sent to you'}
+      title="Sent to you"
+      onClick={onOpen}
+    >
+      <SentIcon />
+      {unread > 0 && (
+        <span className="sent-badge" aria-hidden="true">
+          {unread > 9 ? '9+' : unread}
+        </span>
+      )}
+    </button>
+  )
+}
+
+export function TopBar({
+  title,
+  health,
+  unread = 0,
+  onOpenSent,
+}: {
+  title: string
+  health: HealthState
+  unread?: number
+  onOpenSent?: () => void
+}) {
   return (
     <header className="topbar">
       <div className="topbar-title">
         <span className="mark topbar-mark" aria-hidden="true" />
         <h1>{title}</h1>
       </div>
-      <StatusPill health={health} />
+      <div className="topbar-end">
+        <StatusPill health={health} />
+        {onOpenSent && <SentButton unread={unread} onOpen={onOpenSent} />}
+      </div>
     </header>
   )
 }

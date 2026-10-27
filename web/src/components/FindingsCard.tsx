@@ -11,6 +11,7 @@ import { ChartView } from './ChartView'
 import { HowIGotThis } from './HowIGotThis'
 import { Markdown } from './Markdown'
 import { ProblemTable } from './ProblemTable'
+import { SendMenu } from './SendMenu'
 
 export const UNVERIFIED_LINE = "Numbers marked Unverified weren't found in any result."
 export const MARK_LEGEND =
@@ -98,10 +99,20 @@ export function FindingsCard({
     <section className="findings" aria-label="Findings">
       {glance && <h3 className="findings-glance">At a glance</h3>}
       <Headline item={item} className="findings-headline" />
+      {item.state === 'done' && item.text && item.messageId !== undefined && (
+        <div className="findings-send">
+          <SendMenu kind="summary" refId={String(item.messageId)} label="summary" />
+        </div>
+      )}
       {charts.length > 0 && (
         <div className="findings-charts">
           {charts.map((chart) => (
-            <ChartView key={chart.id} spec={chart.spec} title={chart.title} />
+            <div key={chart.id} className="findings-item">
+              <ChartView spec={chart.spec} title={chart.title} />
+              <div className="findings-send">
+                <SendMenu kind="chart" refId={chart.id} label={chart.title} />
+              </div>
+            </div>
           ))}
         </div>
       )}
@@ -118,7 +129,12 @@ export function FindingsCard({
       {tables.length > 0 && (
         <div className="findings-tables">
           {tables.map((table) => (
-            <ProblemTable key={table.id} table={table} />
+            <div key={table.id} className="findings-item">
+              <ProblemTable table={table} />
+              <div className="findings-send">
+                <SendMenu kind="table" refId={table.id} label={table.name} />
+              </div>
+            </div>
           ))}
         </div>
       )}
@@ -138,6 +154,7 @@ export function FindingsCard({
                 >
                   Download
                 </a>
+                <SendMenu kind="file" refId={file.id} label={file.name} />
               </li>
             ))}
           </ul>

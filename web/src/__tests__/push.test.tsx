@@ -173,6 +173,15 @@ describe('NotificationToggle', () => {
     expect(calls.some((c) => c.init.method === 'PUT')).toBe(false)
   })
 
+  it('says calmly that the server has notifications off', async () => {
+    fakeBrowser({ permission: 'granted' })
+    mockFetch({ 'GET /api/push': { status: 503, body: { reason: 'push_unavailable' } } })
+    render(<NotificationToggle />)
+    expect(await screen.findByText(/Notifications aren't turned on for this Hearthkeep/)).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByRole('switch')).toBeDisabled()
+  })
+
   it('already blocked shows the note and keeps the switch off', async () => {
     fakeBrowser({ permission: 'denied' })
     mockFetch({ 'GET /api/push': { body: { public_key: PUBLIC_KEY, enabled: true, endpoint: ENDPOINT } } })

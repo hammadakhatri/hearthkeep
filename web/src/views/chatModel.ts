@@ -66,6 +66,8 @@ export type AssistantItem = {
   pendingBreak: boolean
   /** The server's check of the reply's numbers, once the reply is finished. */
   check?: NumberCheck | null
+  /** The id of the turn's final saved reply: what "Send" names for a summary. */
+  messageId?: number
 }
 
 export type Item = UserItem | AssistantItem
@@ -203,6 +205,7 @@ export function itemsFromMessages(messages: ServerMessage[]): Item[] {
     if (m.role === 'assistant') {
       if (m.content.trim()) next = applyEvent(next, { type: 'text_delta', seq: 0, text: m.content }, 0)
       if (m.number_check) next = { ...next, check: m.number_check }
+      if (m.content.trim()) next = { ...next, messageId: m.id }
       for (const call of m.tool_calls ?? []) {
         const tool = call.function?.name || 'a tool'
         const step_id = call.id ?? `${m.id}-${next.steps.length}`
