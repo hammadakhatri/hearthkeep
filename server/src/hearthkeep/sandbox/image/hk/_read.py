@@ -15,7 +15,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from hk._results import ROW_INDEX, cleaned
+from hk._dates import FORMATS_ATTR, numeric_dates, parse_dates
+from hk._results import ROW_INDEX, note_once
 
 DELIMITERS = (",", ";", "\t", "|")
 HEADER_SCAN_ROWS = 20
@@ -23,7 +24,6 @@ DECIMAL_COMMA = re.compile(r"[-+]?\d+(\.\d{3})*,\d+")
 DOT_THOUSANDS = re.compile(r"[-+]?[1-9]\d{0,2}(\.\d{3})+")
 INT64_SAFE = 2**53  # larger whole numbers stay float rather than risk int64
 PLAIN_INTEGER = re.compile(r"[-+]?\d+")
-ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?)?")
 _SAMPLE_CHARS = 64 * 1024
 
 
@@ -194,10 +194,9 @@ def _text_column(
     numbers = pd.to_numeric(stripped, errors="coerce")
     if numbers.notna().sum() == len(present):
         return numbers
-    if texts.map(lambda s: bool(ISO_DATE.fullmatch(s))).all():
-        dates = pd.to_datetime(stripped, errors="coerce", format="ISO8601")
-        if dates.notna().sum() == len(present):
-            return dates
+    if numeric_dates(texts):
+        # YYYY-MM-DD, DD/MM/YYYY and the like, even mixed: never dayfirst on ISO dates.
+        return parse_dates(stripped.rename(values.name), notes)
     return stripped
 
 
@@ -246,7 +245,11 @@ def read_text_table(path: Path, *, header: int | None = None) -> tuple[pd.DataFr
     if not table.lines[h + 1 :]:
         df.attrs["hk_first_data_row"] = table.lines[h] + 1
     for col in df.columns:
-        df[col] = _text_column(df[col], table.delimiter, table.notes)
+        typed = _text_column(df[col], table.delimiter, table.notes)
+        formats = typed.attrs.pop(FORMATS_ATTR, None)
+        df[col] = typed
+        if formats:  # hk.profile lists the rows written another way
+            df.attrs.setdefault(FORMATS_ATTR, {})[col] = formats
     df.attrs["hk_header_row"] = table.lines[h]
     df.attrs["hk_encoding"] = table.encoding
     df.attrs["hk_delimiter"] = table.delimiter
@@ -372,5 +375,5 @@ def read(file: str, *, sheet: str | int | None = None, header: int | None = None
         raise ValueError(f"hk.read can't read a {kind} file")
     df.index.name = ROW_INDEX  # hk.table keeps file row numbers while this index survives
     for note in notes:
-        cleaned(note)  # what reading assumed is part of "How I got this"
+        note_once(note)  # what reading assumed is part of "How I got this", said once
     return df

@@ -210,7 +210,12 @@ def test_entry_kills_escaped_processes_before_writing_status(sandbox_image, tmp_
     assert "forged" not in status
     assert status["timed_out"] is True
     assert status["exit_code"] is None
-    assert printed == b"parent waiting\n"
+    # The escaped writer's leftover file is not taken back; only a note says so.
+    assert printed in (
+        b"parent waiting\n",
+        b"parent waiting\n"
+        b"Ignored /out/status.json.tmp: save files with hk.file(name, data).\n",
+    )
     # The script limit plus start-up; waiting on the escaped writer's pipe would add 5 s.
     assert elapsed < 3 + 4
 

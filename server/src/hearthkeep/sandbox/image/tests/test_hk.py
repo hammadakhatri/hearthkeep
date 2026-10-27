@@ -282,7 +282,7 @@ def test_profile_reports_glance_and_problems(job):
     )
     hk.profile(job.add("bank.csv", "csv", data.encode()))
     records = job.results()
-    assert records[0] == {"type": "section", "name": "glance"}
+    assert {"type": "section", "name": "glance"} in records
     values = {r["name"]: r["value"] for r in by_type(records, "value")}
     assert values["rows"] == 9
     assert values["columns"] == 3
@@ -526,3 +526,129 @@ def test_read_semicolon_huge_dot_thousands_stay_float(job):
     df = hk.read(job.add("big.csv", "csv", data.encode()))
     assert df["Big"].dtype == float  # over 2**53: never squeezed into int64
     assert df["Big"].tolist() == [1.2e16, 1000.0]
+
+
+# ------------------------------------------------------------------ dates and gaps
+
+
+def smoke_sales_csv() -> bytes:
+    """The real-model smoke's file: 58 dated rows (North has no rows 12-24 March), 4 dates
+    written DD/MM/YYYY among the YYYY-MM-DD ones, 3 negative amounts, 2 duplicates."""
+    import random
+
+    rng = random.Random(7)
+
+    def amount() -> str:
+        return f"{rng.randint(50, 500)}.{rng.randint(0, 99):02d}"
+
+    rows: list[list[str]] = []
+    for day in range(1, 32):
+        for region in ("North", "South"):
+            if region == "North" and 12 <= day <= 24:
+                continue
+            rows.append([f"2025-03-{day:02d}", region, amount()])
+    for day in range(1, 10):
+        rows.append([f"2025-03-{day:02d}", "East", amount()])
+    rows.sort(key=lambda r: r[0])
+    for index in (3, 17, 40):
+        rows[index][2] = "-" + rows[index][2]
+    for index in (8, 22, 35, 50):
+        year, month, day = rows[index][0].split("-")
+        rows[index][0] = f"{day}/{month}/{year}"
+    for index in (5, 30):
+        rows.append(list(rows[index]))
+    lines = ["date,region,amount"] + [",".join(row) for row in rows]
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def test_read_mixed_iso_and_day_first_dates_keeps_every_month(job):
+    df = hk.read(job.add("sales.csv", "csv", smoke_sales_csv()))
+    assert pd.api.types.is_datetime64_any_dtype(df["date"])
+    assert df["date"].notna().all()
+    assert set(df["date"].dt.month) == {3}  # never 2025-12-03 from a dayfirst ISO read
+    written = df.loc[[8, 22, 35, 50], "date"].dt.strftime("%Y-%m-%d").tolist()
+    assert written == ["2025-03-03", "2025-03-08", "2025-03-16", "2025-03-28"]  # day first
+    notes = [r["note"] for r in by_type(job.results(), "cleaning")]
+    assert notes == [
+        "Read 4 dates in column date written DD/MM/YYYY (e.g. 03/03/2025) as day/month/year; "
+        "the others are YYYY-MM-DD."
+    ]
+
+
+def test_gaps_finds_the_north_gap(job):
+    df = hk.read(job.add("sales.csv", "csv", smoke_sales_csv()))
+    found = hk.gaps(df, "date", by="region")
+    assert found.to_dict("records") == [
+        {
+            "group": "North",
+            "last_before": dt.date(2025, 3, 11),
+            "first_missing": dt.date(2025, 3, 12),
+            "last_missing": dt.date(2025, 3, 24),
+            "days": 13,
+        }
+    ]
+    records = job.results()
+    tables = {t["name"]: t for t in by_type(records, "table")}
+    gap_table = tables["Gaps in date by region"]
+    assert gap_table["columns"] == ["group", "last_before", "first_missing", "last_missing", "days"]
+    assert gap_table["rows"] == [["North", "2025-03-11", "2025-03-12", "2025-03-24", 13]]
+    values = {r["name"]: r for r in by_type(records, "value")}
+    assert values["North: first missing day"]["value"] == "2025-03-12"
+    assert values["North: first missing day"]["is_date"] is True
+    assert values["North: last missing day"]["value"] == "2025-03-24"
+    assert values["North: missing days"]["value"] == 13
+    assert values["Gaps found"]["value"] == 1
+
+
+def test_gaps_reads_text_dates_and_caps_results(job):
+    days = [f"2025-01-{d:02d}" for d in range(1, 32, 3)]  # 2 days missing between each
+    df = pd.DataFrame({"when": days})
+    found = hk.gaps(df, "when")
+    assert len(found) == 10 and set(found["group"]) == {"all"}
+    values = [r["name"] for r in by_type(job.results(), "value")]
+    assert "all gap 10: missing days" in values and len(values) == 1 + 3 * 10
+    assert hk.gaps(df, "when", min_days=3).empty
+
+
+def test_dates_decides_day_or_month_first_from_the_column(job):
+    month_first = hk.dates(pd.Series(["03/25/2025", "03/08/2025", "2025-03-01"], name="d"))
+    days = month_first.dt.strftime("%Y-%m-%d").tolist()
+    assert days == ["2025-03-25", "2025-03-08", "2025-03-01"]
+    unsure = hk.dates(pd.Series(["08.03.2025", "09.03.2025"], name="d2"))
+    assert unsure.dt.strftime("%Y-%m-%d").tolist() == ["2025-03-08", "2025-03-09"]
+    both = hk.dates(pd.Series(["25/03/2025", "03/25/2025"], name="d3"))
+    assert both.tolist() == ["25/03/2025", "03/25/2025"]
+    bad = hk.dates(pd.Series(["31/02/2025", "28/02/2025", None], name="d4"))
+    assert bad.isna().tolist() == [True, False, True]
+    notes = [r["note"] for r in by_type(job.results(), "cleaning")]
+    assert notes == [
+        "Read 2 dates in column d written MM/DD/YYYY (e.g. 03/25/2025) as month/day/year; "
+        "the others are YYYY-MM-DD.",
+        "Read 2 dates in column d2 written DD.MM.YYYY (e.g. 08.03.2025) as day/month/year "
+        "(no part is over 12, so day first was assumed).",
+        "Column d3 has dates written day first (e.g. 25/03/2025) and month first "
+        "(e.g. 03/25/2025), so it was left as text.",
+        "Read 2 dates in column d4 written DD/MM/YYYY (e.g. 31/02/2025) as day/month/year.",
+        "1 value in column d4 could not be read as a date (e.g. 31/02/2025) and was left empty.",
+    ]
+
+
+def test_profile_still_lists_dates_written_another_way(job):
+    hk.profile(job.add("sales.csv", "csv", smoke_sales_csv()))
+    records = job.results()
+    notes = " | ".join(r["note"] for r in by_type(records, "cleaning"))
+    assert "mixes date formats: YYYY-MM-DD (56), DD/MM/YYYY or MM/DD/YYYY (4)" in notes
+    odd = {t["name"]: t for t in by_type(records, "table")}["Dates not in the usual format in date"]
+    assert odd["total_rows"] == 4
+
+
+def test_result_with_the_value_first_says_the_name_comes_first(job):
+    with pytest.raises(TypeError, match=r"the name comes first, e\.g\. hk\.result\('Total spent'"):
+        hk.result(98.46, "amount")
+
+
+def test_reading_the_same_file_twice_notes_once(job):
+    fid = job.add("sales.csv", "csv", smoke_sales_csv())
+    hk.read(fid)
+    hk.read(fid)
+    assert len(by_type(job.results(), "cleaning")) == 1

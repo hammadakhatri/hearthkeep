@@ -55,7 +55,9 @@ def test_entry_emits_tar_of_out(job):
     assert status["timed_out"] is False
     assert status["stdout_truncated"] is False
     assert set(contents) == {"status.json", "stdout.txt", "results.jsonl", "files/prices.csv"}
-    assert contents["stdout.txt"] == b"hello\noops\n"
+    assert contents["stdout.txt"] == (
+        b"hello\noops\nIgnored /out/link: save files with hk.file(name, data).\n"
+    )
     value = json.loads(contents["results.jsonl"].splitlines()[0])
     assert value["name"] == "total" and value["value"] == 4.5
 
@@ -99,7 +101,8 @@ def test_entry_unknown_mode_still_emits_status(job):
 def test_entry_tar_skips_unreadable_file_and_fifo(job):
     (job.job / "main.py").write_text(
         "import os\n"
-        "out = os.environ['HK_OUT']\n"
+        "out = os.path.join(os.environ['HK_OUT'], 'files')\n"
+        "os.makedirs(out)\n"
         "open(os.path.join(out, 'secret.txt'), 'w').write('hidden')\n"
         "os.chmod(os.path.join(out, 'secret.txt'), 0)\n"
         "os.mkfifo(os.path.join(out, 'pipe'))\n"
@@ -108,9 +111,9 @@ def test_entry_tar_skips_unreadable_file_and_fifo(job):
     )
     status, contents = run(job, "script")
     assert status["exit_code"] == 0
-    assert contents["fine.txt"] == b"ok"
-    assert "secret.txt" not in contents
-    assert "pipe" not in contents
+    assert contents["files/fine.txt"] == b"ok"
+    assert "files/secret.txt" not in contents
+    assert "files/pipe" not in contents
 
 
 def test_entry_replaces_locked_directory_at_status_json(job):
@@ -134,7 +137,8 @@ def test_entry_replaces_locked_directory_at_status_json(job):
 def test_entry_tar_skips_sparse_files(job):
     (job.job / "main.py").write_text(
         "import os\n"
-        "out = os.environ['HK_OUT']\n"
+        "out = os.path.join(os.environ['HK_OUT'], 'files')\n"
+        "os.makedirs(out)\n"
         "with open(os.path.join(out, 'sparse.bin'), 'wb') as fh:\n"
         "    fh.truncate(1 << 30)  # 1 GB that takes no space\n"
         "open(os.path.join(out, 'fine.txt'), 'w').write('ok')\n",
@@ -142,15 +146,15 @@ def test_entry_tar_skips_sparse_files(job):
     )
     status, contents = run(job, "script")
     assert status["exit_code"] == 0
-    assert "sparse.bin" not in contents
-    assert contents["fine.txt"] == b"ok"
+    assert "files/sparse.bin" not in contents
+    assert contents["files/fine.txt"] == b"ok"
 
 
 def test_entry_tar_keeps_small_files_that_report_no_blocks(job, monkeypatch):
     # Some filesystems store tiny files inline and report st_blocks == 0; only large
     # members are judged sparse.
     (job.job / "main.py").write_text(
-        "import os\nopen(os.path.join(os.environ['HK_OUT'], 'tiny.txt'), 'w').write('tiny')\n",
+        "import hk\nhk.file('tiny.txt', 'tiny')\n",
         encoding="utf-8",
     )
     real_fstat = hk_entry.os.fstat
@@ -165,16 +169,16 @@ def test_entry_tar_keeps_small_files_that_report_no_blocks(job, monkeypatch):
     monkeypatch.setattr(hk_entry.os, "fstat", lambda fd: NoBlocks(real_fstat(fd)))
     status, contents = run(job, "script")
     assert status["exit_code"] == 0
-    assert contents["tiny.txt"] == b"tiny"
+    assert contents["files/tiny.txt"] == b"tiny"
 
 
 def test_entry_tar_survives_a_file_shrinking_during_copy(job, monkeypatch):
     (job.job / "main.py").write_text(
-        "import os\nopen(os.path.join(os.environ['HK_OUT'], 'big.txt'), 'w').write('y' * 1000)\n",
+        "import hk\nhk.file('big.txt', 'y' * 1000)\n",
         encoding="utf-8",
     )
     real_fstat = hk_entry.os.fstat
-    target = job.out / "big.txt"
+    target = job.out / "files" / "big.txt"
 
     def fstat_then_shrink(fd):
         info = real_fstat(fd)
@@ -185,9 +189,10 @@ def test_entry_tar_survives_a_file_shrinking_during_copy(job, monkeypatch):
     monkeypatch.setattr(hk_entry.os, "fstat", fstat_then_shrink)
     status, contents = run(job, "script")
     assert status["exit_code"] == 0
-    assert len(contents["big.txt"]) == 1000
-    assert contents["big.txt"].startswith(b"y" * 10)
-    assert contents["big.txt"][10:] == b"\0" * 990
+    big = contents["files/big.txt"]
+    assert len(big) == 1000
+    assert big.startswith(b"y" * 10)
+    assert big[10:] == b"\0" * 990
 
 
 def test_entry_pages_clamps_dpi_and_scales_huge_pages(job, monkeypatch):
@@ -283,3 +288,44 @@ def test_entry_tar_is_plain_ustar_and_skips_names_ustar_cannot_hold(job):
     assert names[0] == "status.json"
     assert "files/" + "b" * 100 in names and "files/zz.txt" in names
     assert "files/" + "a" * 101 not in names
+
+
+def test_entry_leaves_out_other_files_in_out_with_a_note(job):
+    # The host takes only the names it knows; anything else in /out is left behind with a
+    # note, so a stray plt.savefig("/out/plot.png") doesn't fail the whole run.
+    (job.job / "main.py").write_text(
+        "import os\n"
+        "import hk\n"
+        "out = os.environ['HK_OUT']\n"
+        "open(os.path.join(out, 'plot.png'), 'wb').write(b'png')\n"
+        "os.makedirs(os.path.join(out, 'extra'))\n"
+        "open(os.path.join(out, 'extra', 'n.txt'), 'w').write('x')\n"
+        "hk.file('kept.csv', 'a,b')\n"
+        "print('done')\n",
+        encoding="utf-8",
+    )
+    status, contents = run(job, "script")
+    assert status["exit_code"] == 0
+    assert set(contents) == {"status.json", "stdout.txt", "results.jsonl", "files/kept.csv"}
+    assert contents["stdout.txt"] == (
+        b"done\n"
+        b"Ignored /out/plot.png: save files with hk.file(name, data).\n"
+        b"Ignored /out/extra/n.txt: save files with hk.file(name, data).\n"
+    )
+    assert status["stdout_truncated"] is False
+
+
+def test_entry_ignored_notes_fit_in_the_printed_output_limit(job):
+    (job.job / "main.py").write_text(
+        "import os\n"
+        "out = os.environ['HK_OUT']\n"
+        "for i in range(30):\n"
+        "    open(os.path.join(out, f'p{i:02d}.png'), 'w').write('x')\n"
+        "print('x' * 300000)\n",
+        encoding="utf-8",
+    )
+    status, contents = run(job, "script")
+    text = contents["stdout.txt"]
+    assert len(text) <= 262_144 and status["stdout_truncated"] is True
+    assert text.endswith(b"Ignored 20 more files in /out: save files with hk.file(name, data).\n")
+    assert text.count(b"Ignored /out/") == 10

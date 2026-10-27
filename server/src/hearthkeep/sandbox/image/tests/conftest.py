@@ -46,6 +46,9 @@ class Job:
 
 @pytest.fixture
 def job(tmp_path, monkeypatch) -> Job:
+    from hk import _results
+
+    monkeypatch.setattr(_results, "_NOTED", set())  # each test is a fresh script
     j = Job(tmp_path)
     monkeypatch.setenv("HK_JOB", str(j.job))
     monkeypatch.setenv("HK_OUT", str(j.out))

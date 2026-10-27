@@ -7,27 +7,13 @@ from collections import Counter
 
 import pandas as pd
 
+from hk._dates import FORMATS_ATTR
+from hk._dates import date_format as _date_format
 from hk._read import read
 from hk._results import cleaned, result, section, table
 
-DATE_FORMATS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("YYYY-MM-DD", re.compile(r"\d{4}-\d{1,2}-\d{1,2}([ T].*)?")),
-    ("DD/MM/YYYY or MM/DD/YYYY", re.compile(r"\d{1,2}/\d{1,2}/\d{2,4}( .*)?")),
-    ("DD.MM.YYYY", re.compile(r"\d{1,2}\.\d{1,2}\.\d{2,4}( .*)?")),
-    ("DD-MM-YYYY", re.compile(r"\d{1,2}-\d{1,2}-\d{2,4}( .*)?")),
-    ("YYYY/MM/DD", re.compile(r"\d{4}/\d{1,2}/\d{1,2}( .*)?")),
-    ("D Month YYYY", re.compile(r"\d{1,2}[ -][A-Za-z]{3,9}\.?[ ,-]+\d{2,4}")),
-    ("Month D, YYYY", re.compile(r"[A-Za-z]{3,9}\.? \d{1,2},? \d{4}")),
-)
 THOUSANDS = re.compile(r"\(?[-+−]?[£$€]?\s?\d{1,3}(,\d{3})+(\.\d+)?\)?")
 NUMBER_TEXT = re.compile(r"\(?[-+−]?[£$€]?\s?[\d][\d,]*(\.\d+)?\s?[£$€%]?\)?")
-
-
-def _date_format(value: str) -> str | None:
-    for name, pattern in DATE_FORMATS:
-        if pattern.fullmatch(value):
-            return name
-    return None
 
 
 def _texts(series: pd.Series) -> pd.Series:
@@ -46,9 +32,13 @@ def _mixed_dates(df: pd.DataFrame, col) -> None:
     if len(counts) < 2:
         return
     common = counts.most_common(1)[0][0]
-    listed = ", ".join(f"{name} ({n})" for name, n in counts.most_common())
+    _report_mixed(df, col, dict(counts.most_common()), formats[formats != common].index)
+
+
+def _report_mixed(df: pd.DataFrame, col, counts: dict[str, int], odd) -> None:
+    common = next(iter(counts))
+    listed = ", ".join(f"{name} ({n})" for name, n in counts.items())
     cleaned(f"Column {col} mixes date formats: {listed}.")
-    odd = formats[formats != common].index
     table(
         f"Dates not in the usual format in {col}",
         df.loc[odd],
@@ -96,6 +86,9 @@ def profile(file: str, *, sheet: str | int | None = None) -> None:
         if series.dtype == object:
             _mixed_dates(df, col)
             _numbers_as_text(df, col)
+        elif col in df.attrs.get(FORMATS_ATTR, {}):  # dates hk.read parsed from mixed formats
+            seen = df.attrs[FORMATS_ATTR][col]
+            _report_mixed(df, col, seen["counts"], seen["odd"])
         elif pd.api.types.is_numeric_dtype(series) and not pd.api.types.is_bool_dtype(series):
             negative = series[series < 0]
             if not negative.empty:

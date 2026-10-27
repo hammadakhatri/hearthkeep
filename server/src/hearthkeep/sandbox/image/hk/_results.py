@@ -18,6 +18,7 @@ MAX_TABLE_ROWS = 500
 FILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,99}")
 NOT_A_NUMBER = "not a number"
 ROW_INDEX = "hk_row"  # the index name hk.read gives
+_NOTED: set[str] = set()  # reading notes already emitted by this script (one process)
 
 
 def out_dir() -> Path:
@@ -78,7 +79,11 @@ def plain(value):
 
 
 def _value_record(name: str, value, *, unit, note, kind: str, page) -> dict:
-    if not isinstance(name, str) or not name.strip():
+    if not isinstance(name, str):
+        raise TypeError(
+            "hk.result(name, value): the name comes first, e.g. hk.result('Total spent', 98.46)"
+        )
+    if not name.strip():
         raise ValueError("a result needs a name")
     value = _from_numpy(value)
     is_date = isinstance(value, _dt.date | pd.Timestamp) and value is not pd.NaT
@@ -191,6 +196,14 @@ def cleaned(note: str) -> None:
     if not isinstance(note, str) or not note.strip():
         raise ValueError("a cleaning note needs text")
     emit({"type": "cleaning", "note": note})
+
+
+def note_once(note: str) -> None:
+    """A cleaning note from reading the files, emitted once per script however often the
+    same file is read."""
+    if note not in _NOTED:
+        _NOTED.add(note)
+        cleaned(note)
 
 
 def section(name: str) -> None:
