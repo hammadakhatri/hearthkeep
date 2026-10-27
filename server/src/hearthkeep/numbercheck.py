@@ -468,12 +468,15 @@ def _from_mentions(mentions: Iterable[Mention], kind: Kind, page: int | None) ->
 Loaded = list[tuple[RunRecord, list[dict]]]
 
 
-def _load(runs: RunStore, chat_id: str, turn_id: str) -> Loaded:
+def _load(runs: RunStore, chat_id: str, turn_id: str | None) -> Loaded:
     """The evidence runs, newest first, read from the database: this turn's analysis runs and
-    every vision run of the chat, with the vision runs' table outputs."""
+    every vision run of the chat, with the vision runs' table outputs. Without a turn id there
+    is no analysis evidence, and a run saved without a turn id is never evidence."""
     loaded: Loaded = []
     for run in runs.runs_for_chat(chat_id, MAX_RUNS):
-        if run.purpose != "vision" and run.turn_id != turn_id:
+        if not run.turn_id:
+            continue  # whatever wrote it, a run with no turn can't be tied to this reply
+        if run.purpose != "vision" and (turn_id is None or run.turn_id != turn_id):
             continue  # an earlier turn's results are not evidence for this reply
         tables: list = []
         if run.purpose == "vision":
@@ -515,7 +518,7 @@ def _capped(loaded: Loaded) -> list[Reported]:
     return list(itertools.islice(_reported_from(loaded), MAX_REPORTED))
 
 
-def reported_values(runs: RunStore, chat_id: str, turn_id: str) -> list[Reported]:
+def reported_values(runs: RunStore, chat_id: str, turn_id: str | None) -> list[Reported]:
     """The evidence for a reply of this turn, newest runs first, at most MAX_REPORTED."""
     return _capped(_load(runs, chat_id, turn_id))
 
@@ -759,7 +762,7 @@ def without_attachment_lines(text: str) -> str:
     )
 
 
-def _web_marks(text: str, marks: list[Mark]) -> list[dict]:
+def web_marks(text: str, marks: list[Mark]) -> list[dict]:
     """Mark dicts with UTF-16 offsets (what JavaScript strings index by)."""
     if not marks:
         return []
@@ -782,7 +785,7 @@ class NumberChecker:
         self._files = files
 
     def _inputs(
-        self, chat_id: str, turn_id: str, question: str
+        self, chat_id: str, turn_id: str | None, question: str
     ) -> tuple[Loaded, list[str], list[str]] | None:
         chat_files = self._files.list(chat_id)
         if not chat_files:
@@ -793,13 +796,14 @@ class NumberChecker:
     def marks_for(
         self,
         chat_id: str,
-        turn_id: str,
         text: str,
+        *,
+        turn_id: str | None = None,
         question: str = "",
         excluded: Sequence[tuple[int, int]] = (),
     ) -> list[Mark] | None:
-        """The marks of a reply of this turn (code-point offsets), or None when the chat has no
-        files."""
+        """The marks of a text of this turn (code-point offsets), or None when the chat has no
+        files. Without `turn_id` no analysis run is evidence."""
         inputs = self._inputs(chat_id, turn_id, question)
         if inputs is None:
             return None
@@ -809,10 +813,11 @@ class NumberChecker:
     async def check(
         self,
         chat_id: str,
-        turn_id: str,
         message_id: int,
         question: str,
         reply: str,
+        *,
+        turn_id: str | None = None,
         excluded: Sequence[tuple[int, int]] = (),
     ) -> dict | None:
         """Check the reply, store the result for the message (once: a re-check replaces it) and
@@ -827,7 +832,7 @@ class NumberChecker:
 
             def work() -> list[dict]:
                 marks = check_reply(reply, _capped(loaded), exempt, excluded, names)
-                return _web_marks(reply, marks)
+                return web_marks(reply, marks)
 
             marks = await asyncio.to_thread(work)
             self._conn.execute(

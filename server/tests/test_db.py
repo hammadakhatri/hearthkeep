@@ -6,12 +6,13 @@ EXPECTED_TABLES = {
     "credentials", "sessions", "enrollment_codes", "chats", "chat_grants", "messages",
     "turn_events", "approvals", "tool_levels", "audit", "images", "uploads", "chat_files",
     "upload_chats", "runs", "outputs", "number_checks", "allowed_folders", "push_subscriptions",
+    "sent_items", "sent_targets",
 }
 
 
 def test_connect_applies_schema(tmp_path):
     conn = connect(tmp_path / "hk.db")
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
     names = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert EXPECTED_TABLES <= names
     assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
@@ -25,7 +26,7 @@ def test_connect_idempotent(tmp_path):
     path = tmp_path / "hk.db"
     connect(path).close()
     conn = connect(path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
     conn.close()
 
 
@@ -43,7 +44,7 @@ def test_utcnow_is_utc_iso():
 
 def test_migration_2_adds_images_and_uploads(tmp_path):
     conn = connect(tmp_path / "hk.db")
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
     img = {r["name"] for r in conn.execute("PRAGMA table_info(images)")}
     assert img == {
         "id", "chat_id", "turn_id", "model_id", "prompt", "width", "height", "seed",

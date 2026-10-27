@@ -188,6 +188,25 @@ MIGRATIONS: dict[int, str] = {
         created_at TEXT
     );
     """,
+    8: """
+    CREATE TABLE IF NOT EXISTS sent_items (
+        id TEXT PRIMARY KEY,
+        chat_id TEXT,
+        kind TEXT,
+        ref_id TEXT,
+        title TEXT,
+        text TEXT,
+        marks TEXT,
+        created_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS sent_targets (
+        item_id TEXT,
+        credential_id TEXT,
+        dismissed_at TEXT,
+        PRIMARY KEY (item_id, credential_id)
+    );
+    CREATE INDEX IF NOT EXISTS sent_targets_credential ON sent_targets(credential_id);
+    """,
 }
 
 

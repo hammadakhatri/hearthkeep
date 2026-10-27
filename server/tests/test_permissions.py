@@ -103,6 +103,7 @@ def test_defaults_v1():
         "files": ALLOWED,
         "python": ALLOWED,
         "images": ALLOWED,
+        "send": ALLOWED,
         "github": ASK,
         "demo": ALLOWED,
     }

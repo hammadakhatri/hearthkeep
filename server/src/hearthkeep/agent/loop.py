@@ -77,10 +77,11 @@ class ReplyChecker(Protocol):
     async def check(
         self,
         chat_id: str,
-        turn_id: str,
         message_id: int,
         question: str,
         reply: str,
+        *,
+        turn_id: str | None = ...,
         excluded: list[tuple[int, int]] = ...,
     ) -> dict | None: ...
 
@@ -619,10 +620,10 @@ class AgentLoop:
         try:
             result = await self._reply_checker.check(
                 turn.chat_id,
-                turn.turn_id,
                 turn.last_assistant_id,
                 turn.question,
                 reply,
+                turn_id=turn.turn_id,
                 excluded=reply_spans(turn.reply_parts, turn.unchecked),
             )
             if result is None:

@@ -172,7 +172,7 @@ def test_exempt_text_drops_attachment_lines(conn, runs, files):
     checker = NumberChecker(conn, runs, files)
     question = "Attached file: 123\nAttached photo: 456\nHow many rows?"
     # The id in the attachment line would otherwise exempt the "123" in the reply.
-    marks = checker.marks_for(CHAT, TURN, "123 rows", question=question)
+    marks = checker.marks_for(CHAT, turn_id=TURN, text="123 rows", question=question)
     assert [(m.text, m.kind) for m in marks] == [("123", "unverified")]
 
 
@@ -332,7 +332,7 @@ async def test_whole_check_is_fast_for_large_inputs(conn, runs, files):
     reply = (chunk * (20_000 // len(chunk) + 1))[:20_000]
     checker = NumberChecker(conn, runs, files)
     started = time.perf_counter()
-    result = await checker.check(CHAT, "t1", 1, "what about 2024?", reply)
+    result = await checker.check(CHAT, 1, "what about 2024?", reply, turn_id="t1")
     elapsed = time.perf_counter() - started
     assert result is not None and result["marks"]
     assert elapsed < 3.0, elapsed
@@ -344,8 +344,8 @@ async def test_whole_check_is_fast_for_large_inputs(conn, runs, files):
 async def test_no_check_without_files(conn, runs, files):
     add_run(conn, values=[value("total", 5)])
     checker = NumberChecker(conn, runs, files)
-    assert checker.marks_for(CHAT, TURN, "5 rows") is None
-    assert await checker.check(CHAT, "t1", 1, "q", "5 rows") is None
+    assert checker.marks_for(CHAT, turn_id=TURN, text="5 rows") is None
+    assert await checker.check(CHAT, 1, "q", "5 rows", turn_id="t1") is None
     assert conn.execute("SELECT COUNT(*) FROM number_checks").fetchone()[0] == 0
 
 
@@ -353,7 +353,7 @@ async def test_check_stores_one_row_per_message(conn, runs, files):
     add_file(conn, "sales.csv")
     add_run(conn, values=[value("total", 5)])
     checker = NumberChecker(conn, runs, files)
-    first = await checker.check(CHAT, "t1", 7, "how many?", "5 rows and 6 columns")
+    first = await checker.check(CHAT, 7, "how many?", "5 rows and 6 columns", turn_id="t1")
     assert first == {
         "text": "5 rows and 6 columns",
         "marks": [
@@ -362,7 +362,7 @@ async def test_check_stores_one_row_per_message(conn, runs, files):
              "note": UNVERIFIED_NOTE},
         ],
     }  # fmt: skip
-    again = await checker.check(CHAT, "t1", 7, "how many?", "5 rows")
+    again = await checker.check(CHAT, 7, "how many?", "5 rows", turn_id="t1")
     rows = conn.execute("SELECT message_id, chat_id, turn_id, text, marks FROM number_checks")
     rows = rows.fetchall()
     assert len(rows) == 1
@@ -379,7 +379,7 @@ async def test_checker_errors_never_raise(conn, files, caplog):
 
     checker = NumberChecker(conn, BrokenRuns(), files)
     with caplog.at_level(logging.WARNING):
-        assert await checker.check(CHAT, "t1", 1, "q", "5 rows") is None
+        assert await checker.check(CHAT, 1, "q", "5 rows", turn_id="t1") is None
     assert "RuntimeError" in caplog.text
     assert "secret detail" not in caplog.text
     assert conn.execute("SELECT COUNT(*) FROM number_checks").fetchone()[0] == 0
@@ -403,7 +403,9 @@ def test_only_named_results_confirm_numbers(conn, runs, files):
     add_file(conn, "orders.csv")
     add_run(conn, values=[value("mean", 2.6)], stdout="rows 3\ntotal 4,209.6\n",
             tables=[{"columns": ["a"], "rows": [[3], [4209.6], [12.46]]}])  # fmt: skip
-    marks = NumberChecker(conn, runs, files).marks_for(CHAT, TURN, "3 items, 4,210 rows, 12.5 kg")
+    marks = NumberChecker(conn, runs, files).marks_for(
+        CHAT, turn_id=TURN, text="3 items, 4,210 rows, 12.5 kg"
+    )
     assert [(m.text, m.kind) for m in marks] == [
         ("3", "computed"),  # the named result 2.6, within the precision written
         ("4,210", "unverified"),
@@ -427,7 +429,9 @@ def test_describe_output_does_not_confirm_unrelated_numbers(conn, runs, files):
     add_file(conn, "orders.csv")
     add_run(conn, stdout=DESCRIBE)
     checker = NumberChecker(conn, runs, files)
-    marks = checker.marks_for(CHAT, TURN, "Half of orders (50%) were cheap, and 2 had 75% off.")
+    marks = checker.marks_for(
+        CHAT, turn_id=TURN, text="Half of orders (50%) were cheap, and 2 had 75% off."
+    )
     assert [(m.text, m.kind) for m in marks] == [
         ("50%", "unverified"),
         ("2", "unverified"),
@@ -453,7 +457,7 @@ async def test_offsets_sent_to_the_web_are_utf16(conn, runs, files):
     add_file(conn, "sales.csv")
     add_run(conn, values=[value("growth", 0.31)])
     checker = NumberChecker(conn, runs, files)
-    result = await checker.check(CHAT, "t1", 1, "", "📈 Sales 31%")
+    result = await checker.check(CHAT, 1, "", "📈 Sales 31%", turn_id="t1")
     assert [(m["start"], m["end"], m["text"]) for m in result["marks"]] == [(9, 12, "31%")]
     # Internally the offsets are code points.
     assert [(m.start, m.end) for m in check_reply("📈 Sales 31%", [num(0.31)], [])] == [(8, 11)]
@@ -480,7 +484,7 @@ async def test_non_finite_values_are_dropped(conn, runs, files):
     assert all(r.value is None or math.isfinite(r.value) for r in got)
     checker = NumberChecker(conn, runs, files)
     huge = "1" + "0" * 400
-    result = await checker.check(CHAT, "t1", 1, "", f"5 rows and {huge} more")
+    result = await checker.check(CHAT, 1, "", f"5 rows and {huge} more", turn_id="t1")
     assert [(m["text"], m["kind"]) for m in result["marks"]] == [
         ("5", "computed"),
         (huge, "unverified"),
@@ -576,7 +580,7 @@ async def test_check_runs_in_a_worker_thread(conn, runs, files, monkeypatch):
         return await real(fn, *args, **kwargs)
 
     monkeypatch.setattr(numbercheck.asyncio, "to_thread", spy)
-    result = await NumberChecker(conn, runs, files).check(CHAT, "t1", 1, "", "5 rows")
+    result = await NumberChecker(conn, runs, files).check(CHAT, 1, "", "5 rows", turn_id="t1")
     assert called and result["marks"][0]["kind"] == "computed"
 
 
@@ -599,7 +603,7 @@ def test_i1_describe_as_a_table_confirms_nothing(conn, runs, files):
     add_file(conn, "orders.csv")
     add_run(conn, tables=[DESCRIBE_TABLE], stdout=DESCRIBE)
     checker = NumberChecker(conn, runs, files)
-    marks = checker.marks_for(CHAT, TURN, "50% were cheap, 75% had a discount.")
+    marks = checker.marks_for(CHAT, turn_id=TURN, text="50% were cheap, 75% had a discount.")
     assert [(m.text, m.kind) for m in marks] == [("50%", "unverified"), ("75%", "unverified")]
 
 
@@ -607,7 +611,9 @@ def test_i2_small_cells_confirm_no_percents(conn, runs, files):
     add_file(conn, "orders.csv")
     rows = [[i % 4] for i in range(500)]
     add_run(conn, tables=[{"columns": ["n"], "rows": rows}], stdout="0\n1\n2\n3\n")
-    marks = NumberChecker(conn, runs, files).marks_for(CHAT, TURN, "0%, 100% and 200% of them.")
+    marks = NumberChecker(conn, runs, files).marks_for(
+        CHAT, turn_id=TURN, text="0%, 100% and 200% of them."
+    )
     assert [(m.text, m.kind) for m in marks] == [
         ("0%", "unverified"),
         ("100%", "unverified"),
@@ -619,7 +625,7 @@ def test_i3_bare_years_match_dates_or_an_equal_named_value(conn, runs, files):
     add_file(conn, "orders.csv")
     add_run(conn, tables=[{"columns": ["y"], "rows": [[2024.4]]}])
     checker = NumberChecker(conn, runs, files)
-    assert [(m.text, m.kind) for m in checker.marks_for(CHAT, TURN, "in 2024")] == [
+    assert [(m.text, m.kind) for m in checker.marks_for(CHAT, turn_id=TURN, text="in 2024")] == [
         ("2024", "unverified")
     ]
     assert kinds("in 2024", [num(2024)]) == [("2024", "computed")]
@@ -638,7 +644,7 @@ def test_i4_large_tables_confirm_nothing(conn, runs, files):
     words = [f"{rng.randint(100, 999)}" if i % 2 else f"{rng.uniform(10, 99):.1f}"
              for i in range(300)]  # fmt: skip
     reply = ", ".join(words) + "."
-    marks = NumberChecker(conn, runs, files).marks_for(CHAT, TURN, reply)
+    marks = NumberChecker(conn, runs, files).marks_for(CHAT, turn_id=TURN, text=reply)
     assert len(marks) == 300
     assert [m.kind for m in marks if m.kind != "unverified"] == []
 
@@ -651,7 +657,9 @@ def test_named_document_values_still_give_a_page(conn, runs, files):
     add_file(conn, "statement.pdf")
     add_run(conn, values=[value("opening", 1200, kind="document", page=2)])
     add_run(conn, purpose="vision", tables=[{"columns": ["v"], "rows": [[0.5]]}])
-    marks = NumberChecker(conn, runs, files).marks_for(CHAT, TURN, "1,200 opening, 50% read")
+    marks = NumberChecker(conn, runs, files).marks_for(
+        CHAT, turn_id=TURN, text="1,200 opening, 50% read"
+    )
     assert [(m.text, m.kind, m.page) for m in marks] == [
         ("1,200", "document", 2),
         ("50%", "unverified", None),  # a vision cell has no 100·v form
@@ -672,10 +680,10 @@ def test_big_named_pool_needs_exact_small_numbers(conn, runs, files):
     ints = [str(rng.randint(1, 99)) for _ in range(150)]
     pcts = [f"{rng.randint(10, 99)}%" for _ in range(150)]
     reply = ", ".join(i for i in ints if i != "7") + "; " + ", ".join(pcts) + "."
-    marks = NumberChecker(conn, runs, files).marks_for(CHAT, TURN, reply)
+    marks = NumberChecker(conn, runs, files).marks_for(CHAT, turn_id=TURN, text=reply)
     assert marks and [m.text for m in marks if m.kind != "unverified"] == []
     # An exact named value still confirms a small number in a big pool.
-    seven = NumberChecker(conn, runs, files).marks_for(CHAT, TURN, "7 orders")
+    seven = NumberChecker(conn, runs, files).marks_for(CHAT, turn_id=TURN, text="7 orders")
     assert [(m.text, m.kind) for m in seven] == [("7", "computed")]
 
 
@@ -694,7 +702,7 @@ def test_named_values_of_an_earlier_turn_are_not_evidence(conn, runs, files):
     add_file(conn, "orders.csv")
     add_run(conn, values=[value("total", 5)], turn_id="t0")
     add_run(conn, values=[value("rows", 6)], turn_id=TURN)
-    marks = NumberChecker(conn, runs, files).marks_for(CHAT, TURN, "5 then 6")
+    marks = NumberChecker(conn, runs, files).marks_for(CHAT, turn_id=TURN, text="5 then 6")
     assert [(m.text, m.kind) for m in marks] == [("5", "unverified"), ("6", "computed")]
 
 
@@ -703,7 +711,9 @@ def test_vision_runs_of_any_turn_and_documents_of_this_turn_are_read_evidence(co
     add_run(conn, purpose="vision", values=[value("seen", 41)], turn_id="t0")
     add_run(conn, values=[value("opening", 1200, kind="document", page=2)], turn_id="t0")
     add_run(conn, values=[value("closing", 1300, kind="document", page=3)], turn_id=TURN)
-    marks = NumberChecker(conn, runs, files).marks_for(CHAT, TURN, "41, 1,200 and 1,300")
+    marks = NumberChecker(conn, runs, files).marks_for(
+        CHAT, turn_id=TURN, text="41, 1,200 and 1,300"
+    )
     assert [(m.text, m.kind, m.page) for m in marks] == [
         ("41", "document", None),
         ("1,200", "unverified", None),
@@ -721,9 +731,9 @@ def test_vision_cells_need_exact_or_precise_matches(conn, runs, files):
     mentions = [str(rng.randint(1, 99)) for _ in range(150)]
     mentions += [f"{rng.randint(1, 9)}.{rng.randint(0, 9)}" for _ in range(150)]
     checker = NumberChecker(conn, runs, files)
-    marks = checker.marks_for(CHAT, TURN, ", ".join(mentions) + ".")
+    marks = checker.marks_for(CHAT, turn_id=TURN, text=", ".join(mentions) + ".")
     assert marks and [m.text for m in marks if m.kind != "unverified"] == []
-    exact = checker.marks_for(CHAT, TURN, "1,234.56 and 1,234.6 and 50%")
+    exact = checker.marks_for(CHAT, turn_id=TURN, text="1,234.56 and 1,234.6 and 50%")
     assert [(m.text, m.kind) for m in exact] == [
         ("1,234.56", "document"),
         ("1,234.6", "document"),  # 5 significant digits: within the written rounding
@@ -737,5 +747,39 @@ def test_year_path_uses_equal_named_analysis_values_only(conn, runs, files):
     assert kinds("in 2024", [num(2024, kind="document", page=1)]) == [("2024", "unverified")]
     add_file(conn, "scan.pdf")
     add_run(conn, purpose="vision", tables=[{"columns": ["y"], "rows": [[2024]]}])
-    marks = NumberChecker(conn, runs, files).marks_for(CHAT, TURN, "in 2024")
+    marks = NumberChecker(conn, runs, files).marks_for(CHAT, turn_id=TURN, text="in 2024")
     assert [(m.text, m.kind) for m in marks] == [("2024", "unverified")]
+
+
+def test_no_turn_id_means_no_analysis_evidence(conn, runs, files):
+    add_file(conn, "orders.csv")
+    add_run(conn, values=[value("total", 5)], turn_id=TURN)
+    add_run(conn, values=[value("rows", 6)], turn_id=None)  # a row written without a turn
+    add_run(conn, purpose="vision", values=[value("seen", 41)], turn_id="t0")
+    checker = NumberChecker(conn, runs, files)
+    marks = checker.marks_for(CHAT, "5, 6 and 41")
+    assert [(m.text, m.kind) for m in marks] == [
+        ("5", "unverified"),
+        ("6", "unverified"),
+        ("41", "document"),  # what a vision run read holds for any turn
+    ]
+    assert [(m.text, m.kind) for m in checker.marks_for(CHAT, "5", turn_id=None)] == [
+        ("5", "unverified")
+    ]
+
+
+async def test_runs_with_a_null_turn_id_are_never_evidence(conn, runs, files):
+    add_file(conn, "orders.csv")
+    add_run(conn, values=[value("rows", 6)], turn_id=None)
+    add_run(conn, purpose="vision", values=[value("seen", 41)], turn_id=None)
+    checker = NumberChecker(conn, runs, files)
+    marks = checker.marks_for(CHAT, "6 and 41", turn_id=TURN)
+    assert [(m.text, m.kind) for m in marks] == [("6", "unverified"), ("41", "unverified")]
+    result = await checker.check(CHAT, 1, "q", "6 rows")
+    assert [m["kind"] for m in result["marks"]] == ["unverified"]
+
+
+def test_turn_id_is_keyword_only(conn, runs, files):
+    checker = NumberChecker(conn, runs, files)
+    with pytest.raises(TypeError):
+        checker.marks_for(CHAT, TURN, "5 rows")

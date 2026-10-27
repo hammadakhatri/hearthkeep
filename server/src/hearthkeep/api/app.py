@@ -33,6 +33,7 @@ from hearthkeep.api import (
     routes_models,
     routes_push,
     routes_runs,
+    routes_sent,
     routes_settings,
     routes_uploads,
 )
@@ -63,10 +64,12 @@ from hearthkeep.sandbox.inspect import Inspector
 from hearthkeep.sandbox.runner import SandboxRunner
 from hearthkeep.sandbox.runs import RunStore
 from hearthkeep.secrets import SecretStore, SecretStoreError
+from hearthkeep.sent import SentStore
 from hearthkeep.tools.base import ToolRegistry
 from hearthkeep.tools.files import FilesTool
 from hearthkeep.tools.python import PythonTool, analysis_context
 from hearthkeep.tools.read_pages import ReadPagesTool
+from hearthkeep.tools.send import SendToDevicesTool
 
 DB_FILE = "hearthkeep.db"
 DEFAULT_WEB_DIST = Path(__file__).resolve().parents[4] / "web" / "dist"
@@ -277,10 +280,12 @@ def create_app(
     monotonic: Callable[[], float] = time.monotonic,
     models: ModelStack | None = None,
     sandbox: SandboxRunner | None = None,
+    push_sender: PushSender | None = None,
 ) -> FastAPI:
     """`sandbox`, when given (tests), is used as is; otherwise one is made when Docker is
     available. Without one the `python` tool is still offered and answers that Docker is
-    needed: nothing ever runs on the host."""
+    needed: nothing ever runs on the host. `push_sender`, when given (tests: a fake, or one
+    on a mock transport), is used instead of the real one, so tests never touch the network."""
     # The static files' types come from `mimetypes`, which on Windows reads the registry: a
     # .js mapped to text/plain there would stop the service worker from registering.
     mimetypes.add_type("text/javascript", ".js")
@@ -299,6 +304,7 @@ def create_app(
         conn = db.connect(Path(settings.data_dir) / DB_FILE)
         runner: TurnRunner | None = None
         push: PushSender | None = None
+        sent: SentStore | None = None
         try:
             recover_after_restart(conn)
             approvals = ApprovalStore(
@@ -328,6 +334,12 @@ def create_app(
             if registry.get(FilesTool.name) is None:
                 registry.register(FilesTool(folders, files, inspector))
             checker = NumberChecker(conn, runs, files)
+            credentials = CredentialStore(conn, clock=clock)
+            push = push_sender if push_sender is not None else _push_sender(store)
+            subscriptions = PushSubscriptions(conn)
+            sent = SentStore(conn, runs, files, credentials, checker, push, subscriptions)
+            if registry.get(SendToDevicesTool.name) is None:
+                registry.register(SendToDevicesTool(sent, credentials))
             loop = AgentLoop(
                 chat,
                 registry,
@@ -341,7 +353,6 @@ def create_app(
             )
             runner = TurnRunner(conn, loop)
             sessions = SessionStore(conn, settings.session_idle_days, clock=clock)
-            push = _push_sender(store)
             app.state.hk = Services(
                 settings=settings,
                 conn=conn,
@@ -352,7 +363,7 @@ def create_app(
                 sessions=sessions,
                 step_up=StepUp(clock=clock),
                 codes=EnrollmentCodes(conn, clock=clock),
-                credentials=CredentialStore(conn, clock=clock),
+                credentials=credentials,
                 approvals=approvals,
                 runner=runner,
                 limiter=rate_limiter or RateLimiter(),
@@ -372,7 +383,8 @@ def create_app(
                 checker=checker,
                 folders=folders,
                 push=push,
-                subscriptions=PushSubscriptions(conn),
+                subscriptions=subscriptions,
+                sent=sent,
             )
             yield
         finally:
@@ -382,9 +394,14 @@ def create_app(
                     await runner.shutdown()
             finally:
                 try:
-                    # After the runner: no turn can still be sending a push.
-                    if push is not None:
-                        await push.aclose()
+                    # After the runner (no turn can still start a push): pushes still going
+                    # are given a moment, then cancelled, before the sender is closed.
+                    try:
+                        if sent is not None:
+                            await sent.aclose()
+                    finally:
+                        if push is not None:
+                            await push.aclose()
                 finally:
                     # After the runner: no turn can still be holding a lease on a model server.
                     await stack.stop()
@@ -420,6 +437,7 @@ def create_app(
         routes_folders,
         routes_runs,
         routes_push,
+        routes_sent,
     ):
         app.include_router(module.router)
 

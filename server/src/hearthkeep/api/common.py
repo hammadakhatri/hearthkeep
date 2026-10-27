@@ -33,6 +33,7 @@ from hearthkeep.runtime.gpu import GpuScheduler
 from hearthkeep.sandbox.handle import SandboxHandle
 from hearthkeep.sandbox.inspect import Inspector
 from hearthkeep.sandbox.runs import RunStore
+from hearthkeep.sent import SentStore
 from hearthkeep.tools.base import ToolRegistry
 
 SESSION_COOKIE = "hk_session"
@@ -142,6 +143,7 @@ class Services:
     folders: FolderStore | None = None  # the owner's allowed folders
     push: PushSender | None = None  # None when the secret store can't be read
     subscriptions: PushSubscriptions | None = None
+    sent: SentStore | None = None  # what was sent to each device
     health_cache: tuple[float, bool] | None = None
     health_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 

@@ -505,7 +505,7 @@ async def test_reply_quoting_read_value_is_marked_document(env):
 
     checker = NumberChecker(env.conn, env.runs, env.files)
     text = "The opening balance was £1,234.56 and rent was 750.00; about 1.2k in all."
-    marks = checker.marks_for(CHAT, "turn9", text)  # read values hold for later turns too
+    marks = checker.marks_for(CHAT, text, turn_id="turn9")  # read values hold for later turns
     by_text = {m.text: m for m in marks}
     opening = by_text["£1,234.56"]
     assert (opening.kind, opening.page) == ("document", 2)

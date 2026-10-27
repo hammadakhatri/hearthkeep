@@ -29,6 +29,7 @@ DEFAULT_LEVELS: dict[str, ToolLevel] = {
     "files": ToolLevel.ALLOWED,
     "python": ToolLevel.ALLOWED,
     "images": ToolLevel.ALLOWED,
+    "send": ToolLevel.ALLOWED,  # sending to the owner's own devices is Look
     "github": ToolLevel.ASK,
     "demo": ToolLevel.ALLOWED,  # Phase 1 demo tools only; removed with them
 }

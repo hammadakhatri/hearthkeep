@@ -82,6 +82,7 @@ def harness(tmp_path):
             limiter=None,
             monotonic=time.monotonic,
             sandbox=None,
+            push_sender=None,
         ):
             self.chat = FakeChatClient(list(scripts))
 
@@ -100,11 +101,17 @@ def harness(tmp_path):
                 approval_poll_interval=0.01,
                 monotonic=monotonic,
                 sandbox=sandbox,
+                push_sender=push_sender,
             )
             client = TestClient(app, base_url=ORIGIN)
             client.__enter__()
             clients.append(client)
             return client
+
+        def stop(self, client):
+            """Shut the app down now (its lifespan's cleanup runs)."""
+            clients.remove(client)
+            client.__exit__(None, None, None)
 
         def conn(self):
             return connect(tmp_path / DB_FILE)
