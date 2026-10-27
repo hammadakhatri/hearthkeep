@@ -31,6 +31,16 @@
   --green-soft: color-mix(in srgb, var(--green) 14%, transparent);
   --red-soft: color-mix(in srgb, var(--red) 14%, transparent);
 
+  /* Chart series, in order: distinct on the dark surfaces, the app's own hues first. */
+  --chart-1: #2997ff;
+  --chart-2: #ffb340;
+  --chart-3: #32d74b;
+  --chart-4: #ff6961;
+  --chart-5: #bf5af2;
+  --chart-6: #64d2ff;
+  --chart-7: #ff9f0a;
+  --chart-8: #ac8e68;
+
   /* Type */
   --font: 'Geist Sans', -apple-system, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
   --mono: 'Geist Mono', ui-monospace, 'SF Mono', Consolas, monospace;

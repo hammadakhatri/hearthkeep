@@ -32,9 +32,11 @@ export async function embedChart(
   // vega-embed reads embed options (a loader among them) from a spec's `usermeta`, and a
   // spec's own `config` would override the theme. The server refuses both; drop them anyway.
   const { usermeta: _usermeta, config: _config, ...safe } = spec as Record<string, unknown>
-  const tip = opts.interactive ? textTooltip() : null
+  const tip = opts.interactive ? textTooltip(el) : null
   try {
     const result = await embed(el, safe as never, {
+      // Vega-Lite only: a raw Vega spec (signals, marks, event streams) is never run.
+      mode: 'vega-lite',
       actions: false,
       renderer: 'svg',
       ast: true,

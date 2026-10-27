@@ -12,6 +12,7 @@ const embed = vi.hoisted(() => vi.fn())
 vi.mock('vega-embed', () => ({ default: embed }))
 
 const SANDBOX_FACTS = 'ran in a sandbox · no internet · read-only files'
+const MARK_LEGEND = 'Underlined numbers: green = computed by code, blue = read from a page; tap a number for details.'
 
 function run(extra: Partial<RunDetail> = {}): RunDetail {
   return {
@@ -174,8 +175,10 @@ describe('FindingsCard', () => {
       />,
     )
     const how = screen.getByText('How I got this').closest('details')!
-    expect(within(how).getByText("Read with the chat model's vision")).toBeInTheDocument()
+    expect(within(how).getByText("Read with the chat model's vision · no internet")).toBeInTheDocument()
     expect(within(how).getByText('Page 2: Total due 4,210.50')).toBeInTheDocument()
+    // No sandbox ran for a vision read.
+    expect(within(how).queryByText(SANDBOX_FACTS)).toBeNull()
   })
 
   it('unverified number is marked with its note', () => {
@@ -186,23 +189,52 @@ describe('FindingsCard', () => {
     ]
     render(<FindingsCard item={turn(text, { check: { text, marks } })} runs={[run()]} />)
     const computed = screen.getByText('31%', { selector: '.num' })
+    expect(computed.tagName).toBe('SPAN')
     expect(computed).toHaveClass('num-computed')
     expect(computed).toHaveAttribute('title', 'Computed by code that ran on your file')
-    const unverified = screen.getByText('40', { selector: '.num' })
-    expect(unverified).toHaveClass('num-unverified')
-    expect(within(unverified).getByText('Unverified: Not found in any result.')).toBeInTheDocument()
+    expect(computed).toHaveAccessibleDescription('Computed by code that ran on your file')
+    const unverified = screen.getByRole('button', { name: '40' })
+    expect(unverified).toHaveClass('num', 'num-unverified')
+    expect(unverified).toHaveAttribute('aria-expanded', 'false')
+    expect(unverified).toHaveAccessibleDescription('Unverified: Not found in any result.')
+    expect(screen.getByText('Unverified: Not found in any result.')).not.toBeVisible()
+    fireEvent.click(unverified)
+    expect(unverified).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('Unverified: Not found in any result.')).toBeVisible()
     expect(screen.getByText("Numbers marked Unverified weren't found in any result.")).toBeInTheDocument()
+    expect(screen.getByText(MARK_LEGEND)).toBeInTheDocument()
   })
 
   it('document number shows read from page', () => {
     const text = 'Total due £4,210.50 and fee 12.'
     const marks = [mark('4,210.50', text, 'document', { page: 2 }), mark('12', text, 'document')]
     render(<FindingsCard item={turn(text, { check: { text, marks } })} runs={[run()]} />)
-    const page = screen.getByText('4,210.50', { selector: '.num' })
+    const page = screen.getByRole('button', { name: '4,210.50' })
     expect(page).toHaveClass('num-document')
-    expect(within(page).getByText('read from page 2, not computed')).toBeInTheDocument()
-    expect(within(screen.getByText('12', { selector: '.num' })).getByText('read from the document, not computed')).toBeInTheDocument()
+    expect(screen.getByText('read from page 2, not computed')).not.toBeVisible()
+    fireEvent.click(page)
+    expect(screen.getByText('read from page 2, not computed')).toBeVisible()
+    fireEvent.click(page)
+    expect(screen.getByText('read from page 2, not computed')).not.toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: '12' }))
+    expect(screen.getByText('read from the document, not computed')).toBeVisible()
     expect(screen.queryByText("Numbers marked Unverified weren't found in any result.")).toBeNull()
+  })
+
+  it('copying a reply gives the plain numbers', () => {
+    const text = 'Fell 31% on page total 9.'
+    const marks = [mark('31%', text, 'computed'), mark('9', text, 'document', { page: 3 })]
+    render(<FindingsCard item={turn(text, { check: { text, marks } })} runs={[run()]} />)
+    // The numbers hold only themselves; their notes sit beside them, out of the selection.
+    expect(screen.getByText('31%', { selector: '.num' }).textContent).toBe('31%')
+    expect(screen.getByRole('button', { name: '9' }).textContent).toBe('9')
+    expect(document.querySelector('.num .num-note')).toBeNull()
+    expect(document.querySelector('.num-note')).not.toBeNull()
+  })
+
+  it('no legend without marks', () => {
+    render(<FindingsCard item={turn('Fell 31%.')} runs={[run()]} />)
+    expect(screen.queryByText(MARK_LEGEND)).toBeNull()
   })
 
   it('marks are ignored when the text differs', () => {
@@ -265,15 +297,15 @@ describe('number marks in the thread', () => {
   })
 
   it('marks use UTF-16 offsets and never open markup', () => {
-    const text = '😀 <b>12</b> and 7 7'
+    const text = '😀 <b>12</b> and 7 \uE000\uE1007\uE001'
     const marks = [mark('12', text, 'computed'), mark('7', text, 'unverified', { note: '<img src=x>' })]
     const { container } = render(<Markdown text={text} marks={marks} />)
     expect(screen.getByText('12', { selector: '.num' })).toHaveClass('num-computed')
-    expect(screen.getByText('7', { selector: '.num' })).toHaveClass('num-unverified')
+    expect(screen.getByRole('button', { name: '7' })).toHaveClass('num-unverified')
     expect(container.querySelector('b, img')).toBeNull()
     // Sentinel look-alikes already in the text are not marks.
     expect(container.querySelectorAll('.num')).toHaveLength(2)
-    expect(container.textContent).not.toMatch(/[-]/)
+    expect(container.textContent).not.toMatch(/[\uE000-\uF8FF]/)
   })
 
   it('a mark whose text does not match its offsets is skipped', () => {
@@ -290,6 +322,14 @@ describe('number marks in the thread', () => {
     expect(screen.getAllByRole('listitem')).toHaveLength(2)
     expect(screen.getByText('31%', { selector: '.num' })).toHaveClass('num-computed')
     expect(document.querySelectorAll('.num')).toHaveLength(1)
+  })
+
+  it('a number inside a link label is never a button', () => {
+    const text = 'See [page 4 total](https://example.org/a) now.'
+    render(<Markdown text={text} marks={[mark('4', text, 'document', { page: 4 })]} />)
+    const link = screen.getByRole('link', { name: 'page 4 total' })
+    expect(link.querySelector('button')).toBeNull()
+    expect(link.querySelector('.num-document')).toHaveAttribute('title', 'read from page 4, not computed')
   })
 
   it('marks inside code stay plain', () => {

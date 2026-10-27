@@ -68,11 +68,25 @@ function place(box: HTMLElement, event: MouseEvent) {
   box.style.top = `${y}px`
 }
 
-export function textTooltip(): { handler: TooltipFn; destroy: () => void } {
+/**
+ * `chart` is the chart's element: on a touch screen there is no "mouse left", so a tap
+ * anywhere outside it, or any scroll, hides the tooltip.
+ */
+export function textTooltip(chart?: HTMLElement): { handler: TooltipFn; destroy: () => void } {
   let box: HTMLDivElement | null = null
+  const hide = () => box?.setAttribute('hidden', '')
+  const onPointerDown = (event: Event) => {
+    if (!(chart && event.target instanceof Node && chart.contains(event.target))) hide()
+  }
+  const listen = (on: boolean) => {
+    const method = on ? 'addEventListener' : 'removeEventListener'
+    document[method]('pointerdown', onPointerDown, true)
+    document[method]('scroll', hide, true)
+    window[method]('resize', hide)
+  }
   const handler: TooltipFn = (_handler, event, _item, value) => {
     if (value === null || value === undefined || value === '') {
-      box?.setAttribute('hidden', '')
+      hide()
       return
     }
     if (!box) {
@@ -80,12 +94,14 @@ export function textTooltip(): { handler: TooltipFn; destroy: () => void } {
       box.className = 'chart-tip'
       box.setAttribute('role', 'tooltip')
       document.body.append(box)
+      listen(true)
     }
     fill(box, value)
     box.removeAttribute('hidden')
     place(box, event)
   }
   const destroy = () => {
+    if (box) listen(false)
     box?.remove()
     box = null
   }

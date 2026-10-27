@@ -3,6 +3,7 @@
 import type { RunDetail } from '../api/runs'
 
 export const SANDBOX_FACTS = 'ran in a sandbox · no internet · read-only files'
+export const VISION_FACTS = "Read with the chat model's vision · no internet"
 export const OUTPUT_CUT = 'Printed output was cut at 256 KB.'
 
 function seconds(ms: number): string {
@@ -17,7 +18,7 @@ function RunAccount({ run, n, many }: { run: RunDetail; n: number; many: boolean
       {many && <h4 className="how-run-name">{`Run ${n}`}</h4>}
       {vision ? (
         <>
-          <p className="how-label">Read with the chat model's vision</p>
+          <p className="how-label">What it read</p>
           {run.stdout && (
             <pre className="md-code how-out">
               <code>{run.stdout}</code>
@@ -50,7 +51,7 @@ function RunAccount({ run, n, many }: { run: RunDetail; n: number; many: boolean
       <p className="how-facts">
         <span>{seconds(run.duration_ms)}</span>
         <span aria-hidden="true"> · </span>
-        <span>{SANDBOX_FACTS}</span>
+        <span>{vision ? VISION_FACTS : SANDBOX_FACTS}</span>
       </p>
     </section>
   )

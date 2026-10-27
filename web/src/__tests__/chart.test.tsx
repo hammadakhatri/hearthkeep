@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { expressionInterpreter } from 'vega-interpreter'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { chartTheme } from '../components/chartTheme'
@@ -33,7 +33,7 @@ describe('ChartView', () => {
     const [el, given, opts] = embed.mock.calls[0]
     expect(el).toBeInstanceOf(HTMLElement)
     expect(given).toEqual(spec)
-    expect(opts).toMatchObject({ actions: false, renderer: 'svg', ast: true, defaultStyle: false })
+    expect(opts).toMatchObject({ mode: 'vega-lite', actions: false, renderer: 'svg', ast: true, defaultStyle: false })
     expect(opts.expr).toBe(expressionInterpreter)
     expect(typeof opts.tooltip).toBe('function')
     expect(opts.config).toEqual(chartTheme())
@@ -69,6 +69,48 @@ describe('ChartView', () => {
     render(<ChartView spec={spec} title="Broken" />)
     expect(await screen.findByText("This chart couldn't be shown.")).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Save as PNG' })).toBeNull()
+  })
+
+  it('a failed chart tries again when its spec changes', async () => {
+    embed.mockRejectedValueOnce(new Error('bad spec'))
+    const { rerender } = render(<ChartView spec={spec} title="Retry" />)
+    expect(await screen.findByText("This chart couldn't be shown.")).toBeInTheDocument()
+    rerender(<ChartView spec={{ ...spec, mark: 'line' }} title="Retry" />)
+    await waitFor(() => expect(embed).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.queryByText("This chart couldn't be shown.")).toBeNull())
+    expect(screen.getByRole('button', { name: 'Save as PNG' })).toBeEnabled()
+  })
+
+  it('embeds only once the chart is scrolled into view', async () => {
+    const observers: { cb: IntersectionObserverCallback; el?: Element; off: boolean }[] = []
+    class FakeObserver {
+      rec: { cb: IntersectionObserverCallback; el?: Element; off: boolean }
+      constructor(cb: IntersectionObserverCallback) {
+        this.rec = { cb, off: false }
+        observers.push(this.rec)
+      }
+      observe(el: Element) {
+        this.rec.el = el
+      }
+      disconnect() {
+        this.rec.off = true
+      }
+      unobserve() {}
+      takeRecords() {
+        return []
+      }
+    }
+    vi.stubGlobal('IntersectionObserver', FakeObserver)
+    render(<ChartView spec={spec} title="Later" />)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(embed).not.toHaveBeenCalled()
+    const [o] = observers
+    act(() => o.cb([{ isIntersecting: false, target: o.el! } as never], {} as never))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(embed).not.toHaveBeenCalled()
+    act(() => o.cb([{ isIntersecting: true, target: o.el! } as never], {} as never))
+    await waitFor(() => expect(embed).toHaveBeenCalledTimes(1))
+    expect(o.off).toBe(true)
   })
 
   it('a static chart has no tooltips', async () => {
@@ -110,15 +152,43 @@ describe('chart tooltips', () => {
     tip.destroy()
     expect(document.querySelector('.chart-tip')).toBeNull()
   })
+
+  it('a tap elsewhere or a scroll hides it', () => {
+    const chart = document.createElement('div')
+    document.body.append(chart)
+    const tip = textTooltip(chart)
+    const show = () => tip.handler({}, new MouseEvent('pointermove', { clientX: 5, clientY: 5 }), {}, { a: 1 })
+    show()
+    const box = document.querySelector('.chart-tip')!
+    expect(box).not.toHaveAttribute('hidden')
+    // A tap on the chart itself (Vega shows the next tooltip) leaves it be.
+    chart.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    expect(box).not.toHaveAttribute('hidden')
+    document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    expect(box).toHaveAttribute('hidden')
+    show()
+    expect(box).not.toHaveAttribute('hidden')
+    document.dispatchEvent(new Event('scroll'))
+    expect(box).toHaveAttribute('hidden')
+    tip.destroy()
+    // Listeners are gone with it.
+    document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    chart.remove()
+    expect(document.querySelector('.chart-tip')).toBeNull()
+  })
 })
 
 describe('chartTheme', () => {
   it('reads the dark colours from the design tokens', () => {
     document.documentElement.style.setProperty('--s1', '#101112')
     document.documentElement.style.setProperty('--fg2', '#abcdef')
+    document.documentElement.style.setProperty('--chart-2', '#fedcba')
     const theme = chartTheme() as Record<string, any>
     expect(theme.background).toBe('#101112')
     expect(theme.axis.labelColor).toBe('#abcdef')
+    expect(theme.range.category[1]).toBe('#fedcba')
+    expect(theme.range.category).toHaveLength(8)
+    document.documentElement.style.removeProperty('--chart-2')
     document.documentElement.style.removeProperty('--s1')
     document.documentElement.style.removeProperty('--fg2')
   })

@@ -13,6 +13,8 @@ import { Markdown } from './Markdown'
 import { ProblemTable } from './ProblemTable'
 
 export const UNVERIFIED_LINE = "Numbers marked Unverified weren't found in any result."
+export const MARK_LEGEND =
+  'Underlined numbers: green = computed by code, blue = read from a page; tap a number for details.'
 
 /** Every run id of the turn, in the order its steps made them. */
 export function turnRuns(item: AssistantItem): string[] {
@@ -33,7 +35,8 @@ export function Headline({ item, className = '' }: { item: AssistantItem; classN
       <div className={`ai-text ${className}`.trim()} data-testid="assistant-text">
         <Markdown text={item.text} marks={marks} />
       </div>
-      {marks?.some((m) => m.kind === 'unverified') && <p className="num-legend">{UNVERIFIED_LINE}</p>}
+      {marks && marks.length > 0 && <p className="num-legend">{MARK_LEGEND}</p>}
+      {marks?.some((m) => m.kind === 'unverified') && <p className="num-legend num-legend-warn">{UNVERIFIED_LINE}</p>}
     </>
   )
 }

@@ -4,7 +4,12 @@
  * the server never carry a config of their own.
  */
 
-/** Used when a token can't be read (the stylesheet isn't loaded, as in tests). */
+const SERIES = ['--chart-1', '--chart-2', '--chart-3', '--chart-4', '--chart-5', '--chart-6', '--chart-7', '--chart-8']
+
+/**
+ * The tokens' values, used only when a token can't be read (the stylesheet isn't loaded, as
+ * in tests). The one place these colours are repeated outside tokens.css.
+ */
 const FALLBACK: Record<string, string> = {
   '--s1': '#0e0e10',
   '--s3': '#1f1f22',
@@ -12,30 +17,22 @@ const FALLBACK: Record<string, string> = {
   '--fg': '#f5f5f7',
   '--fg2': '#c7c7cc',
   '--muted': '#86868b',
-  '--accent': '#2997ff',
-  '--amber': '#ffb340',
-  '--green': '#32d74b',
-  '--red': '#ff6961',
   '--font': "'Geist Sans', system-ui, sans-serif",
-}
-
-function token(styles: CSSStyleDeclaration | null, name: string): string {
-  return styles?.getPropertyValue(name).trim() || FALLBACK[name]
+  '--chart-1': '#2997ff',
+  '--chart-2': '#ffb340',
+  '--chart-3': '#32d74b',
+  '--chart-4': '#ff6961',
+  '--chart-5': '#bf5af2',
+  '--chart-6': '#64d2ff',
+  '--chart-7': '#ff9f0a',
+  '--chart-8': '#ac8e68',
 }
 
 export function chartTheme(): Record<string, unknown> {
   const styles = typeof document === 'undefined' ? null : getComputedStyle(document.documentElement)
-  const t = (name: string) => token(styles, name)
-  const [bg, grid, line, fg, fg2, muted, font] = [
-    t('--s1'),
-    t('--s3'),
-    t('--line'),
-    t('--fg'),
-    t('--fg2'),
-    t('--muted'),
-    t('--font'),
-  ]
-  const series = [t('--accent'), t('--amber'), t('--green'), t('--red'), '#bf5af2', '#64d2ff', '#ff9f0a', '#a2845e']
+  const t = (name: string) => styles?.getPropertyValue(name).trim() || FALLBACK[name]
+  const [bg, grid, line, fg, fg2, muted, font] = ['--s1', '--s3', '--line', '--fg', '--fg2', '--muted', '--font'].map(t)
+  const series = SERIES.map(t)
   const axis = {
     domainColor: line,
     gridColor: grid,

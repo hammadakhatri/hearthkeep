@@ -11,7 +11,7 @@
  * Sentinel look-alikes already in the text are replaced first, so text cannot forge a mark.
  */
 
-import type { ReactNode } from 'react'
+import { useId, useState, type ReactNode } from 'react'
 import type { NumberMark } from '../api/runs'
 
 const FENCE = /^\s*(```|~~~)\s*([\w+-]*)\s*$/
@@ -99,6 +99,7 @@ const INDEX_LAST = 0xf8ff
 const SENTINEL = /[\uE000\uE001\uE100-\uF8FF]/g
 const MARKED = /\uE000([\uE100-\uF8FF])([^\uE000\uE001]*)\uE001/g
 
+const COMPUTED = 'Computed by code that ran on your file'
 const ORDINAL = /^\d{1,9}$/
 const LIST_DOT = /^[.)][ \t]/
 
@@ -139,7 +140,7 @@ function premark(text: string, marks: readonly NumberMark[]): { text: string; ma
 export function markDescription(mark: NumberMark): string {
   switch (mark.kind) {
     case 'computed':
-      return 'Computed by code that ran on your file'
+      return COMPUTED
     case 'document':
       return mark.page === null ? 'read from the document, not computed' : `read from page ${mark.page}, not computed`
     case 'unverified':
@@ -147,20 +148,57 @@ export function markDescription(mark: NumberMark): string {
   }
 }
 
-function NumberMarkSpan({ mark, text }: { mark: NumberMark; text: string }) {
-  const description = markDescription(mark)
+/**
+ * A document or unverified number: a button that shows its note beside it (tap on a phone,
+ * click or Enter elsewhere). The note sits outside the number and is not selectable, so
+ * copying a reply gives the plain text.
+ */
+function NumberNote({ mark, text }: { mark: NumberMark; text: string }) {
+  const [open, setOpen] = useState(false)
+  const id = useId()
   return (
-    <span className={`num num-${mark.kind}`} title={description}>
-      {text}
-      <span className="sr-only num-note">{description}</span>
-    </span>
+    <>
+      <button
+        type="button"
+        className={`num num-${mark.kind}`}
+        aria-expanded={open}
+        aria-controls={id}
+        aria-describedby={id}
+        onClick={() => setOpen((o) => !o)}
+      >
+        {text}
+      </button>
+      <span id={id} className="num-note" hidden={!open}>
+        {markDescription(mark)}
+      </span>
+    </>
   )
 }
 
-type Marks = readonly NumberMark[] | null
+/** The pre-marked marks, and the id of the one hidden "computed" description. */
+type Marks = { list: readonly NumberMark[]; computedId: string } | null
+
+function numberMark(mark: NumberMark, text: string, key: string, marks: NonNullable<Marks>, interactive: boolean) {
+  if (mark.kind === 'computed') {
+    return (
+      <span key={key} className="num num-computed" title={markDescription(mark)} aria-describedby={marks.computedId}>
+        {text}
+      </span>
+    )
+  }
+  // Inside a link label a button is not allowed: the note stays a tooltip there.
+  if (!interactive) {
+    return (
+      <span key={key} className={`num num-${mark.kind}`} title={markDescription(mark)}>
+        {text}
+      </span>
+    )
+  }
+  return <NumberNote key={key} mark={mark} text={text} />
+}
 
 /** Plain text, with its pre-marked numbers as number marks (stray sentinels dropped). */
-function withMarks(text: string, key: string, marks: Marks): ReactNode[] {
+function withMarks(text: string, key: string, marks: Marks, interactive: boolean): ReactNode[] {
   if (!marks) return [text]
   const out: ReactNode[] = []
   let last = 0
@@ -168,9 +206,9 @@ function withMarks(text: string, key: string, marks: Marks): ReactNode[] {
   for (const m of text.matchAll(MARKED)) {
     const at = m.index ?? 0
     if (at > last) out.push(strip(text.slice(last, at)))
-    const mark = marks[m[1].charCodeAt(0) - INDEX_BASE]
+    const mark = marks.list[m[1].charCodeAt(0) - INDEX_BASE]
     const body = strip(m[2])
-    out.push(mark ? <NumberMarkSpan key={`${key}.n${n++}`} mark={mark} text={body} /> : body)
+    out.push(mark ? numberMark(mark, body, `${key}.n${n++}`, marks, interactive) : body)
     last = at + m[0].length
   }
   if (last < text.length) out.push(strip(text.slice(last)))
@@ -199,7 +237,7 @@ function inline(text: string, key: string, marks: Marks, links = true): ReactNod
   let n = 0
   for (const m of text.matchAll(INLINE)) {
     const at = m.index ?? 0
-    if (at > last) out.push(...withMarks(text.slice(last, at), `${key}.t${n}`, marks))
+    if (at > last) out.push(...withMarks(text.slice(last, at), `${key}.t${n}`, marks, links))
     const k = `${key}.${n++}`
     if (m[1] !== undefined) {
       const code = plain(m[2])
@@ -218,7 +256,7 @@ function inline(text: string, key: string, marks: Marks, links = true): ReactNod
     }
     last = at + m[0].length
   }
-  if (last < text.length) out.push(...withMarks(text.slice(last), `${key}.t${n}`, marks))
+  if (last < text.length) out.push(...withMarks(text.slice(last), `${key}.t${n}`, marks, links))
   return out
 }
 
@@ -231,8 +269,9 @@ function lines(parts: string[], key: string, marks: Marks): ReactNode[] {
 }
 
 export function Markdown({ text, marks }: { text: string; marks?: readonly NumberMark[] }) {
+  const computedId = useId()
   const pre = marks ? premark(text, marks) : null
-  const used: Marks = pre ? pre.marks : null
+  const used: Marks = pre ? { list: pre.marks, computedId } : null
   return (
     <>
       {parseBlocks(pre ? pre.text : text).map((block, b) => {
@@ -270,6 +309,12 @@ export function Markdown({ text, marks }: { text: string; marks?: readonly Numbe
             )
         }
       })}
+      {/* Last, so it never shifts the first block's spacing. */}
+      {pre?.marks.some((m) => m.kind === 'computed') && (
+        <span id={computedId} hidden>
+          {COMPUTED}
+        </span>
+      )}
     </>
   )
 }

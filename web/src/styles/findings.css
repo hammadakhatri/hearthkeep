@@ -96,17 +96,57 @@
   text-decoration-color: var(--amber);
 }
 
-.num-note::before {
-  content: ' (';
+/* Document and unverified numbers are buttons that read as text. */
+button.num {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
 }
 
-.num-note::after {
-  content: ')';
+button.num.num-unverified {
+  padding: 0 3px;
+  color: var(--amber);
+  background: var(--amber-soft);
+}
+
+button.num[aria-expanded='true'] {
+  text-decoration-thickness: 2.5px;
+}
+
+/* The note shown beside a tapped number: never part of a copied reply. */
+.num-note {
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  background: var(--s2);
+  border: 1px solid var(--line);
+  color: var(--fg2);
+  font-size: var(--text-xs);
+  white-space: normal;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.num-note[hidden] {
+  display: none;
 }
 
 .num-legend {
   margin: -6px 0 0;
   font-size: var(--text-xs);
+  color: var(--muted);
+}
+
+.num-legend-warn {
+  margin-top: -10px;
   color: var(--amber);
 }
 

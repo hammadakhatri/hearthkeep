@@ -217,7 +217,7 @@ def test_caps_rows_bytes_and_depth():
     def nested(depth: int) -> dict:
         """A dict whose deepest value sits at exactly `depth` levels."""
         node: dict = {}
-        top = {"description_k": node}  # depth 2 for `node`
+        top = {"mark": "point", "description_k": node}  # depth 2 for `node`
         for _ in range(depth - 2):
             node["k"] = {}
             node = node["k"]
@@ -832,3 +832,45 @@ def test_docstring_names_image_keys_everywhere():
     doc = " ".join(charts.__doc__.split())
     assert "`image` key" in doc
     assert "both in data rows and everywhere else" in doc
+
+
+RAW_VEGA_PROBE = {
+    "$schema": V6,
+    "signals": [{"name": "s", "value": 1, "on": [{"events": "click", "update": "1"}]}],
+    "marks": [{"type": "symbol", "encode": {"update": {"x": {"value": 1}}}}],
+}
+
+
+def test_raw_vega_probe_rejected():
+    rejected(RAW_VEGA_PROBE)
+    rejected({k: v for k, v in RAW_VEGA_PROBE.items() if k != "$schema"})
+
+
+@pytest.mark.parametrize(
+    "key", ["signals", "marks", "scales", "axes", "legends", "projections", "on", "update",
+            "init", "events", "Signals", "MARKS"],
+)  # fmt: skip
+def test_raw_vega_keys_rejected_anywhere(key):
+    rejected(base(**{key: []}))
+    rejected(base(layer=[{"mark": "point", key: []}]))
+    rejected(base(encoding={"x": {"field": "a", "type": "quantitative", key: {}}}))
+    # Data rows may use any column name.
+    validate_chart_spec(base(data={"values": [{key: 1}]}))
+
+
+def test_selection_on_false_still_allowed():
+    validate_chart_spec(base(params=[{"name": "p", "select": {"type": "point", "on": False}}]))
+    rejected(base(params=[{"name": "p", "value": 1, "on": False}]))
+
+
+def test_requires_a_vega_lite_shape():
+    rejected({"$schema": V6, "data": {"values": [{"a": 1}]}})
+    rejected({"data": {"values": [{"a": 1}]}, "encoding": {}})
+    for shape in ("layer", "hconcat", "vconcat", "concat"):
+        validate_chart_spec({"data": {"values": [{"a": 1}]}, shape: [{"mark": "point"}]})
+    validate_chart_spec(
+        {"data": {"values": [{"a": 1}]}, "facet": {"field": "a"}, "spec": {"mark": "point"}}
+    )
+    validate_chart_spec(
+        {"data": {"values": [{"a": 1}]}, "repeat": ["a"], "spec": {"mark": "point"}}
+    )

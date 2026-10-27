@@ -48,10 +48,28 @@ export function ChartView({
   const [state, setState] = useState<'loading' | 'ready' | 'failed'>('loading')
   const [saving, setSaving] = useState(false)
   const [saveFailed, setSaveFailed] = useState(false)
+  // Charts are drawn once scrolled into view (at once where IntersectionObserver is missing).
+  const [seen, setSeen] = useState(() => typeof IntersectionObserver === 'undefined')
 
   useEffect(() => {
     const el = box.current
-    if (!el) return
+    if (seen || !el) return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          observer.disconnect()
+          setSeen(true)
+        }
+      },
+      { rootMargin: '200px 0px' },
+    )
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [seen])
+
+  useEffect(() => {
+    const el = box.current
+    if (!seen || !el) return
     let alive = true
     let finalize: (() => void) | null = null
     setState('loading')
@@ -74,7 +92,7 @@ export function ChartView({
       view.current = null
       finalize?.()
     }
-  }, [spec, interactive])
+  }, [spec, interactive, seen])
 
   async function save() {
     if (!view.current || saving) return
@@ -92,17 +110,16 @@ export function ChartView({
   return (
     <figure className="chart" aria-label={title} data-state={state}>
       <figcaption className="chart-title">{title}</figcaption>
-      {state === 'failed' ? (
-        <p className="chart-failed">This chart couldn't be shown.</p>
-      ) : (
-        <div
-          ref={box}
-          className="chart-canvas"
-          role="img"
-          aria-label={`Chart: ${title}`}
-          data-static={interactive ? undefined : ''}
-        />
-      )}
+      {state === 'failed' && <p className="chart-failed">This chart couldn't be shown.</p>}
+      {/* Always mounted, so a new spec after a failure can be drawn into it. */}
+      <div
+        ref={box}
+        className="chart-canvas"
+        role="img"
+        aria-label={`Chart: ${title}`}
+        hidden={state === 'failed'}
+        data-static={interactive ? undefined : ''}
+      />
       {state !== 'failed' && (
         <div className="chart-actions">
           <button type="button" className="btn chart-save" onClick={() => void save()} disabled={state !== 'ready' || saving}>

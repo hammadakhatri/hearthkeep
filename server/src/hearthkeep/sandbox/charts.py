@@ -5,6 +5,10 @@ rule is: nothing in it may make the browser fetch anything, or run an expression
 could reach a fetch or an expression are allow-listed (data, transforms, params, conditions,
 paint values, tooltips); a deny-list of keys and strings backs them up:
 
+* Vega-Lite only: the top level has one of `mark layer hconcat vconcat concat facet repeat
+  spec`, and raw Vega keys (`signals marks scales axes legends projections on update init
+  events`, any case) are refused at any depth outside data rows; the one exception is a
+  selection's `on`, which may only be `false`
 * no `config` (the app supplies its own theme at render time) and no legacy `selection`
 * every `data` object is `{"values": [objects], "name"?}`; no `url`, `format`, `datasets`
 * no `url`, `href`, `usermeta`, `loader`, `$ref` keys; no `image` mark; `image` keys are
@@ -68,6 +72,21 @@ _FORBIDDEN_KEYS = {
     "signal",
     "calculate",
 }
+# Raw Vega (not Vega-Lite) keys: event streams, signal updates and marks the web app would
+# otherwise run if a spec reached Vega directly.
+_RAW_VEGA_KEYS = {
+    "signals",
+    "marks",
+    "scales",
+    "axes",
+    "legends",
+    "projections",
+    "on",
+    "update",
+    "init",
+    "events",
+}
+_VEGA_LITE_SHAPES = ("mark", "layer", "hconcat", "vconcat", "concat", "facet", "repeat", "spec")
 _BOUNDARY = r"(?<![A-Za-z0-9+.-])"
 _URL_SCHEME = re.compile(
     _BOUNDARY + r"(?:(?:https?|ftp|file)://|javascript:|data:\s*(?:[\w.+-]+/|[,;]))", re.IGNORECASE
@@ -288,6 +307,8 @@ class _Walker:
             lowered = key.lower()
             if lowered in _FORBIDDEN_KEYS or lowered.endswith("expr"):
                 raise _bad(f"the key {_q(key)} is not allowed")
+            if lowered.strip() in _RAW_VEGA_KEYS and not (key == "on" and ctx == "select"):
+                raise _bad(f"the key {_q(key)} is raw Vega, not Vega-Lite")
             if lowered.strip() == "image" or key.strip().casefold() == "image":
                 raise _bad("an 'image' key is not allowed")
             if lowered.strip() == "cursor":
@@ -555,6 +576,8 @@ def validate_chart_spec(spec: object) -> dict:
         schema = body.pop("$schema")
         if not isinstance(schema, str) or schema not in ALLOWED_SCHEMAS:
             raise _bad("the chart schema is not Vega-Lite v5 or v6")
+    if not any(key in body for key in _VEGA_LITE_SHAPES):
+        raise _bad("a chart spec is Vega-Lite: it needs a mark, layer, concat, facet or repeat")
     try:
         _Walker().walk(body, 0, where="spec")
         size = len(json.dumps(spec, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
