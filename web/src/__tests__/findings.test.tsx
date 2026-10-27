@@ -12,7 +12,8 @@ const embed = vi.hoisted(() => vi.fn())
 vi.mock('vega-embed', () => ({ default: embed }))
 
 const SANDBOX_FACTS = 'ran in a sandbox · no internet · read-only files'
-const MARK_LEGEND = 'Underlined numbers: green = computed by code, blue = read from a page; tap a number for details.'
+const MARK_LEGEND =
+  'Underlined numbers: green = computed by code, blue = read from a page. Tap a blue or Unverified number for details.'
 
 function run(extra: Partial<RunDetail> = {}): RunDetail {
   return {

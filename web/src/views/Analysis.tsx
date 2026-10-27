@@ -302,7 +302,7 @@ export function Analysis({ onOpenChat }: { onOpenChat: (chatId: string, runId?: 
     setLoadingMore(true)
     setMoreFailed(false)
     try {
-      const page = await getAnalysis(last.updated_at)
+      const page = await getAnalysis(last)
       setChats((all) => {
         const seen = new Set((all ?? []).map((c) => c.chat_id))
         return [...(all ?? []), ...page.chats.filter((c) => !seen.has(c.chat_id))]

@@ -99,8 +99,8 @@ describe('Analysis', () => {
     expect(calls[0].path).toBe('/api/analysis?limit=20')
   })
 
-  it('Load more fetches the next page by the last updated_at, only while the server has more', async () => {
-    const next = new URLSearchParams({ limit: '20', before: CHAT_ROWS[0].updated_at })
+  it('Load more fetches the next page by the last updated_at and chat id, only while the server has more', async () => {
+    const next = new URLSearchParams({ limit: '20', before: CHAT_ROWS[0].updated_at, before_id: CHAT_ROWS[0].chat_id })
     const older = { ...CHAT_ROWS[1], chat_id: 'c'.repeat(32), title: 'Older chat', updated_at: '2026-10-25T10:00:00.000000Z' }
     const { calls } = routes({
       'GET /api/analysis?limit=20': { body: { chats: [CHAT_ROWS[0]], more: true } },

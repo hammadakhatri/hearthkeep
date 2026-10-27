@@ -18,10 +18,16 @@ export type AnalysisChat = {
 /** `more`: the server has another page after this one. */
 export const PAGE_SIZE = 20
 
-/** A page of chats, newest first; `before` is the last `updated_at` already shown. */
-export function getAnalysis(before?: string): Promise<{ chats: AnalysisChat[]; more: boolean }> {
+/** A page of chats, newest first; `before` is the last chat already shown (its `updated_at`
+ * and, so chats with the same time are never skipped, its id). */
+export function getAnalysis(
+  before?: Pick<AnalysisChat, 'updated_at' | 'chat_id'>,
+): Promise<{ chats: AnalysisChat[]; more: boolean }> {
   const query = new URLSearchParams({ limit: String(PAGE_SIZE) })
-  if (before) query.set('before', before)
+  if (before) {
+    query.set('before', before.updated_at)
+    query.set('before_id', before.chat_id)
+  }
   return api(`/api/analysis?${query}`)
 }
 

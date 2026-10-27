@@ -193,7 +193,14 @@ describe('NotificationToggle', () => {
 
 type Listener = (event: unknown) => void
 
-function workerScope(windows: { url: string; focus: ReturnType<typeof vi.fn>; postMessage: ReturnType<typeof vi.fn> }[] = []) {
+type FakeWindow = {
+  url: string
+  focus: ReturnType<typeof vi.fn>
+  postMessage: ReturnType<typeof vi.fn>
+  navigate?: ReturnType<typeof vi.fn>
+}
+
+function workerScope(windows: FakeWindow[] = []) {
   const listeners: Record<string, Listener> = {}
   const scope = {
     location: new URL('https://hearthkeep.example/sw.js'),
@@ -247,6 +254,38 @@ describe('service worker', () => {
     expect(win.focus).toHaveBeenCalledOnce()
     expect(win.postMessage).toHaveBeenCalledWith({ type: 'open-sent' })
     expect(scope.clients.openWindow).not.toHaveBeenCalled()
+  })
+
+  it('a click sets #sent on an open window before focusing it, so a sign-in page opens the tray after', async () => {
+    const win: FakeWindow = {
+      url: 'https://hearthkeep.example/#enroll=x',
+      focus: vi.fn(async () => win),
+      postMessage: vi.fn(),
+      navigate: vi.fn(async () => win),
+    }
+    const { listeners } = workerScope([win])
+    const waits: Promise<unknown>[] = []
+    listeners.notificationclick({ notification: { close: vi.fn() }, waitUntil: (p: Promise<unknown>) => waits.push(p) })
+    await Promise.all(waits)
+    expect(win.navigate).toHaveBeenCalledWith('https://hearthkeep.example/#sent')
+    expect(win.navigate!.mock.invocationCallOrder[0]).toBeLessThan(win.focus.mock.invocationCallOrder[0])
+  })
+
+  it('a window that refuses navigation is still focused and told to open the tray', async () => {
+    const win: FakeWindow = {
+      url: 'https://hearthkeep.example/',
+      focus: vi.fn(async () => win),
+      postMessage: vi.fn(),
+      navigate: vi.fn(async () => {
+        throw new TypeError('not controlled')
+      }),
+    }
+    const { listeners } = workerScope([win])
+    const waits: Promise<unknown>[] = []
+    listeners.notificationclick({ notification: { close: vi.fn() }, waitUntil: (p: Promise<unknown>) => waits.push(p) })
+    await Promise.all(waits)
+    expect(win.postMessage).toHaveBeenCalledWith({ type: 'open-sent' })
+    expect(win.focus).toHaveBeenCalledOnce()
   })
 
   it('a click with no open window opens the tray in a new one', async () => {

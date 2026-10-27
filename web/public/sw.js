@@ -30,6 +30,15 @@ self.addEventListener('notificationclick', (event) => {
       const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
       const open = windows.find((client) => new URL(client.url).origin === self.location.origin)
       if (open) {
+        // #sent first, so a window that isn't showing the app yet (signing in, say) opens
+        // the tray once it does; the message opens it at once in a window that is.
+        const target = new URL(open.url)
+        target.hash = 'sent'
+        try {
+          if (typeof open.navigate === 'function') await open.navigate(target.href)
+        } catch {
+          // an uncontrolled window can't be navigated: the message still reaches it
+        }
         open.postMessage({ type: 'open-sent' })
         await open.focus()
         return

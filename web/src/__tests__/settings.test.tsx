@@ -194,6 +194,14 @@ describe('Settings', () => {
     expect(within(section).getByRole('button', { name: 'Copy command' })).toBeInTheDocument()
   })
 
+  it('start at login says when it is on for another data folder', async () => {
+    const elsewhere = { supported: true, enabled: true, other_data_folder: true, command: startupOff.command }
+    routes({ 'GET /api/settings/startup': { body: elsewhere } })
+    render(<Settings />)
+    expect(await screen.findByText('On, for another data folder')).toBeInTheDocument()
+    expect(screen.getByText(startupOff.command)).toBeInTheDocument()
+  })
+
   it('start at login says only on Windows elsewhere', async () => {
     routes({ 'GET /api/settings/startup': { body: { supported: false, enabled: false, command: null } } })
     render(<Settings />)

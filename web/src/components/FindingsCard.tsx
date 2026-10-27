@@ -14,8 +14,9 @@ import { ProblemTable } from './ProblemTable'
 import { SendMenu } from './SendMenu'
 
 export const UNVERIFIED_LINE = "Numbers marked Unverified weren't found in any result."
+// Only marked numbers (read from a page, or Unverified) open a note when tapped.
 export const MARK_LEGEND =
-  'Underlined numbers: green = computed by code, blue = read from a page; tap a number for details.'
+  'Underlined numbers: green = computed by code, blue = read from a page. Tap a blue or Unverified number for details.'
 
 /** Every run id of the turn, in the order its steps made them. */
 export function turnRuns(item: AssistantItem): string[] {
