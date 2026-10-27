@@ -5,14 +5,20 @@ rule is: nothing in it may make the browser fetch anything, or run an expression
 checks are a deny-list for the fetch-capable keys plus an allow-list for the shapes that
 could still reach one (data, transforms, params, conditions):
 
+* no `config` (the app supplies its own theme at render time)
 * every `data` object is `{"values": [objects], "name"?}`; no `url`, `format`, `datasets`
 * no `url`, `href`, `usermeta`, `loader`, `$ref` keys and no `image` mark
 * no Vega expressions: the keys `expr`, `signal`, `calculate` and anything ending in
   `expr` (`labelExpr`, ...); `test` only as `{"param": ...}` inside a `condition`
 * transforms are limited to filter (field predicates), aggregate, bin, timeUnit, fold,
   window and joinaggregate
-* params bind only to `scales` or `legend`
-* no string holds a URL (scheme, or leading `//`), in keys or values, except `$schema`
+* params bind only to `scales` or `legend`; selection `on`, `clear`, `toggle`, `translate`
+  and `zoom` are booleans only (no event or expression strings)
+* `formatType` is `number`, `time` or `utc`; `format` is short text with no `(`, `[` or `{`
+* no string holds a URL (`http(s)://`, `ftp://`, `file://`, `javascript:`, `data:x`, a leading
+  `//`) or a CSS `url(`, in keys or values, except `$schema`; string values in data rows may
+  look like URLs (Vega never loads them) but their keys may not
+* no `image` key in data rows and no title `image` (tooltip images)
 * limits: 1 MiB serialized, 5,000 rows per dataset, 20,000 rows in total, depth 20
 """
 
@@ -41,16 +47,31 @@ _FORBIDDEN_KEYS = {
     "usermeta",
     "loader",
     "$ref",
+    "config",
     "expr",
     "signal",
     "calculate",
 }
-_URL_SCHEME = re.compile(r"(?<![A-Za-z0-9+.-])(?:https?|ftp|file|data|javascript):", re.IGNORECASE)
-_URL_SCHEME_AT_START = re.compile(r"(?:https?|ftp|file|data|javascript):", re.IGNORECASE)
-_DROP_FOR_START = re.compile(r"[\s\x00-\x1f\x7f​-‏  ﻿]+")
+_BOUNDARY = r"(?<![A-Za-z0-9+.-])"
+_URL_SCHEME = re.compile(
+    _BOUNDARY + r"(?:(?:https?|ftp|file)://|javascript:|data:(?=\S))", re.IGNORECASE
+)
+_STRIP_IN_SCHEME = re.compile(r"[\t\r\n\x00]")
+_LEADING_JUNK = re.compile(r"^[\s\x00-\x1f\x7f\u200b-\u200f\u2028\u2029\ufeff]+")
+_CSS_URL = re.compile(r"url\s*\(", re.IGNORECASE)
+_FORMAT_TYPES = {"number", "time", "utc"}
+MAX_FORMAT = 40
+QUOTE = 40
 
-_TRANSFORMS = {"filter", "aggregate", "bin", "timeUnit", "fold", "window", "joinaggregate"}
-_TRANSFORM_COMPANIONS = {"groupby", "field", "as", "frame", "sort", "ignorePeers"}
+_TRANSFORM_KEYS = {
+    "filter": {"filter"},
+    "aggregate": {"aggregate", "groupby"},
+    "bin": {"bin", "field", "as"},
+    "timeUnit": {"timeUnit", "field", "as"},
+    "fold": {"fold", "as"},
+    "window": {"window", "groupby", "frame", "sort", "ignorePeers"},
+    "joinaggregate": {"joinaggregate", "groupby"},
+}
 _PREDICATE_KEYS = {
     "field",
     "timeUnit",
@@ -64,6 +85,7 @@ _PREDICATE_KEYS = {
     "valid",
 }
 _PARAM_KEYS = {"name", "value", "select", "bind", "views"}
+_SELECT_BOOLEANS = ("on", "clear", "toggle", "translate", "zoom", "nearest")
 _SELECT_KEYS = {
     "type",
     "fields",
@@ -88,11 +110,25 @@ def _bad(message: str) -> ChartError:
     return ChartError(message)
 
 
+def _q(text: object) -> str:
+    """At most 40 characters of a key or string, for an error message."""
+    s = text if isinstance(text, str) else repr(text)
+    s = s[:QUOTE] + ("..." if len(s) > QUOTE else "")
+    return repr(s.encode("ascii", "backslashreplace").decode("ascii"))
+
+
 def _has_url(text: str) -> bool:
-    if _URL_SCHEME.search(text):
+    plain = _STRIP_IN_SCHEME.sub("", text)
+    if _URL_SCHEME.search(plain):
         return True
-    squeezed = _DROP_FOR_START.sub("", text)
-    return bool(_URL_SCHEME_AT_START.match(squeezed)) or squeezed.startswith("//")
+    return _LEADING_JUNK.sub("", plain).startswith("//")
+
+
+def _check_text(text: str, *, what: str) -> None:
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        raise _bad(f"{what} is not valid text: {_q(text)}") from None
 
 
 class _Walker:
@@ -114,15 +150,20 @@ class _Walker:
             for item in node:
                 self.walk(item, depth + 1, where=where, data_mode=data_mode, cond=cond)
         elif isinstance(node, str):
+            _check_text(node, what=f"a text in {_q(where)}")
+            if data_mode:
+                return
             if _has_url(node):
-                raise _bad(f"a text in '{where}' looks like a URL")
+                raise _bad(f"a text in {_q(where)} looks like a URL: {_q(node)}")
+            if _CSS_URL.search(node):
+                raise _bad(f"a text in {_q(where)} has a CSS url(): {_q(node)}")
         elif isinstance(node, bool) or node is None or isinstance(node, int):
             return
         elif isinstance(node, float):
             if not math.isfinite(node):
-                raise _bad(f"'{where}' holds a number that is not finite")
+                raise _bad(f"{_q(where)} holds a number that is not finite")
         else:
-            raise _bad(f"'{where}' holds a value that is not plain JSON")
+            raise _bad(f"{_q(where)} holds a value that is not plain JSON")
 
     def _dict(self, node: dict, depth: int, *, where: str, data_mode: bool, cond: bool) -> None:
         if depth > MAX_DEPTH:
@@ -130,20 +171,30 @@ class _Walker:
         for key, child in node.items():
             if not isinstance(key, str):
                 raise _bad("the chart has a key that is not text")
-            if _has_url(key):
-                raise _bad("a key looks like a URL")
+            _check_text(key, what="a key")
+            if _has_url(key) or _CSS_URL.search(key):
+                raise _bad(f"the key {_q(key)} looks like a URL")
             if data_mode:
+                if key.lower() == "image":
+                    raise _bad("a data column named 'image' is not allowed")
                 self.walk(child, depth, where=where, data_mode=True)
                 continue
             lowered = key.lower()
             if lowered in _FORBIDDEN_KEYS or lowered.endswith("expr"):
-                raise _bad(f"the key '{key}' is not allowed")
+                raise _bad(f"the key {_q(key)} is not allowed")
+            if lowered.endswith("formattype"):
+                if not isinstance(child, str) or child not in _FORMAT_TYPES:
+                    raise _bad("formatType must be 'number', 'time' or 'utc'")
+            elif lowered.endswith("format"):
+                self._format(child)
+            if key == "title":
+                self._title(child)
             if key == "test":
                 if not cond or not self._is_param_test(child):
                     raise _bad("'test' is only allowed as {param} inside a condition")
                 self.walk(child, depth, where=key)
             elif key == "data":
-                self._data(child, depth, where=key)
+                self._data(child, depth)
             elif key == "mark":
                 self._mark(child)
                 self.walk(child, depth, where=key)
@@ -162,14 +213,28 @@ class _Walker:
                 self.walk(child, depth, where=key)
 
     @staticmethod
+    def _format(value: object) -> None:
+        if not isinstance(value, str) or len(value) > MAX_FORMAT or any(c in value for c in "([{"):
+            raise _bad(f"a format is text of at most {MAX_FORMAT} characters without ( [ {{")
+
+    @staticmethod
+    def _title(value: object) -> None:
+        for title in value if isinstance(value, list) else [value]:
+            if isinstance(title, str) and title.strip().lower() == "image":
+                raise _bad("a title 'image' is not allowed")
+
+    @staticmethod
     def _is_param_test(value: object) -> bool:
         if not isinstance(value, dict) or not isinstance(value.get("param"), str):
             return False
         return set(value) <= {"param", "empty"} and isinstance(value.get("empty", True), bool)
 
-    def _data(self, data: object, depth: int, *, where: str) -> None:
+    def _data(self, data: object, depth: int) -> None:
+        """`depth` is that of the dict holding the `data` key; `data` itself is one deeper."""
         if not isinstance(data, dict):
             raise _bad("'data' must be an object with inline values")
+        if depth + 1 > MAX_DEPTH:
+            raise _bad(f"the chart is nested deeper than {MAX_DEPTH} levels")
         if not set(data) <= {"values", "name"} or "values" not in data:
             raise _bad("'data' may only hold inline 'values' (and a 'name')")
         values = data["values"]
@@ -182,11 +247,9 @@ class _Walker:
             raise _bad(f"the chart has more than {MAX_ROWS_TOTAL:,} rows in total")
         if "name" in data and not isinstance(data["name"], str):
             raise _bad("a data name must be text")
-        if depth + 1 > MAX_DEPTH:
-            raise _bad(f"the chart is nested deeper than {MAX_DEPTH} levels")
-        self.walk(values, depth, where="values", data_mode=True)
+        self.walk(values, depth + 1, where="values", data_mode=True)
         if "name" in data:
-            self.walk(data["name"], depth, where="name")
+            self.walk(data["name"], depth + 1, where="name")
 
     @staticmethod
     def _mark(mark: object) -> None:
@@ -200,12 +263,13 @@ class _Walker:
         for item in transforms:
             if not isinstance(item, dict):
                 raise _bad("a transform must be an object")
-            ops = set(item) & (_TRANSFORMS | {"calculate", "lookup"})
-            if len(ops) != 1 or not ops <= _TRANSFORMS:
+            ops = set(item) & (set(_TRANSFORM_KEYS) | {"calculate", "lookup"})
+            if len(ops) != 1 or not ops <= set(_TRANSFORM_KEYS):
                 raise _bad("a transform is not one of the allowed kinds")
-            if not set(item) <= ops | _TRANSFORM_COMPANIONS:
-                raise _bad("a transform has a key that is not allowed")
-            if "filter" in item:
+            (op,) = ops
+            if not set(item) <= _TRANSFORM_KEYS[op]:
+                raise _bad(f"a {op} transform has a key that is not allowed")
+            if op == "filter":
                 self._predicate(item["filter"])
 
     def _predicate(self, predicate: object) -> None:
@@ -247,11 +311,9 @@ class _Walker:
             kind = select.get("type")
             if not set(select) <= _SELECT_KEYS:
                 raise _bad("a selection has a key that is not allowed")
-            for key in ("toggle", "clear", "nearest", "translate", "zoom"):
+            for key in _SELECT_BOOLEANS:
                 if key in select and not isinstance(select[key], bool):
-                    raise _bad(f"selection '{key}' must be true or false")
-            if "on" in select and not isinstance(select["on"], str):
-                raise _bad("selection 'on' must be an event name")
+                    raise _bad(f"selection '{key}' must be true or false, not an event string")
         else:
             raise _bad("a selection must be 'interval', 'point' or an object")
         if kind not in ("interval", "point"):

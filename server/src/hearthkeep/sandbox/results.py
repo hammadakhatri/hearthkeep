@@ -21,6 +21,7 @@ MAX_NAME = 100
 MAX_FILE_NAME = 120  # hk.file allows 120 characters
 MAX_TEXT = 200
 MAX_NOTE = 500
+MAX_INT = 2**63
 MAX_ROWS = 500
 MAX_COLUMNS = 50
 NOT_A_NUMBER = "not a number"
@@ -89,10 +90,24 @@ def _text(rec: dict, key: str, limit: int, *, required: bool = True) -> str | No
         raise _Drop(f"{key} is empty")
     if len(raw) > limit:
         raise _Drop(f"{key} is longer than {limit} characters")
+    _encodable(raw, key)
     return raw
 
 
+def _encodable(text: str, what: str) -> None:
+    """A lone surrogate (from a JSON \\ud800 escape) cannot be stored or sent as UTF-8."""
+    try:
+        text.encode("utf-8", "strict")
+    except UnicodeEncodeError:
+        raise _Drop(f"{what} is not valid text") from None
+
+
 def _non_finite(x: object) -> bool:
+    """NaN, infinity, or a whole number too big to be a plain JSON number."""
+    if isinstance(x, bool):
+        return False
+    if isinstance(x, int):
+        return abs(x) > MAX_INT
     return isinstance(x, float) and not math.isfinite(x)
 
 
@@ -115,6 +130,7 @@ def _value(rec: dict) -> Value:
     elif isinstance(raw, str):
         if len(raw) > MAX_TEXT:
             raise _Drop(f"value is longer than {MAX_TEXT} characters")
+        _encodable(raw, "value")
         value = raw
     else:
         raise _Drop("value must be a number, text or null")
@@ -137,6 +153,7 @@ def _cell(cell: object) -> float | int | str | None:
     if isinstance(cell, str):
         if len(cell) > MAX_TEXT:
             raise _Drop(f"a cell is longer than {MAX_TEXT} characters")
+        _encodable(cell, "a cell")
         return cell
     raise _Drop("a cell must be a number, text or null")
 
@@ -150,6 +167,7 @@ def _table(rec: dict) -> Table:
     for column in columns:
         if not isinstance(column, str) or len(column) > MAX_NAME:
             raise _Drop(f"column names are text of at most {MAX_NAME} characters")
+        _encodable(column, "a column name")
     rows = rec.get("rows")
     if not isinstance(rows, list) or len(rows) > MAX_ROWS:
         raise _Drop(f"a table has at most {MAX_ROWS} rows")
@@ -193,9 +211,10 @@ def _bounded(raw: bytes) -> tuple[list[bytes], list[str]]:
     cut: list[tuple[int, str]] = []
     if len(raw) > MAX_BYTES:
         kept = raw[:MAX_BYTES]
-        # cut back to a whole line unless the 5 MB ends exactly on one
-        if raw[MAX_BYTES : MAX_BYTES + 1] != b"\n":
-            kept = kept[: kept.rfind(b"\n") + 1]
+        if raw[MAX_BYTES : MAX_BYTES + 1] == b"\n":
+            kept = raw[: MAX_BYTES + 1]  # the 5 MB ends exactly on a line
+        else:
+            kept = kept[: kept.rfind(b"\n") + 1]  # cut back to a whole line
         cut.append((kept.count(b"\n") + 1, "results are larger than 5 MB, the rest was ignored"))
         raw = kept
     lines = raw.split(b"\n")
@@ -239,5 +258,7 @@ def parse_results(raw: bytes, members: set[str]) -> ParsedResults:
                 raise _Drop("unknown record type")
         except _Drop as drop:
             out.problems.append(f"line {number}: {drop}")
+        except Exception:  # untrusted input: whatever goes wrong, drop the line, never raise
+            out.problems.append(f"line {number}: could not be read")
     out.problems.extend(cuts)
     return out

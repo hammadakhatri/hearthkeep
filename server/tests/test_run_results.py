@@ -260,3 +260,65 @@ def test_value_types_and_dates():
     assert [v.value for v in res.values] == [3, "2025-03-01", "PT1H", "true"]
     assert res.values[1].is_date is True
     assert len(res.problems) == 1
+
+
+# ---- fix round 1 ----
+
+
+def test_lone_surrogates_are_dropped():
+    raw = (
+        b'{"type":"cleaning","note":"bad \\ud800"}\n'
+        b'{"type":"value","name":"n\\udc00","value":1,"unit":null,"note":null,'
+        b'"is_date":false,"kind":"computed","page":null}\n'
+        b'{"type":"value","name":"ok","value":"\\ud800","unit":null,"note":null,'
+        b'"is_date":false,"kind":"computed","page":null}\n'
+        b'{"type":"table","name":"T","columns":["a"],"rows":[["\\ud800"]],'
+        b'"row_numbers":[],"note":null,"total_rows":1}\n'
+        b'{"type":"table","name":"T","columns":["\\ud800"],"rows":[],'
+        b'"row_numbers":[],"note":null,"total_rows":0}\n'
+        b'{"type":"section","name":"fine"}\n'
+    )
+    res = parse_results(raw, set())
+    assert len(res.problems) == 5
+    assert res.cleaning == [] and res.values == [] and res.tables == []
+    assert res.sections == {"fine"}
+
+
+def test_huge_integers_become_null():
+    big = 2**63 + 1
+    raw = lines(
+        value(name="Big", value=big),
+        value(name="Neg", value=-big),
+        value(name="Edge", value=2**63),
+        value(name="Fine", value=2**62),
+        table(rows=[[big], [-(2**62)]], total_rows=2),
+    )
+    res = parse_results(raw, set())
+    assert res.problems == []
+    assert [v.value for v in res.values] == [None, None, 2**63, 2**62]
+    assert res.values[0].note == "not a number"
+    assert res.tables[0].rows == [[None], [-(2**62)]]
+
+
+def test_parse_never_raises(monkeypatch):
+    import hearthkeep.sandbox.results as mod
+
+    def boom(rec):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(mod, "_value", boom)
+    res = parse_results(lines(value(), {"type": "section", "name": "s"}), set())
+    assert res.sections == {"s"}
+    assert len(res.problems) == 1 and res.problems[0].startswith("line 1: ")
+    assert "boom" not in res.problems[0]
+
+
+def test_five_mb_cut_reports_the_first_ignored_line():
+    first = lines({"type": "section", "name": "first"})
+    # the second line ends exactly at 5 MB; the third starts past the limit
+    second = b"x" * (5 * 1024 * 1024 - len(first))
+    late = lines({"type": "section", "name": "late"})
+    res = parse_results(first + second + b"\n" + late, set())
+    assert res.sections == {"first"}
+    assert any(p.startswith("line 3: ") and "5 MB" in p for p in res.problems)
+    assert any(p.startswith("line 2: ") and "5 MB" not in p for p in res.problems)

@@ -71,7 +71,6 @@ def test_rejects_data_url():
 def test_rejects_url_strings_anywhere(text):
     rejected(base(title=text))
     rejected(base(encoding={"x": {"field": "a", "title": text}}))
-    rejected(base(data={"values": [{"a": text}]}))
     rejected(base(data={"values": [{text: 1}]}))
     rejected(base(layer=[{"mark": "text", "encoding": {"text": {"value": [text]}}}]))
 
@@ -119,7 +118,7 @@ def test_rejects_datasets_usermeta_loader_ref():
     rejected(base(usermeta={"x": 1}))
     rejected(base(config={"loader": {"baseURL": "x"}}))
     rejected(base(layer=[{"$ref": "#/definitions/x"}]))
-    rejected(base(config={"view": {"usermeta": 1}}))
+    rejected(base(layer=[{"mark": "point", "usermeta": 1}]))
 
 
 @pytest.mark.parametrize("key", ["expr", "signal", "calculate", "labelExpr", "titleExpr"])
@@ -218,7 +217,7 @@ def test_caps_rows_bytes_and_depth():
     def nested(depth: int) -> dict:
         """A dict whose deepest value sits at exactly `depth` levels."""
         node: dict = {}
-        top = {"config": node}  # depth 2 for `node`
+        top = {"description_k": node}  # depth 2 for `node`
         for _ in range(depth - 2):
             node["k"] = {}
             node = node["k"]
@@ -253,3 +252,144 @@ def test_returns_copy():
     out["data"]["values"].append({"x": 1})
     out["layer"][0]["params"].clear()
     assert spec == original
+
+
+# ---- fix round 1 ----
+
+
+def test_url_looking_data_values_are_allowed_but_not_keys():
+    rows = [{"a": "https://shop.example/x", "b": "javascript:1", "c": "url(x)", "d": "//h"}]
+    validate_chart_spec(base(data={"values": rows}))
+    rejected(base(data={"values": [{"https://x": 1}]}))
+    rejected(base(data={"values": [{"a": {"https://x": 1}}]}))
+
+
+def test_scheme_check_needs_slashes_for_http_ftp_file():
+    for title in ("Data: monthly", "File: statement", "Http: notes", "ftp: x", "Source data: bank"):
+        validate_chart_spec(base(title=title))
+    for title in (
+        "a javascript:alert(1)",
+        "x data:text/csv,a",
+        "JavaScript:1",
+        "\t java\tscript:1",
+    ):
+        rejected(base(title=title))
+    rejected(base(title="see file:///etc/passwd"))
+
+
+def test_rejects_config_entirely():
+    rejected(base(config={}))
+    rejected(base(config={"view": {"stroke": None}}))
+    rejected(base(config={"selection": {"interval": {"toggle": "datum.a"}}}))
+    rejected(base(config={"customFormatTypes": True}))
+    rejected(base(config={"numberFormatType": "evil"}))
+    rejected(base(layer=[{"mark": "point", "config": {}}]))
+
+
+@pytest.mark.parametrize("key", ["on", "clear", "toggle", "translate", "zoom"])
+def test_selection_event_strings_rejected(key):
+    for bad in ("click[datum.a > 0]", "mousedown", "event.shiftKey", "true"):
+        rejected(base(params=[{"name": "p", "select": {"type": "point", key: bad}}]))
+        rejected(base(params=[{"name": "p", "select": {"type": "interval", key: bad}}]))
+    validate_chart_spec(base(params=[{"name": "p", "select": {"type": "interval", key: False}}]))
+    validate_chart_spec(base(params=[{"name": "p", "select": {"type": "interval", key: True}}]))
+
+
+def test_format_and_format_type_restricted():
+    def axis(**kw) -> dict:
+        return base(encoding={"x": {"field": "a", "type": "quantitative", "axis": kw}})
+
+    for ok in ("number", "time", "utc"):
+        validate_chart_spec(axis(formatType=ok))
+    for bad in ("evil", "NUMBER", 5, "", "number ", {"x": 1}):
+        rejected(axis(formatType=bad))
+    validate_chart_spec(axis(format=",.2f"))
+    validate_chart_spec(axis(format="%Y-%m-%d"))
+    validate_chart_spec(axis(format="x" * 40))
+    for bad in ("x" * 41, "f(x)", "a[0]", "{a}", 5, {"a": 1}, ["a"]):
+        rejected(axis(format=bad))
+    rejected(base(encoding={"text": {"field": "a", "format": "d3(1)"}}))
+    rejected(base(encoding={"text": {"field": "a", "labelFormatType": "evil"}}))
+
+
+def test_tooltip_image_routes_rejected():
+    rejected(base(data={"values": [{"image": "x"}]}))
+    rejected(base(data={"values": [{"a": 1, "Image": "x"}]}))
+    rejected(base(data={"values": [{"a": {"IMAGE": "x"}}]}))
+    rejected(base(encoding={"tooltip": {"field": "a", "title": "image"}}))
+    rejected(base(encoding={"tooltip": [{"field": "a", "title": "IMAGE"}]}))
+    validate_chart_spec(base(data={"values": [{"images": "x", "my image": 1}]}))
+    validate_chart_spec(base(encoding={"tooltip": {"field": "a", "title": "Image count"}}))
+
+
+@pytest.mark.parametrize("text", ["url(x)", "URL (x)", "background: Url\t(x)", "a url( b"])
+def test_css_urls_rejected_outside_data_values(text):
+    rejected(base(title=text))
+    rejected(base(encoding={"x": {"field": "a", "title": text}}))
+    rejected(base(data={"values": [{text: 1}]}))
+    validate_chart_spec(base(data={"values": [{"a": text}]}))
+
+
+def test_lone_surrogates_rejected():
+    rejected(base(title="bad \ud800 text"))
+    rejected(base(data={"values": [{"a": "\udc00"}]}))
+    rejected(base(data={"values": [{"\ud800": 1}]}))
+
+
+def test_error_text_quotes_at_most_40_chars():
+    long = "x" * 3000
+    for spec in (
+        base(**{long + "expr": 1}),
+        base(encoding={long + "expr": 1}),
+        base(title="https://" + long),
+        base(**{"https://" + long: 1}),
+        base(data={"values": [{"https://" + long: 1}]}),
+        base(encoding={"x": {"field": long, "formatType": long}}),
+        base(encoding={"x": {"field": "a", "format": long}}),
+        base(encoding={"x": {"field": "a", "title": "url(" + long}}),
+        base(**{long: {"url": 1}}),
+    ):
+        with pytest.raises(ChartError) as info:
+            validate_chart_spec(spec)
+        assert len(str(info.value)) < 200
+        assert long[:41] not in str(info.value)
+
+
+def test_data_dict_counts_in_depth():
+    def chain(layers: int, row_value: object) -> dict:
+        node: dict = {"data": {"values": [{"a": row_value}]}, "mark": "point"}
+        for _ in range(layers):
+            node = {"layer": [node]}
+        return node
+
+    def depth_of(n: object, d: int = 0) -> int:
+        if isinstance(n, dict):
+            return max([d + 1] + [depth_of(v, d + 1) for v in n.values()])
+        if isinstance(n, list):
+            return max([d + 1] + [depth_of(v, d + 1) for v in n])
+        return d
+
+    seen = set()
+    for layers in range(0, 12):
+        for leaf in (1, [1], {"b": 1}):
+            spec = chain(layers, leaf)
+            depth = depth_of(spec)
+            seen.add(depth)
+            if depth <= 20:
+                validate_chart_spec(spec)
+            else:
+                rejected(spec)
+    assert {19, 20, 21, 22} <= seen
+
+
+def test_transform_companions_are_per_op():
+    for bad in (
+        {"filter": {"field": "a", "gt": 0}, "groupby": ["a"]},
+        {"aggregate": [{"op": "sum", "field": "a", "as": "s"}], "field": "a"},
+        {"bin": True, "field": "a", "as": "b", "groupby": ["a"]},
+        {"fold": ["a"], "as": ["k", "v"], "field": "a"},
+        {"timeUnit": "month", "field": "a", "as": "m", "frame": [None, 0]},
+        {"joinaggregate": [{"op": "sum", "field": "a", "as": "s"}], "sort": []},
+        {"window": [{"op": "rank", "as": "r"}], "as": "x"},
+    ):
+        rejected(base(transform=[bad]))
