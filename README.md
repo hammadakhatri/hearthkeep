@@ -20,9 +20,15 @@ Hearthkeep is early software. It is for you if you have a Windows PC with an NVI
 - **Image generation.** Z-Image Turbo (good with words in the image) and FLUX.2 klein 4B (fast, photoreal), through ComfyUI.
 - **Edit your own photo.** Attach a photo and ask for a change; FLUX.2 klein edits it.
 - **Images gallery.** Every image you made, in one view.
+- **Chat with your files.** Attach CSV, Excel, PDF, text or JSON files (up to 5 per message). Hearthkeep checks the type by content and refuses macros and password-protected files.
+- **Python analysis in a Docker sandbox.** The assistant runs pandas on your files in a container with no network and read-only files. Every run is saved, and the Analysis view shows the answer, tables, charts and the script.
+- **Numbers that show their source.** Each number in a reply is marked computed, read from the document, or unverified.
+- **Your own folders.** Allow folders in Settings (with a passkey) and the assistant can find a file and copy it into a chat. It never writes to them.
+- **Send to your device.** Files and summaries land in a tray in the app, with an optional notification that carries no content.
+- **Start at login** on Windows with `hearthkeep startup enable`.
 - **Access from your phone or Mac** over Tailscale, with HTTPS from `tailscale serve`.
 
-Budget, news and search, files, Python and GitHub tools are planned (see the roadmap). The `clock` and `note` tools are demo tools.
+Budget, news and search, and GitHub tools are planned (see the roadmap). The `clock` and `note` tools are demo tools.
 
 ## Privacy by design
 
@@ -66,7 +72,7 @@ uv run hearthkeep serve --data <data>
 |---|---|---|
 | 1. Secure core | Passkeys, permissions and approvals, audit log, secrets, chat | Done |
 | 2. Models and images | Model cards, GPU switching, image generation, photo editing, Images view | Done |
-| 3. Files and Python | Files tool, send a file to your device, Python in a Docker sandbox, Analysis view | Planned |
+| 3. Files and analysis | Chat files, allowed folders, Python in a Docker sandbox, number check, Analysis view, send to your device, start at login | Done |
 | 4. GitHub | Your repos, sandboxed tests, approved pushes and pull requests, Repos view | Planned |
 | 5. Briefing | Budgeting app (read only), RSS news, web search through SearXNG, daily briefing, memory, Today view | Planned |
 | 6. Release | One-command installer, run at startup, audit log view, command palette, security review, v0.1 | Planned |

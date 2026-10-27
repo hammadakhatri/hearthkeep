@@ -118,8 +118,9 @@ Hearthkeep server  (Python, 127.0.0.1)
 A single configurable folder, default `<install root>/hearthkeep-data`, written `<data>` in docs. Contains:
 - `hearthkeep.db` (SQLite): chats, messages, memories, approvals, audit log, settings, devices/passkeys.
 - `secrets/`: encrypted tokens (section 9.4).
-- `workspace/`: repo clones, Python scratch, `output/` for results and generated images.
-- `logs/`.
+- `workspace/`: repo clones, `output/` for results and generated images, `uploads/` for photos, and `chats/<chat-id>/` for each chat's files (`files/`) and analysis runs (`runs/<run-id>/`).
+- `runtime/`: scratch the server recreates, including the sandbox's job folders (removed after each run).
+- `logs/`: including `hearthkeep.log` when Hearthkeep starts at login.
 
 The repo ships `config.example.toml` (or similar) with placeholders; the real config lives in the data folder.
 
@@ -181,16 +182,18 @@ Version 1 defaults: budgeting, News & search, Files, Python, Images = **Allowed*
 - Web search via a self-hosted **SearXNG** in Docker on 127.0.0.1 (optional dependency; if absent, the search tool is off). A fetch tool turns a URL into readable text for the model.
 
 **Files**
-- The owner chooses allowed folders (e.g. Documents, Desktop, Downloads, the data folder). Everything else is invisible to the tool.
-- Search by name, folder, type and date in v1 (content indexing later).
-- **Send to device:** creates a one-time download link bound to the requesting signed-in session, valid 10 minutes; reachable only over Tailscale. Sending a file to the owner's own signed-in device is a *Look* action.
+- The owner chooses allowed folders (for example Documents, Desktop, Downloads) in Settings, and adding one needs a passkey step-up. Everything else is invisible to the tool. Hearthkeep only reads them: it never writes to, moves or deletes anything in those folders.
+- The `files` tool (a *Look* tool, default Allowed) searches by name, folder, type and date; it does not search inside documents yet. When the owner asks for a file, the tool copies it into the chat's own `files/` folder, where it becomes an ordinary chat file the model can read and analyse. The original stays where it was.
+- Files can also be attached to a message (up to 5 per message, 50 MB each): CSV, Excel (`.xlsx`, `.xls`), PDF, plain text and JSON. The type is decided from the content, not the name. Macro workbooks and password-protected files are refused.
+- **Send to device:** the assistant can send a file or a short summary to the owner's own devices. It appears in a tray in the app (the *Sent to you* section); the server can also send a payload-free push notification ("A file is ready in Hearthkeep") to devices that opted in. This replaces the earlier idea of a one-time download link. Sending to the owner's own devices is a *Look* action (tool `send`, default Allowed).
 
 **Python**
-- Runs in `workspace/` with its own Python environment, never the system Python.
-- **With Docker available (preferred):** each run is a container with the allowed data folders mounted **read-only**, `workspace/` read-write, and **no network**. This is what *Allowed* means for Python.
-- **Without Docker:** Python is forced to *Ask* (every script shown and approved), because the sandbox can't be enforced.
-- Writing outside the workspace, installing packages and network access are *Outward or permanent* and always ask.
-- Every script and its output are saved and shown (code block with "ran in your workspace · read-only · time").
+- Used for analysis: reading the chat's files with pandas and friends, computing numbers, building tables and Vega-Lite charts. Every run is saved with its script, printed output, results, files, status and run time, and the Analysis view lists them.
+- **With Docker available (preferred):** each run is one container from the image `hearthkeep-sandbox:<hash>` with no network, a read-only root filesystem, a non-root user, all capabilities dropped, `no-new-privileges`, 4 GB of memory (no swap), 2 CPUs, 256 processes and a 256 MB `/tmp` and `/out`. The chat's `files/` folder is mounted read-only at `/data` and the job folder read-only at `/job`. Nothing else is mounted: not the data folder, not secrets, not the owner's folders. A run is stopped at 120 seconds (the script gets 110) and printed output is kept up to 256 KB. This is what *Allowed* means for Python.
+- **Without Docker:** Python is forced to *Ask*, and Hearthkeep still never runs code on the host: an approved call without Docker returns a plain "needs Docker" message.
+- The image is built once, by command (`hearthkeep sandbox build`), never silently at runtime. Installing packages and network access from Python are not available in this phase.
+- Every run's card shows the sandbox facts: `ran in a sandbox · no internet · read-only files`.
+- **Number check:** every reply in a chat with files is checked. Each number is marked *computed* (it matches a value a run of this chat reported), *read from the document* (it matches only a value in the document, labelled `read from page N, not computed`) or *unverified* (it matches nothing, so it is marked with a note).
 - Budgeting data is provided to Python by Hearthkeep as files/structured input, not by giving Python network access.
 
 **Image generation**
@@ -251,7 +254,7 @@ Key rules:
 - **Instant and calm motion:** views appear immediately and settle with short, smooth transitions; replies stream word by word; long tasks show quiet progress, never blocking spinners. Respect reduced-motion settings.
 - **Layout (desktop/laptop):** left sidebar (Today, Chat, Images, Analysis, Repos, Files; Tools & permissions at the bottom), a slim top bar with view title and a model/GPU status pill, a floating composer at the bottom with Think toggle and model picker.
 - **Phone:** bottom tabs (Today, Chat, Images, Files, More), large approval cards, biometric prompt on approve.
-- **Views:** Today; Chat (folded tool steps, approval cards with diff, file cards); Images (model choice with the reason, hero image, variants, editable prompt with specs); Analysis (answer, chart, Python code block with sandbox facts); Repos (list with status and pending changes); Files (search, recent, send to phone, allowed folders); Tools & permissions (per-tool Allowed / Ask / Off).
+- **Views:** Today; Chat (folded tool steps, approval cards with diff, file cards); Images (model choice with the reason, hero image, variants, editable prompt with specs); Analysis (a gallery of runs: the answer at a glance, charts, tables, the Python script with sandbox facts, and download rows); Repos (list with status and pending changes); Files (search, recent, allowed folders); Settings (Devices, allowed folders, notifications, and start at login); Tools & permissions (per-tool Allowed / Ask / Off).
 - **Customisable:** order and visibility of briefing cards and sidebar items, keyboard shortcuts, command palette (Ctrl/Cmd+K). Theme stays dark.
 
 ## 11. Open-source repository

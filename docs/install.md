@@ -23,10 +23,12 @@ Contents:
 8. [First start and your passkey](#8-first-start-and-your-passkey)
 9. [Optional: an API key for an external chat server](#9-optional-an-api-key-for-an-external-chat-server)
 10. [Run at login (Windows)](#10-run-at-login-windows)
-11. [Updating](#11-updating)
-12. [Backing up](#12-backing-up)
-13. [Troubleshooting](#13-troubleshooting)
-14. [Uninstalling](#14-uninstalling)
+11. [Python sandbox (Docker)](#11-python-sandbox-docker)
+12. [Notifications on your phone](#12-notifications-on-your-phone)
+13. [Updating](#13-updating)
+14. [Backing up](#14-backing-up)
+15. [Troubleshooting](#15-troubleshooting)
+16. [Uninstalling](#16-uninstalling)
 
 ## 1. Install the prerequisites
 
@@ -39,6 +41,7 @@ You need:
 | uv | any recent | [docs.astral.sh/uv](https://docs.astral.sh/uv/getting-started/installation/) |
 | Node.js | 20.19+ or 22.12+ | [nodejs.org](https://nodejs.org/) (the LTS release is fine) |
 | NVIDIA driver | recent, with `nvidia-smi` | [nvidia.com/drivers](https://www.nvidia.com/Download/index.aspx) |
+| Docker Desktop (optional) | recent | [docker.com](https://www.docker.com/products/docker-desktop/); needed only for Python analysis (step 11) |
 
 1. Install each tool from the links above. On Windows, `winget` works too:
 
@@ -108,7 +111,7 @@ The data folder holds your chats, passkeys, audit log, encrypted secrets, images
 
 Keep the path short. llama-server on Windows cannot open a file whose full path is 260 characters or longer. Hearthkeep writes the chat model's key file to `<data>\runtime\llama-api-key` and checks this path (and the model file paths) before it starts llama-server. If any is too long it refuses with "Hearthkeep's data folder path is too long for llama-server on Windows". ComfyUI is not affected.
 
-Choose the location once. The key that encrypts your secrets is stored in the OS keyring under a name derived from the data folder's full path. If you move the folder later, see [Backing up](#12-backing-up).
+Choose the location once. The key that encrypts your secrets is stored in the OS keyring under a name derived from the data folder's full path. If you move the folder later, see [Backing up](#14-backing-up).
 
 ## 4. Chat model: llama.cpp and Gemma 4 12B
 
@@ -377,9 +380,39 @@ The secret's name is set by `chat_api_key_secret` in `config.toml` (default `cha
 
 ## 10. Run at login (Windows)
 
-Do this after your passkey works. Under Task Scheduler there is no visible window, so you won't see the enrollment code or start-up messages.
+Do this after your passkey works. Hearthkeep then starts by itself when you sign in to Windows, with no window.
 
-The task must run as **your own Windows user**: the key that decrypts your secrets is in your user's keyring.
+The task runs as **your own Windows user**: the key that decrypts your secrets is in your user's keyring.
+
+1. Turn it on:
+
+   ```
+   cd <repo>\server
+   uv run hearthkeep startup enable --data <data>
+   ```
+
+   This creates a Task Scheduler task named `Hearthkeep` that runs at your logon (`pythonw.exe -m hearthkeep serve`, so no window opens) and keeps its output in `<data>\logs\hearthkeep.log`.
+
+2. Check it, or turn it off again:
+
+   ```
+   uv run hearthkeep startup status --data <data>
+   uv run hearthkeep startup disable --data <data>
+   ```
+
+   Settings in the app shows the same state and the command to copy. The app only displays it; it never changes the task.
+
+3. Sign out and back in (or restart) and open your address to test it.
+
+**Logs.** Because there is no window, everything the server prints goes to `<data>\logs\hearthkeep.log`. While no passkey exists yet, the first-device enrollment code is written there too. If you start Hearthkeep this way before your first sign-in, run `uv run hearthkeep enroll-code --data <data>` to get a code (it works only while no passkey exists).
+
+**Stopping Hearthkeep also stops the models it started.** llama-server and ComfyUI run as Hearthkeep's child processes; on Windows they are tied to it so they end even if Hearthkeep is killed. To stop everything, end the `Hearthkeep` task in Task Scheduler (right-click, **End**).
+
+`tailscale serve --bg` needs no task of its own: Tailscale keeps the setting.
+
+### If `startup enable` does not work: make the task by hand
+
+Create the task yourself in Task Scheduler:
 
 1. Open **Task Scheduler** and choose **Create Task** (not "Create Basic Task").
 2. **General** tab: name it `Hearthkeep`. Choose **Run only when user is logged on**.
@@ -388,8 +421,8 @@ The task must run as **your own Windows user**: the key that decrypts your secre
 
    | Field | Value |
    |---|---|
-   | Program/script | `<repo>\server\.venv\Scripts\hearthkeep.exe` |
-   | Add arguments | `serve --data "<data>"` |
+   | Program/script | `<repo>\server\.venv\Scripts\pythonw.exe` |
+   | Add arguments | `-m hearthkeep serve --data "<data>" --log-file "<data>\logs\hearthkeep.log"` |
    | Start in | `<repo>\server` |
 
 5. **Settings** tab: clear **Stop the task if it runs longer than**.
@@ -398,19 +431,54 @@ The task must run as **your own Windows user**: the key that decrypts your secre
 The same task from PowerShell:
 
 ```powershell
-$action = New-ScheduledTaskAction -Execute '<repo>\server\.venv\Scripts\hearthkeep.exe' -Argument 'serve --data "<data>"' -WorkingDirectory '<repo>\server'
+$action = New-ScheduledTaskAction -Execute '<repo>\server\.venv\Scripts\pythonw.exe' -Argument '-m hearthkeep serve --data "<data>" --log-file "<data>\logs\hearthkeep.log"' -WorkingDirectory '<repo>\server'
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero)
 Register-ScheduledTask -TaskName 'Hearthkeep' -Action $action -Trigger $trigger -Settings $settings
 ```
 
-**Stopping Hearthkeep also stops the models it started.** llama-server and ComfyUI run as Hearthkeep's child processes; on Windows they are tied to it so they end even if Hearthkeep is killed. To stop everything, end the task in Task Scheduler (right-click, **End**).
+**macOS and Linux:** `startup` is built in only for Windows. Use a launchd agent or a systemd user service that runs `hearthkeep serve --data <data> --log-file <data>/logs/hearthkeep.log`. Untested.
 
-`tailscale serve --bg` needs no task of its own: Tailscale keeps the setting.
+## 11. Python sandbox (Docker)
 
-**macOS and Linux:** use a launchd agent or a systemd user service that runs the same command. Untested.
+Hearthkeep can read the files you attach to a chat and analyse them with Python. The code always runs inside a Docker container with no network and read-only access to that chat's files (the exact limits are in [security.md](security.md#the-python-sandbox)). Without Docker the chat still works, but Python asks you first on every call and then answers that it needs Docker: Hearthkeep never runs analysis code on your PC itself.
 
-## 11. Updating
+1. Install **Docker Desktop** from [docker.com](https://www.docker.com/products/docker-desktop/) (on Windows, `winget install --id Docker.DockerDesktop -e` also works), start it, and wait until it says it is running. Check:
+
+   ```
+   docker version
+   ```
+
+2. Build the sandbox image. This is a **one-time download of about 1 GB** (Python and the analysis libraries), so do it on a connection you are happy to use:
+
+   ```
+   cd <repo>\server
+   uv run hearthkeep sandbox build --data <data>
+   ```
+
+   Hearthkeep never builds or downloads the image by itself.
+
+3. Check Docker and the image:
+
+   ```
+   uv run hearthkeep sandbox status --data <data>
+   ```
+
+   It prints `Docker: running` and `Sandbox image: hearthkeep-sandbox:<hash> (present)`. If the image shows as `missing`, run the build again.
+
+Docker Desktop has to be running whenever you want to analyse a file. After an update that changes the sandbox, `sandbox status` shows the image as missing; run `sandbox build` again.
+
+## 12. Notifications on your phone
+
+When the assistant sends you a file or a summary, it appears in the tray in the app. You can also get a notification that says "A file is ready in Hearthkeep". It carries no content, only that nudge.
+
+**Android (Chrome or Samsung Internet).** Open Hearthkeep on the phone, then turn notifications on in **Settings** or from the tray, and allow notifications when the browser asks. The push is delivered through Google's push service, which sees only your phone's push address and a signature from your server, never the file or its name. See [security.md](security.md#notifications-hearthkeeps-only-outgoing-connection).
+
+**iPhone and iPad.** Add Hearthkeep to the Home Screen first (Share, then **Add to Home Screen**) and open it from there; Safari only allows notifications for apps added this way. This is not the tested path, so treat it as best effort. Notifications go through Apple's push service on the same terms.
+
+Notifications are opt-in per device and can be turned off in the same place. Your PC must be on and Hearthkeep running for anything to be sent.
+
+## 13. Updating
 
 1. Stop Hearthkeep (Ctrl+C, or end the scheduled task).
 2. Pull the new version:
@@ -439,7 +507,7 @@ Register-ScheduledTask -TaskName 'Hearthkeep' -Action $action -Trigger $trigger 
 
 Your data folder is not touched by an update. Compare `<repo>\config.example.toml` and `<repo>\models.example.toml` with your own copies for new settings.
 
-## 12. Backing up
+## 14. Backing up
 
 Stop Hearthkeep before you copy, so the database is not being written.
 
@@ -453,8 +521,9 @@ What matters in `<data>`:
 | `secrets\` | Your encrypted secrets. Useless without the key in the keyring (below). |
 | `workspace\output\` | Images and files the assistant made. |
 | `workspace\uploads\` | Photos you uploaded. |
+| `workspace\chats\` | Each chat's files and analysis runs |
 
-`logs\` and `runtime\` can be left out; they are recreated.
+`logs\` and `runtime\` can be left out; they are recreated. Restoring a backup on another PC also needs Docker and the sandbox image there (step 11).
 
 **The secret key.** Secrets are encrypted with a key held in your operating system's keyring (Windows Credential Manager, macOS Keychain, or the Secret Service on Linux), under the service name `hearthkeep`. The entry's name is derived from the data folder's full path. That means:
 
@@ -463,9 +532,9 @@ What matters in `<data>`:
 
 Your passkeys stay valid after a restore, as long as `public_origin` and `rp_id` are unchanged.
 
-## 13. Troubleshooting
+## 15. Troubleshooting
 
-Start with the logs in `<data>\logs\`: `llama-server.log` for the chat model and `comfyui.log` for images. Model-specific problems are covered in [docs/models.md](models.md#troubleshooting).
+Start with the logs in `<data>\logs\`: `llama-server.log` for the chat model, `comfyui.log` for images, and `hearthkeep.log` when Hearthkeep starts at login. Model-specific problems are covered in [docs/models.md](models.md#troubleshooting).
 
 **Port 8765 is already in use.** Another program (or a second copy of Hearthkeep) is on the port. Find it:
 
@@ -496,17 +565,26 @@ Also check that you open exactly the address in `public_origin` (`localhost`, no
 
 **Images are off, or the image tool is missing.** The start-up output says "Images: not set up". Set all three `comfyui_*` paths in `<data>\models.toml`, check they point to real files, and restart. If ComfyUI starts but fails, read `comfyui.log`: usually a missing weight file, or a ComfyUI too old for the shipped workflows.
 
+**Python says it needs Docker.** Docker Desktop is not running (or not installed). Start it, wait until it is running, check with `uv run hearthkeep sandbox status --data <data>`, and ask again. Hearthkeep does not run the code on your PC instead.
+
+**The sandbox image is missing.** `sandbox status` shows `Sandbox image: ... (missing)`. Build it once with `uv run hearthkeep sandbox build --data <data>` (about 1 GB, step 11). It also goes missing after an update that changes the sandbox.
+
+**Hearthkeep does not start at login.** Run `uv run hearthkeep startup status --data <data>`; if it says off, run `startup enable`. Then read `<data>\logs\hearthkeep.log` for the reason.
+
 **"config error" at start-up.** The message names the key. Common causes: a non-loopback `host`, an `http://` `public_origin` that is not localhost, `rp_id` not matching `public_origin`, or a `chat_base_url` that is not on this PC.
 
-**"secret store error".** The keyring key is missing or doesn't match. See [Backing up](#12-backing-up). On Linux, a keyring service (such as GNOME Keyring) must be running.
+**"secret store error".** The keyring key is missing or doesn't match. See [Backing up](#14-backing-up). On Linux, a keyring service (such as GNOME Keyring) must be running.
 
-## 14. Uninstalling
+## 16. Uninstalling
 
-1. Stop Hearthkeep. If you set up the scheduled task, delete it:
+1. Stop Hearthkeep. If you turned on start at login, turn it off (or, if you made the task by hand, delete it):
 
    ```
+   uv run hearthkeep startup disable --data <data>
    Unregister-ScheduledTask -TaskName 'Hearthkeep'
    ```
+
+   Use the second command only for a task you made by hand.
 
 2. Turn off Tailscale serving:
 
@@ -519,3 +597,4 @@ Also check that you open exactly the address in `public_origin` (`localhost`, no
 5. Remove the keyring entry: in Windows **Credential Manager**, under **Windows Credentials**, remove the generic credential for `hearthkeep`. On macOS, use Keychain Access; on Linux, your keyring app.
 6. Remove the passkey from each device's passkey manager (Windows: **Settings > Accounts > Passkeys**; Apple devices: the Passwords app; other managers: their own list).
 7. Optionally, delete llama.cpp, ComfyUI and the model files in `<tools>`.
+8. Optionally, remove the sandbox image: `docker image rm hearthkeep-sandbox:<hash>` (read the tag from `hearthkeep sandbox status` before you delete anything).

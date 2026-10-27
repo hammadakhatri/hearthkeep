@@ -26,14 +26,26 @@ With --edit (implies --images):
      green" with the line `Attached photo: {id}` -> a new PNG image attachment arrives
                                                                     (prints `OK edit`)
 
+With --analysis (Docker running and the sandbox image built: `hearthkeep sandbox build`):
+  6. a 60-row CSV (date, region, amount) with planted problems -- 3 negative amounts, no North
+     rows from 12 to 24 March, 2 duplicate rows, 4 dates in another format -- is uploaded to
+     /api/chats/{id}/files, then "What's wrong with this file, and what happened to North in
+     March?" is sent with its `Attached file:` line. An `attachments` event of kind `run`
+     arrives and GET /api/runs/{id} reports status `ok` with at least one table or value
+                                                                    (prints `OK analysis`)
+  7. a `number_check` event arrives for the reply
+                                      (prints `OK number check (computed N, unverified M)`)
+
 Each check prints OK; any failure prints FAIL and exits non-zero. It only talks HTTP.
-Image steps get up to 300 s each, because the GPU has to swap models.
+Image steps get up to 300 s each, because the GPU has to swap models. The analysis step gets
+up to 600 s: the model reads the file, writes and runs Python, then explains.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import random
 import re
 import secrets
 import sys
@@ -42,8 +54,10 @@ import time
 import httpx
 
 TIME_RE = re.compile(r"\b\d{1,2}[:.]\d{2}\b")
-TIMEOUT = httpx.Timeout(300.0, connect=5.0)
+TIMEOUT = httpx.Timeout(600.0, connect=5.0)
 IMAGE_STEP_SECONDS = 300.0  # a whole image step, model swaps included
+ANALYSIS_STEP_SECONDS = 600.0  # a whole analysis turn: reading, running Python, explaining
+ANALYSIS_QUESTION = "What's wrong with this file, and what happened to North in March?"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
@@ -233,6 +247,93 @@ def check_edit(client: Client, state: dict) -> None:
     fetch_png(client, images[0]["id"])
 
 
+def make_analysis_csv() -> bytes:
+    """A 60-row CSV (date, region, amount) with planted problems: 3 negative amounts, no North
+    rows from 12 to 24 March, 2 duplicate rows and 4 dates in another format (DD/MM/YYYY).
+    Built in memory and always the same."""
+    rng = random.Random(7)
+
+    def amount() -> str:
+        return f"{rng.randint(50, 500)}.{rng.randint(0, 99):02d}"
+
+    rows: list[list[str]] = []
+    for day in range(1, 32):
+        for region in ("North", "South"):
+            if region == "North" and 12 <= day <= 24:
+                continue  # the gap the question asks about
+            rows.append([f"2025-03-{day:02d}", region, amount()])
+    for day in range(1, 10):
+        rows.append([f"2025-03-{day:02d}", "East", amount()])
+    rows.sort(key=lambda r: r[0])  # 58 rows, in date order
+    for index in (3, 17, 40):  # negative amounts
+        rows[index][2] = "-" + rows[index][2]
+    for index in (8, 22, 35, 50):  # dates written the other way round
+        year, month, day = rows[index][0].split("-")
+        rows[index][0] = f"{day}/{month}/{year}"
+    for index in (5, 30):  # exact duplicates, right after the original
+        rows.append(list(rows[index]))
+    lines = ["date,region,amount"] + [",".join(row) for row in rows]
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def run_analysis_turn(client: Client, state: dict) -> None:
+    chat = client.post("/api/chats", {"think": False})
+    check(chat.status_code == 201, f"create chat failed: {chat.text}")
+    chat_id = chat.json()["id"]
+    uploaded = client.http.post(
+        f"/api/chats/{chat_id}/files",
+        files={"file": ("sales.csv", make_analysis_csv(), "text/csv")},
+        headers=client.csrf,
+    )
+    check(uploaded.status_code == 201, f"file upload failed: HTTP {uploaded.status_code}")
+    file_id = uploaded.json()["id"]
+    posted = client.post(
+        f"/api/chats/{chat_id}/messages",
+        {"text": f"{ANALYSIS_QUESTION}\nAttached file: {file_id}"},
+    )
+    check(posted.status_code == 202, f"post message failed: {posted.text}")
+    run_ids: list[str] = []
+    checks: list[dict] = []
+    for event, data in stream_turn(
+        client, chat_id, posted.json()["turn_id"], deadline=ANALYSIS_STEP_SECONDS
+    ):
+        if event == "attachments":
+            run_ids += [i["id"] for i in data.get("items", []) if i.get("kind") == "run"]
+        elif event == "number_check":
+            checks.append(data)
+        elif event == "turn_error":
+            raise SmokeError(f"turn failed: {data.get('message')}")
+    state["run_ids"] = run_ids
+    state["number_checks"] = checks
+
+
+def check_analysis(client: Client, state: dict) -> None:
+    run_analysis_turn(client, state)
+    run_ids = state["run_ids"]
+    check(bool(run_ids), "no analysis run attachment arrived (is Docker running?)")
+    problems = []
+    for run_id in run_ids:
+        response = client.get(f"/api/runs/{run_id}")
+        check(response.status_code == 200, f"run failed to load: HTTP {response.status_code}")
+        run = response.json()
+        if run.get("status") != "ok":
+            problems.append(f"status {run.get('status')!r}")
+        elif not (run.get("tables") or run.get("values")):
+            problems.append("ok but no table or value")
+        else:
+            return
+    raise SmokeError("no run finished ok with a result: " + ", ".join(problems))
+
+
+def check_number_check(client: Client, state: dict) -> str:
+    checks = state.get("number_checks") or []
+    check(bool(checks), "no number_check event arrived")
+    marks = [m for c in checks for m in c.get("marks", [])]
+    computed = sum(1 for m in marks if m.get("kind") == "computed")
+    unverified = sum(1 for m in marks if m.get("kind") == "unverified")
+    return f"(computed {computed}, unverified {unverified})"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     # 127.0.0.1 avoids slow IPv6-first "localhost" lookups; the server only listens on IPv4.
@@ -246,6 +347,11 @@ def main(argv: list[str] | None = None) -> int:
         "--edit",
         action="store_true",
         help="also edit the image as an uploaded photo (implies --images)",
+    )
+    parser.add_argument(
+        "--analysis",
+        action="store_true",
+        help="also analyse a CSV with planted problems, and check the number check",
     )
     args = parser.parse_args(argv)
     args.images = args.images or args.edit
@@ -273,6 +379,11 @@ def main(argv: list[str] | None = None) -> int:
         ]
     if args.edit:
         steps.append(("edit", lambda: check_edit(client, state), "image"))
+    if args.analysis:
+        steps += [
+            ("analysis", lambda: check_analysis(client, state), None),
+            ("number check", lambda: check_number_check(client, state), "analysis"),
+        ]
     failed_steps: set[str] = set()
     for name, run, needs in steps:
         if needs in failed_steps:
@@ -281,7 +392,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
         started = time.monotonic()
         try:
-            run()
+            detail = run()
         except httpx.TimeoutException:
             failed_steps.add(name)
             print(f"FAIL {name}: no result after {TIMEOUT.read:.0f}s")
@@ -294,7 +405,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(f"FAIL {name}: {detail}".splitlines()[0])
         else:
-            print(f"OK {name} ({time.monotonic() - started:.1f}s)")
+            # A step may return a short result of its own to print in place of the time.
+            took = f"({time.monotonic() - started:.1f}s)"
+            print(f"OK {name} {detail or took}")
     return 1 if failed_steps else 0
 
 

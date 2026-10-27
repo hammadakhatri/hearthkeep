@@ -161,6 +161,10 @@ A chat model and an image model usually do not fit in the GPU's memory together,
 - If ComfyUI doesn't give its GPU memory back within about 5 seconds (it is stuck, or a render is still finishing), Hearthkeep stops ComfyUI so the chat model can start. ComfyUI starts again with the next image.
 - If a model needs more memory than your GPU has, Hearthkeep says so instead of trying.
 
+## Scanned pages and the `vision` capability
+
+When a PDF page is a scan (a picture of text, not text), the assistant can read it with the chat model's vision. The page is drawn inside the sandbox and shown to the chat model, up to 10 pages at a time, and the result is saved as a run like any other. It needs a chat model that can look at images: a card that lists the `vision` capability and an `mmproj` file under `files`. The shipped Gemma 4 12B card has both. Numbers read this way are labelled `read from page N, not computed`, because the model read them rather than a script computing them. Reading scans needs Docker, like the rest of the file tools (see [install.md](install.md#11-python-sandbox-docker)).
+
 ## Photo uploads
 
 You can attach a photo to a message and ask for an edit, for example "make the apple green". The photo is stored on your PC, and the assistant can only use it by its id (the app adds an `Attached photo:` line to your message).
@@ -184,7 +188,7 @@ Known Phase 2 limits:
 
 Logs are in `<data>/logs/`: `llama-server.log` for the chat model and `comfyui.log` for the image server. Start there.
 
-For problems outside the models (ports, enrollment codes, passkeys, start-up errors), see [Troubleshooting in install.md](install.md#13-troubleshooting).
+For problems outside the models (ports, enrollment codes, passkeys, start-up errors), see [Troubleshooting in install.md](install.md#15-troubleshooting).
 
 - **No images, or the image tool is missing.** Check that all three `comfyui_*` paths are set in `<data>/models.toml` and point to real files.
 - **A model "couldn't be started".** Open the matching log. The usual causes are a wrong path, a missing model file, or too little free GPU memory because another program is using it.
