@@ -6,7 +6,7 @@ import { FindingsCard } from '../components/FindingsCard'
 import { SendMenu } from '../components/SendMenu'
 import { SentTray } from '../components/SentTray'
 import { AppShell } from '../shell/AppShell'
-import { itemsFromMessages, liveTurn, type AssistantItem } from '../views/chatModel'
+import { applyEvent, itemsFromMessages, liveTurn, type AssistantItem, type ServerMessage } from '../views/chatModel'
 import { bodyOf, healthy, mockFetch } from '../test/fetch'
 
 const embed = vi.hoisted(() => vi.fn())
@@ -142,6 +142,16 @@ describe('send menu', () => {
     expect(JSON.stringify(body)).not.toContain('4,210')
   })
 
+  it('says so, quietly, when the device list cannot be loaded', async () => {
+    mockFetch({ 'GET /api/devices': { status: 500, body: { reason: 'boom' } } })
+    render(<SendMenu kind="chart" refId="o1" label="Sales" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Send Sales' }))
+    expect(
+      await screen.findByText("Couldn't load your devices; you can still send to all of them."),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Send to all my devices' })).toBeInTheDocument()
+  })
+
   it('a summary that is too long says to send the chart or rows instead', async () => {
     mockFetch({
       'GET /api/devices': { body: [] },
@@ -157,9 +167,41 @@ describe('send menu', () => {
 })
 
 describe('summary message id', () => {
+  const at = '2026-10-27T10:00:00Z'
+  const base = { tool_calls: null, tool_call_id: null, created_at: at }
+
+  it('a multi-message turn sends the id whose stored text equals the card text', async () => {
+    const joined = 'Let me count.\n\nThere are 5 rows.'
+    const messages: ServerMessage[] = [
+      { ...base, id: 1, role: 'user', content: 'How many?' },
+      { ...base, id: 2, role: 'assistant', content: 'Let me count.', tool_calls: [{ id: 'c1', function: { name: 'python' } }] },
+      { ...base, id: 3, role: 'tool', content: 'ok', tool_call_id: 'c1' },
+      { ...base, id: 4, role: 'assistant', content: 'There are 5 rows.', number_check: { text: joined, marks: [], message_id: 4 } },
+    ]
+    const item = itemsFromMessages(messages)[1] as AssistantItem
+    expect(item.text).toBe(item.check?.text)
+    expect(item.messageId).toBe(4)
+    const { calls } = mockFetch({
+      'GET /api/devices': { body: [] },
+      'POST /api/sent': { status: 201, body: { id: 's1' } },
+    })
+    render(<FindingsCard item={item} runs={[]} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Send summary' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Send to all my devices' }))
+    await screen.findByText('Sent.')
+    expect(bodyOf(calls.find((c) => c.path === '/api/sent')!).ref_id).toBe('4')
+  })
+
+  it('a live turn takes the id from the number check, else from turn_done', () => {
+    let item = { ...liveTurn('t1', 0) }
+    item = applyEvent(item, { type: 'text_delta', seq: 1, text: 'Hi' }, 0)
+    expect(applyEvent(item, { type: 'turn_done', seq: 2, message_id: 7 }, 0).messageId).toBe(7)
+    const checked = applyEvent(item, { type: 'number_check', seq: 2, text: 'Hi', marks: [], message_id: 9 }, 0)
+    expect(checked.messageId).toBe(9)
+    expect(applyEvent(checked, { type: 'turn_done', seq: 3, message_id: 7 }, 0).messageId).toBe(9)
+  })
+
   it('a saved turn names its final reply for sending', () => {
-    const at = '2026-10-27T10:00:00Z'
-    const base = { tool_calls: null, tool_call_id: null, created_at: at }
     const items = itemsFromMessages([
       { ...base, id: 1, role: 'user', content: 'How much?' },
       { ...base, id: 2, role: 'assistant', content: 'Let me check.' },
@@ -199,6 +241,20 @@ describe('sent tray', () => {
     expect(within(dialog).getByText('cleaned.csv')).toBeInTheDocument()
   })
 
+  it('closes on a click that started on the scrim, not one that started inside', async () => {
+    mockFetch({ 'GET /api/sent': { body: { items: [], unread: 0 } }, 'GET /api/push': NO_PUSH })
+    const onClose = vi.fn()
+    const { container } = render(<SentTray open onClose={onClose} onUnread={vi.fn()} />)
+    const dialog = await screen.findByRole('dialog')
+    const scrim = container.querySelector('.sent-scrim') as HTMLElement
+    fireEvent.pointerDown(dialog)
+    fireEvent.click(scrim)
+    expect(onClose).not.toHaveBeenCalled()
+    fireEvent.pointerDown(scrim)
+    fireEvent.click(scrim)
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
   it('puts a dismissed item back and says so when the dismiss fails', async () => {
     mockFetch({
       'GET /api/sent': { body: { items: [sentItem()], unread: 1 } },
@@ -233,7 +289,10 @@ describe('sent tray', () => {
       'GET /api/push': NO_PUSH,
     })
     const created = vi.fn((_: Blob) => 'blob:chart')
-    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: created, revokeObjectURL: vi.fn() }))
+    // URL is shared by every test: put its two methods back afterwards.
+    const originals = { create: URL.createObjectURL, revoke: URL.revokeObjectURL }
+    URL.createObjectURL = created
+    URL.revokeObjectURL = vi.fn()
     const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
     render(<SentTray open onClose={vi.fn()} onUnread={vi.fn()} />)
     const dialog = await screen.findByRole('dialog', { name: 'Sent to you' })
@@ -247,6 +306,8 @@ describe('sent tray', () => {
     // A chart is saved on the device: no download link.
     expect(within(dialog).queryByRole('link', { name: /Download/ })).toBeNull()
     click.mockRestore()
+    URL.createObjectURL = originals.create
+    URL.revokeObjectURL = originals.revoke
   })
 
   it('summary item shows number marks', async () => {
@@ -340,6 +401,41 @@ describe('top bar badge and opening the tray', () => {
     expect(none.querySelector('.sent-badge')).toBeNull()
   })
 
+  it('ignores a count that arrives after a newer one', async () => {
+    const waiting: ((n: number) => void)[] = []
+    mockFetch({
+      ...baseRoutes,
+      'GET /api/sent/count': () =>
+        new Promise((resolve) => waiting.push((n) => resolve({ status: 200, body: { unread: n } }))),
+    })
+    render(<AppShell onSignOut={() => {}} />)
+    await waitFor(() => expect(waiting).toHaveLength(1))
+    act(() => {
+      window.dispatchEvent(new Event('focus'))
+    })
+    await waitFor(() => expect(waiting).toHaveLength(2))
+    await act(async () => waiting[1](5))
+    await screen.findByRole('button', { name: 'Sent to you, 5 unread' })
+    await act(async () => waiting[0](1))
+    expect(screen.getByRole('button', { name: 'Sent to you, 5 unread' })).toBeInTheDocument()
+  })
+
+  it('makes the page behind the tray inert while it is open', async () => {
+    mockFetch({
+      ...baseRoutes,
+      'GET /api/sent/count': { body: { unread: 0 } },
+      'GET /api/sent': { body: { items: [], unread: 0 } },
+    })
+    const { container } = render(<AppShell onSignOut={() => {}} />)
+    const shell = container.querySelector('.shell') as HTMLElement
+    expect(shell).not.toHaveAttribute('inert')
+    fireEvent.click(await screen.findByRole('button', { name: 'Sent to you' }))
+    await screen.findByRole('dialog')
+    expect(shell).toHaveAttribute('inert')
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    await waitFor(() => expect(shell).not.toHaveAttribute('inert'))
+  })
+
   it('refreshes every 30 seconds, only while the page is visible', async () => {
     vi.useFakeTimers()
     const { calls } = mockFetch({ ...baseRoutes, 'GET /api/sent/count': { body: { unread: 1 } } })
@@ -404,6 +500,35 @@ describe('top bar badge and opening the tray', () => {
     })
     expect(await screen.findByRole('dialog', { name: 'Sent to you' })).toBeInTheDocument()
     Reflect.deleteProperty(navigator, 'serviceWorker')
+  })
+
+  it('accepts open-sent with no origin when the source is a same-origin service worker', async () => {
+    const worker = new EventTarget()
+    Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: worker })
+    class FakeServiceWorker {
+      scriptURL: string
+      constructor(scriptURL: string) {
+        this.scriptURL = scriptURL
+      }
+    }
+    vi.stubGlobal('ServiceWorker', FakeServiceWorker)
+    mockFetch({
+      ...baseRoutes,
+      'GET /api/sent/count': { body: { unread: 0 } },
+      'GET /api/sent': { body: { items: [], unread: 0 } },
+    })
+    render(<AppShell onSignOut={() => {}} />)
+    const send = (scriptURL: string) => {
+      const event = new MessageEvent('message', { data: { type: 'open-sent' } })
+      Object.defineProperty(event, 'source', { value: new FakeServiceWorker(scriptURL) })
+      act(() => {
+        worker.dispatchEvent(event)
+      })
+    }
+    send('https://elsewhere.example/sw.js')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    send(`${window.location.origin}/sw.js`)
+    expect(await screen.findByRole('dialog', { name: 'Sent to you' })).toBeInTheDocument()
   })
 
   it('the top bar button opens the tray', async () => {

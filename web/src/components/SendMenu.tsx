@@ -4,6 +4,7 @@ import { listDevices, sendItem, type DeviceInfo, type SentKind } from '../api/se
 import { AlertIcon, SentIcon } from '../shell/icons'
 
 export const SENT_LINE = 'Sent.'
+export const DEVICES_FAILED = "Couldn't load your devices; you can still send to all of them."
 export const TOO_LONG = 'Too long to send as a summary. Send the chart or rows instead.'
 
 /** The server's own message when it gave one, else a plain sentence for its reason. */
@@ -31,6 +32,7 @@ export function SendMenu({ kind, refId, label }: { kind: SentKind; refId: string
   const root = useRef<HTMLSpanElement>(null)
   const [open, setOpen] = useState(false)
   const [devices, setDevices] = useState<DeviceInfo[]>([])
+  const [devicesFailed, setDevicesFailed] = useState(false)
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -49,9 +51,15 @@ export function SendMenu({ kind, refId, label }: { kind: SentKind; refId: string
   useEffect(() => {
     if (!open) return
     let live = true
+    setDevicesFailed(false)
     listDevices().then(
       (list) => live && setDevices(list),
-      () => live && setDevices([]), // "all my devices" still works
+      () => {
+        // "all my devices" still works
+        if (!live) return
+        setDevices([])
+        setDevicesFailed(true)
+      },
     )
     return () => {
       live = false
@@ -164,6 +172,7 @@ export function SendMenu({ kind, refId, label }: { kind: SentKind; refId: string
         Send
       </button>
       {open && (
+        <div className="send-pop">
         <div ref={menu} id={menuId} className="send-menu" role="menu" aria-label={`Send ${label} to`} onKeyDown={onMenuKeyDown}>
           <button type="button" role="menuitem" tabIndex={-1} className="send-item" onClick={() => void send('all')}>
             Send to all my devices
@@ -180,6 +189,8 @@ export function SendMenu({ kind, refId, label }: { kind: SentKind; refId: string
               <bdi>{device.device_name}</bdi>
             </button>
           ))}
+        </div>
+        {devicesFailed && <p className="send-note">{DEVICES_FAILED}</p>}
         </div>
       )}
       <span className="send-status" role="status">

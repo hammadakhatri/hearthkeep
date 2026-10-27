@@ -13,7 +13,7 @@ export type NumberMark = {
 }
 
 /** The server's check of one finished reply. Marks apply only when `text` is the shown text. */
-export type NumberCheck = { text: string; marks: NumberMark[] }
+export type NumberCheck = { text: string; marks: NumberMark[]; message_id?: number }
 
 export type RunValue = {
   name: string

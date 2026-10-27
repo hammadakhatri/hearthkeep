@@ -39,6 +39,27 @@ export async function sentCount(): Promise<number> {
   return (await api<{ unread: number }>('/api/sent/count')).unread
 }
 
+let countRequest = 0
+
+/** Marks a newer answer (a tray load that carried the count): older count replies are dropped. */
+export function supersedeCounts(): void {
+  countRequest += 1
+}
+
+/**
+ * Fetch the unread count and hand it to `apply`, unless a later request (or a tray load) has
+ * started since: replies that arrive out of order never overwrite a newer count.
+ */
+export function refreshCount(apply: (n: number) => void): void {
+  const mine = ++countRequest
+  sentCount().then(
+    (n) => {
+      if (mine === countRequest) apply(n)
+    },
+    () => {}, // keep the last count; the next refresh tries again
+  )
+}
+
 export async function dismissSent(id: string): Promise<void> {
   await api(`/api/sent/${encodeURIComponent(id)}/dismiss`, { method: 'POST' })
 }

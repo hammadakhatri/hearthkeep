@@ -218,19 +218,6 @@ export function Chat({ model }: { model?: string | null }) {
       turnId,
       (event) => {
         apply(event)
-        if (event.type === 'turn_done') {
-          // The reply's saved message id, so "Send" can name it (the server sends its own text).
-          void api<ServerMessage[]>(`/api/chats/${encodeURIComponent(chatId)}/messages`).then(
-            (saved) => {
-              const reply = saved.findLast((m) => m.role === 'assistant' && m.content.trim())
-              if (!reply) return
-              setItems((all) =>
-                all.map((it) => (it.kind === 'assistant' && it.turnId === turnId ? { ...it, messageId: reply.id } : it)),
-              )
-            },
-            () => {},
-          )
-        }
         if (event.type === 'turn_done' || event.type === 'turn_error') {
           finish()
           setChats((all) => all?.map((c) => (c.id === chatId ? { ...c, active_turn: null } : c)) ?? null)

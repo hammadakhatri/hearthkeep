@@ -204,6 +204,8 @@ class _Turn:
     reply_parts: list[str] = field(default_factory=list)  # saved assistant texts, in order
     unchecked: set[int] = field(default_factory=set)  # indexes of Hearthkeep's own texts
     last_assistant_id: int | None = None
+    # The last assistant message that has words: what a summary sent to a device names.
+    last_content_id: int | None = None
 
 
 @dataclass
@@ -321,7 +323,7 @@ class AgentLoop:
                     self._save(turn, {"role": "assistant", "content": text})
                 for event in await self._number_check(turn):
                     yield event
-                yield self._emit(turn, "turn_done")
+                yield self._emit(turn, "turn_done", **self._done_data(turn))
                 return
 
             calls = _normalise(requests)
@@ -384,7 +386,7 @@ class AgentLoop:
                 self._save(turn, {"role": "assistant", "content": final}, checked=False)
                 for event in await self._number_check(turn):
                     yield event
-                yield self._emit(turn, "turn_done")
+                yield self._emit(turn, "turn_done", **self._done_data(turn))
                 return
 
     def _system_prompt(self, turn: _Turn) -> str:
@@ -605,6 +607,7 @@ class AgentLoop:
             turn.last_assistant_id = message_id
             content = redact(message.get("content") or "", turn.secrets)
             if content.strip():
+                turn.last_content_id = message_id
                 if not checked:
                     turn.unchecked.add(len(turn.reply_parts))
                 turn.reply_parts.append(content)
@@ -632,7 +635,15 @@ class AgentLoop:
         except Exception as exc:
             _log.warning("number check failed (%s)", type(exc).__name__)
             return []
-        return [self._emit(turn, "number_check", text=text, marks=marks)]
+        return [
+            self._emit(
+                turn, "number_check", text=text, marks=marks, message_id=turn.last_assistant_id
+            )
+        ]
+
+    @staticmethod
+    def _done_data(turn: _Turn) -> dict:
+        return {} if turn.last_content_id is None else {"message_id": turn.last_content_id}
 
 
 def _last_user_text(history: list[dict]) -> str:

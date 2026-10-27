@@ -140,9 +140,20 @@ export function applyEvent(item: AssistantItem, e: AgentEvent, now: number): Ass
     case 'approval_resolved':
       return setApproval(item, e.approval_id, e.status)
     case 'number_check':
-      return { ...item, check: { text: e.text, marks: e.marks } }
+      return {
+        ...item,
+        check: { text: e.text, marks: e.marks },
+        // The check is of the joined reply and is stored under this message: send that one.
+        messageId: e.message_id ?? item.messageId,
+      }
     case 'turn_done':
-      return { ...item, state: 'done', workedMs: worked(item, now), approvals: expireOpen(item) }
+      return {
+        ...item,
+        state: 'done',
+        messageId: item.messageId ?? e.message_id,
+        workedMs: worked(item, now),
+        approvals: expireOpen(item),
+      }
     case 'turn_error':
       return { ...item, state: 'error', error: e.message, workedMs: worked(item, now), approvals: expireOpen(item) }
   }
@@ -204,8 +215,8 @@ export function itemsFromMessages(messages: ServerMessage[]): Item[] {
     let next: AssistantItem = turn
     if (m.role === 'assistant') {
       if (m.content.trim()) next = applyEvent(next, { type: 'text_delta', seq: 0, text: m.content }, 0)
-      if (m.number_check) next = { ...next, check: m.number_check }
       if (m.content.trim()) next = { ...next, messageId: m.id }
+      if (m.number_check) next = { ...next, check: m.number_check, messageId: m.number_check.message_id ?? m.id }
       for (const call of m.tool_calls ?? []) {
         const tool = call.function?.name || 'a tool'
         const step_id = call.id ?? `${m.id}-${next.steps.length}`

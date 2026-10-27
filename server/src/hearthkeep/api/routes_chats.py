@@ -129,7 +129,11 @@ async def list_messages(chat_id: str, session: SessionDep, request: Request) -> 
         "SELECT id, created_at FROM runs WHERE chat_id = ? ORDER BY created_at, rowid", (chat_id,)
     ).fetchall()
     checks = {
-        c["message_id"]: {"text": c["text"], "marks": json.loads(c["marks"])}
+        c["message_id"]: {
+            "text": c["text"],
+            "marks": json.loads(c["marks"]),
+            "message_id": c["message_id"],
+        }
         for c in hk.conn.execute(
             "SELECT message_id, text, marks FROM number_checks WHERE chat_id = ?", (chat_id,)
         )

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { dismissSent, listSent, sentCount, sentDownloadUrl, type SentItemInfo } from '../api/sent'
+import { dismissSent, listSent, refreshCount, sentDownloadUrl, supersedeCounts, type SentItemInfo } from '../api/sent'
 import { AlertIcon, CloseIcon, DownloadIcon } from '../shell/icons'
 import { ChartView } from './ChartView'
 import { MARK_LEGEND, UNVERIFIED_LINE } from './FindingsCard'
@@ -21,10 +21,7 @@ export function useUnreadSent(): [number, (n: number) => void] {
     let alive = true
     const refresh = () => {
       if (document.visibilityState !== 'visible') return
-      sentCount().then(
-        (n) => alive && setUnread(n),
-        () => {}, // keep the last count; the next refresh tries again
-      )
+      refreshCount((n) => alive && setUnread(n))
     }
     refresh()
     const timer = window.setInterval(refresh, REFRESH_MS)
@@ -143,6 +140,7 @@ function TrayDialog({
   const [items, setItems] = useState<SentItemInfo[] | null>(null)
   const [loadFailed, setLoadFailed] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  const downOnScrim = useRef(false)
   const closeRef = useRef(onClose)
   const unreadRef = useRef(onUnread)
   closeRef.current = onClose
@@ -164,6 +162,7 @@ function TrayDialog({
     listSent().then(
       (data) => {
         if (!live) return
+        supersedeCounts()
         setItems(data.items.filter((item) => !item.dismissed))
         setLoadFailed(false)
         unreadRef.current(data.unread)
@@ -215,7 +214,7 @@ function TrayDialog({
     setItems(before.filter((i) => i.id !== item.id))
     dialog.current?.focus()
     dismissSent(item.id).then(
-      () => sentCount().then(onUnread, () => {}),
+      () => refreshCount(onUnread),
       () => {
         setItems((now) => {
           const list = now ?? []
@@ -229,7 +228,15 @@ function TrayDialog({
   }
 
   return (
-    <div className="scrim sent-scrim" onClick={onClose}>
+    // Closes only on a click that began on the scrim, not a drag that ended there.
+    <div
+      className="scrim sent-scrim"
+      onPointerDown={(event) => (downOnScrim.current = event.target === event.currentTarget)}
+      onClick={(event) => {
+        if (downOnScrim.current && event.target === event.currentTarget) onClose()
+        downOnScrim.current = false
+      }}
+    >
       <div
         ref={dialog}
         className="sent-tray"
@@ -237,7 +244,6 @@ function TrayDialog({
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
-        onClick={(event) => event.stopPropagation()}
       >
         <header className="sent-head">
           <h2 id={titleId}>Sent to you</h2>

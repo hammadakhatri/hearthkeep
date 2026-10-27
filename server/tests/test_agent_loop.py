@@ -159,6 +159,11 @@ async def test_plain_reply_streams_text_then_done(conn, settings, approvals, reg
     assert types(events) == ["reasoning_delta", "text_delta", "text_delta", "turn_done"]
     assert [e["seq"] for e in events] == [1, 2, 3, 4]
     assert events[1]["text"] == "Hel"
+    # Even with no number check, the done event names the reply (what "Send" refers to).
+    saved = conn.execute(
+        "SELECT id FROM messages WHERE chat_id = ? AND role = 'assistant'", (CHAT,)
+    ).fetchone()
+    assert events[-1]["message_id"] == saved["id"]
     sent = client.calls[0]
     assert sent["think"] is True
     assert sent["messages"][0] == {"role": "system", "content": SYSTEM_PROMPT}
@@ -887,8 +892,14 @@ async def test_number_check_event_before_turn_done_and_persisted(
     stored = conn.execute("SELECT type, data FROM turn_events WHERE turn_id = 't1' ORDER BY seq")
     stored = stored.fetchall()
     assert stored[-2]["type"] == "number_check"
-    assert json.loads(stored[-2]["data"]) == {"text": check["text"], "marks": check["marks"]}
     last_assistant = _assistant_ids(conn, FILE_CHAT)[-1]
+    assert json.loads(stored[-2]["data"]) == {
+        "text": check["text"],
+        "marks": check["marks"],
+        "message_id": last_assistant,
+    }
+    assert check["message_id"] == last_assistant
+    assert events[-1]["message_id"] == last_assistant
     row = conn.execute("SELECT * FROM number_checks").fetchone()
     assert row["message_id"] == last_assistant
     assert row["chat_id"] == FILE_CHAT and row["turn_id"] == "t1"

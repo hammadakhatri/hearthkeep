@@ -22,8 +22,9 @@ export type AgentEvent = { seq: number } & (
     }
   | { type: 'approval_resolved'; approval_id: string; status: Exclude<ApprovalStatus, 'pending'> }
   /** The server's check of the finished reply's numbers, sent just before `turn_done`. */
-  | { type: 'number_check'; text: string; marks: NumberMark[] }
-  | { type: 'turn_done' }
+  | { type: 'number_check'; text: string; marks: NumberMark[]; message_id?: number }
+  /** `message_id`: the turn's last reply with words (what "Send" names without a check). */
+  | { type: 'turn_done'; message_id?: number }
   | { type: 'turn_error'; message: string }
 )
 
