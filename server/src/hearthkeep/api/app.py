@@ -23,6 +23,7 @@ from hearthkeep import db
 from hearthkeep.agent.loop import AgentLoop
 from hearthkeep.agent.runner import TurnRunner, recover_after_restart
 from hearthkeep.api import (
+    routes_analysis,
     routes_approvals,
     routes_audit,
     routes_auth,
@@ -441,6 +442,7 @@ def create_app(
         routes_runs,
         routes_push,
         routes_sent,
+        routes_analysis,
     ):
         app.include_router(module.router)
 

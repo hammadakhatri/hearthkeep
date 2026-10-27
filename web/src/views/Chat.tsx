@@ -43,6 +43,9 @@ export const LOST_STREAM = 'Lost connection to this reply. Reload to see the lat
 
 type Live = { chatId: string; turnId: string }
 
+/** Another view asks Chat to open a chat and, with `runId`, the turn that made that run. */
+export type ChatTarget = { chatId: string; runId?: string; nonce: number }
+
 function sendError(error: unknown): string {
   if (isApiError(error, 'turn_in_progress')) {
     return 'Hearthkeep is still answering in this chat. Wait for it to finish, then send again.'
@@ -79,7 +82,7 @@ function lastUserIndex(messages: ServerMessage[]): number {
   return -1
 }
 
-export function Chat({ model }: { model?: string | null }) {
+export function Chat({ model, target = null }: { model?: string | null; target?: ChatTarget | null }) {
   const [chats, setChats] = useState<ChatSummary[] | null>(null)
   const [listFailed, setListFailed] = useState(false)
   const [current, setCurrent] = useState<string | null>(null)
@@ -108,6 +111,11 @@ export function Chat({ model }: { model?: string | null }) {
   const opening = useRef(0)
   const scroller = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
+  // The turn to bring into view once its chat has loaded.
+  const [reveal, setReveal] = useState<{ chatId: string; runId?: string } | null>(null)
+  const targetRef = useRef(target)
+  targetRef.current = target
+  const handled = useRef<number | null>(null)
 
   const currentChat = chats?.find((c) => c.id === current) ?? null
   const busy = live !== null && live.chatId === current
@@ -173,10 +181,26 @@ export function Chat({ model }: { model?: string | null }) {
     }
   }, [])
 
-  // Open the chat that is still answering, or else the most recent one.
+  /** Open the chat another view asked for (once per ask); false when it is gone or already handled. */
+  const openTarget = useCallback(
+    (list: ChatSummary[] | null): boolean => {
+      const want = targetRef.current
+      if (!want || handled.current === want.nonce) return false
+      handled.current = want.nonce
+      const chat = list?.find((c) => c.id === want.chatId)
+      if (!chat) return false
+      setReveal({ chatId: chat.id, runId: want.runId })
+      void open(chat)
+      return true
+    },
+    [open],
+  )
+
+  // Open the chat that was asked for; else the one still answering, or else the most recent.
   useEffect(() => {
     let alive = true
     void loadChats().then((list) => {
+      if (!alive || openTarget(list)) return
       const pick = list?.find((c) => c.active_turn) ?? list?.[0]
       if (alive && pick) void open(pick)
     })
@@ -184,7 +208,37 @@ export function Chat({ model }: { model?: string | null }) {
       alive = false
       opening.current += 1
     }
-  }, [loadChats, open])
+  }, [loadChats, open, openTarget])
+
+  // Asked again while Chat is already open.
+  const nonce = target?.nonce
+  useEffect(() => {
+    if (nonce === undefined || handled.current === nonce) return
+    let alive = true
+    void loadChats().then((list) => {
+      if (alive) openTarget(list)
+    })
+    return () => {
+      alive = false
+    }
+  }, [nonce, loadChats, openTarget])
+
+  // Once the asked-for chat has loaded: scroll to the turn that made the run and focus it.
+  // Without that turn the chat stays at the bottom, where a chat opens.
+  useLayoutEffect(() => {
+    if (!reveal || loading || current !== reveal.chatId) return
+    setReveal(null)
+    const { runId } = reveal
+    if (!runId) return
+    const turn = [...(scroller.current?.querySelectorAll<HTMLElement>('.ai[data-runs]') ?? [])].find((el) =>
+      el.dataset.runs?.split(' ').includes(runId),
+    )
+    if (!turn) return
+    stick.current = false
+    const calm = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+    turn.scrollIntoView?.({ block: 'start', behavior: calm ? 'auto' : 'smooth' })
+    turn.focus({ preventScroll: true })
+  }, [reveal, loading, current, items])
 
   // Files a step brought in or made: look up their names when the thread has not seen them yet
   // (each unknown id is asked for once, so a file that is gone doesn't loop).
@@ -538,8 +592,10 @@ function AssistantTurn({
   const streaming = item.state === 'streaming'
   const quiet = streaming && !item.text && !item.reasoning && item.steps.length === 0
   const hasRuns = item.steps.some((step) => step.runs?.length)
+  const runIds = [...new Set(item.steps.flatMap((step) => step.runs ?? []))].join(' ')
   return (
-    <div className="ai" data-state={item.state}>
+    // data-runs and the focus stop let another view bring the turn that made a run into view.
+    <div className="ai" data-state={item.state} data-runs={runIds || undefined} tabIndex={-1}>
       {item.reasoning && (
         <details className="thinking">
           <summary>Thinking</summary>

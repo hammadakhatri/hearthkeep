@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
@@ -67,6 +68,25 @@ async def get_run(run_id: str, session: SessionDep, request: Request) -> dict:
     }
 
 
+def _headline(request: Request, chat_id: str, turn_id: str | None) -> dict | None:
+    """The number-checked reply of the turn that made an output (the turn's latest assistant
+    message that has a check): its text and marks. None when the turn has none."""
+    if not turn_id:
+        return None
+    row = (
+        services(request)
+        .conn.execute(
+            "SELECT text, marks FROM number_checks WHERE chat_id = ? AND turn_id = ?"
+            " ORDER BY message_id DESC LIMIT 1",
+            (chat_id, turn_id),
+        )
+        .fetchone()
+    )
+    if row is None:
+        return None
+    return {"text": row["text"] or "", "marks": json.loads(row["marks"] or "[]")}
+
+
 @router.get("/outputs/{output_id}")
 async def get_output(output_id: str, session: SessionDep, request: Request) -> dict:
     out = _output(request, output_id)
@@ -76,9 +96,13 @@ async def get_output(output_id: str, session: SessionDep, request: Request) -> d
         data = table_fields(out)
     else:
         data = {"mime": out.mime, "size": out.size}
+    run = _runs(request).get(out.run_id)
+    turn_id = run.turn_id if run is not None else None
+    if out.kind == "chart":
+        data["headline"] = _headline(request, out.chat_id, turn_id)
     # The record's own fields last: nothing in the data can replace them.
     return {**data, "id": out.id, "run_id": out.run_id, "chat_id": out.chat_id,
-            "kind": out.kind, "name": out.name}  # fmt: skip
+            "kind": out.kind, "name": out.name, "turn_id": turn_id}  # fmt: skip
 
 
 @router.get("/outputs/{output_id}/download", response_model=None)

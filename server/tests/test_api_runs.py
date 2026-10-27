@@ -99,13 +99,15 @@ def test_run_detail_shape(harness, tmp_path):
 
     chart = client.get(f"/api/outputs/{outputs['chart']}").json()
     assert chart == {"id": outputs["chart"], "run_id": run_id, "chat_id": chat_id,
-                     "kind": "chart", "name": "By month", "spec": SPEC}  # fmt: skip
+                     "kind": "chart", "name": "By month", "spec": SPEC,
+                     "turn_id": turn_id, "headline": None}  # fmt: skip
     table = client.get(f"/api/outputs/{outputs['table']}").json()
     assert table["kind"] == "table" and table["id"] == outputs["table"]
     assert table["row_numbers"] == [3, 5] and table["total_rows"] == 2
     file = client.get(f"/api/outputs/{outputs['file']}").json()
     assert file == {"id": outputs["file"], "run_id": run_id, "chat_id": chat_id,
-                    "kind": "file", "name": "clean.csv", "mime": "text/csv", "size": 8}  # fmt: skip
+                    "kind": "file", "name": "clean.csv", "mime": "text/csv", "size": 8,
+                    "turn_id": turn_id}  # fmt: skip
 
     download = client.get(f"/api/outputs/{outputs['file']}/download")
     assert download.status_code == 200 and download.content == b"a,b\n1,2\n"

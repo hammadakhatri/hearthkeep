@@ -38,7 +38,7 @@ export const MAIN_VIEWS: ViewId[] = ['today', 'chat', 'images', 'analysis', 'rep
 export const FOOTER_VIEWS: ViewId[] = ['tools']
 
 /** Phone layout: four tabs plus More, which holds the rest. */
-export const TAB_VIEWS: ViewId[] = ['today', 'chat', 'images', 'files']
-export const MORE_VIEWS: ViewId[] = ['analysis', 'repos', 'tools']
+export const TAB_VIEWS: ViewId[] = ['today', 'chat', 'images', 'analysis']
+export const MORE_VIEWS: ViewId[] = ['files', 'repos', 'tools']
 
 export const DEFAULT_VIEW: ViewId = 'chat'

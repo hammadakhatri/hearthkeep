@@ -9,6 +9,7 @@ import './styles/tools.css'
 import './styles/images.css'
 import './styles/findings.css'
 import './styles/sent.css'
+import './styles/analysis.css'
 import App from './App'
 
 // The service worker shows payload-free notifications; it caches nothing.

@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { SentTray, useUnreadSent } from '../components/SentTray'
-import { Chat } from '../views/Chat'
+import { Analysis } from '../views/Analysis'
+import { Chat, type ChatTarget } from '../views/Chat'
 import { Images } from '../views/Images'
 import { Placeholder } from '../views/Placeholder'
 import { ToolsPermissions } from '../views/ToolsPermissions'
@@ -32,6 +33,8 @@ function fromThisWorker(event: MessageEvent): boolean {
 
 export function AppShell({ initialView = DEFAULT_VIEW, onSignOut }: Props) {
   const [view, setView] = useState<ViewId>(initialView)
+  // A chat (and maybe a run's turn) another view asked Chat to open; `nonce` makes each ask new.
+  const [target, setTarget] = useState<ChatTarget | null>(null)
   const health = useHealth()
   const scroller = useRef<HTMLDivElement>(null)
   const shell = useRef<HTMLDivElement>(null)
@@ -77,6 +80,11 @@ export function AppShell({ initialView = DEFAULT_VIEW, onSignOut }: Props) {
     setView(next)
   }
 
+  function openChat(chatId: string, runId?: string) {
+    setTarget((t) => ({ chatId, runId, nonce: (t?.nonce ?? 0) + 1 }))
+    select('chat')
+  }
+
   return (
     <>
     <div className="shell" ref={shell}>
@@ -86,7 +94,7 @@ export function AppShell({ initialView = DEFAULT_VIEW, onSignOut }: Props) {
         {view === 'chat' ? (
           // Chat scrolls its own thread under a floating composer.
           <div className="view view-fill" key={view}>
-            <Chat model={modelName(health)} />
+            <Chat model={modelName(health)} target={target} />
           </div>
         ) : (
           <div className="scroll" ref={scroller}>
@@ -96,6 +104,8 @@ export function AppShell({ initialView = DEFAULT_VIEW, onSignOut }: Props) {
                 <ToolsPermissions />
               ) : view === 'images' ? (
                 <Images />
+              ) : view === 'analysis' ? (
+                <Analysis onOpenChat={openChat} />
               ) : (
                 <Placeholder view={view} />
               )}

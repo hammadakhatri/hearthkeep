@@ -1,0 +1,237 @@
+/* Analysis: every file and chart, grouped by chat. Single column on a phone. */
+
+.analysis {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-7);
+  width: 100%;
+  max-width: 1080px;
+  min-width: 0;
+  margin: 0 auto;
+}
+
+.analysis-head h2 {
+  font-size: clamp(2rem, 4.4vw, 3rem);
+  line-height: 1.06;
+}
+
+.analysis-head p {
+  margin-top: 10px;
+  font-size: var(--text-lg);
+  color: var(--muted);
+}
+
+.analysis-empty {
+  max-width: 44ch;
+  margin: var(--sp-6) 0;
+  font-size: var(--text-md);
+  color: var(--fg2);
+}
+
+.analysis-note {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+
+.analysis-chat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  min-width: 0;
+  padding: var(--sp-5);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--s1);
+}
+
+.analysis-chat-title {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  letter-spacing: var(--tracking-snug);
+  overflow-wrap: anywhere;
+}
+
+.analysis-files {
+  min-width: 0;
+}
+
+/* ---- Thumbnails -------------------------------------------------------------------- */
+
+.analysis-charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
+  gap: var(--sp-4);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.analysis-thumb {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.analysis-thumb-chart {
+  position: relative;
+  height: 168px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--s2);
+}
+
+.analysis-thumb-wait {
+  position: absolute;
+  inset: 0;
+  background: var(--s2);
+}
+
+/* The picture only: its own title and Save button belong to the full-size view. */
+.analysis-thumb-chart .chart {
+  gap: 0;
+  padding: var(--sp-2);
+}
+
+.analysis-thumb-chart .chart-title,
+.analysis-thumb-chart .chart-actions {
+  display: none;
+}
+
+.analysis-thumb-chart .chart-canvas {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* The whole tile is the button; it sits over the picture, which takes no pointer input. */
+.analysis-thumb-open {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 168px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  cursor: pointer;
+}
+
+.analysis-thumb-open:hover {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+
+.analysis-thumb-title,
+.analysis-thumb-note {
+  margin: 0;
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.analysis-thumb-title {
+  font-weight: 500;
+}
+
+.analysis-thumb-note {
+  color: var(--muted);
+}
+
+.analysis-more {
+  align-self: center;
+}
+
+/* ---- Full-size chart ---------------------------------------------------------------- */
+
+.analysis-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.94);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  animation: fade var(--dur) var(--ease);
+}
+
+.analysis-dialog {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: var(--sp-4);
+  width: 100%;
+  max-width: 960px;
+  min-width: 0;
+  padding: max(14px, env(safe-area-inset-top)) var(--sp-4) max(16px, env(safe-area-inset-bottom));
+}
+
+.analysis-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.analysis-dialog-head > div {
+  min-width: 0;
+}
+
+.analysis-dialog-chat {
+  margin: 0 0 2px;
+  font-size: var(--text-xs);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.analysis-dialog-title {
+  font-size: var(--text-xl);
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.analysis-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* The heading above already names the chart. */
+.analysis-dialog .chart-title {
+  display: none;
+}
+
+.analysis-headline {
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--line);
+}
+
+.analysis-dialog-foot {
+  display: flex;
+  justify-content: flex-end;
+}
+
+@media (max-width: 559px) {
+  .analysis-chat {
+    padding: var(--sp-4);
+  }
+
+  .analysis-charts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .analysis-dialog-foot .btn {
+    flex: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .analysis-scrim {
+    animation: none;
+  }
+}

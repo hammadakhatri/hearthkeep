@@ -27,7 +27,7 @@ describe('AppShell', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'Images' })).toBeInTheDocument()
     expect(within(sidebar).getByRole('button', { name: 'Images' })).toHaveAttribute('aria-current', 'page')
     expect(screen.getByRole('textbox', { name: 'Describe the image you want' })).toBeInTheDocument()
-    fireEvent.click(within(sidebar).getByRole('button', { name: 'Analysis' }))
+    fireEvent.click(within(sidebar).getByRole('button', { name: 'Repos' }))
     expect(screen.getByText('Arrives in a later update')).toBeInTheDocument()
   })
 
@@ -59,12 +59,12 @@ describe('AppShell', () => {
     expect(await screen.findByText("Can't reach Hearthkeep")).toBeInTheDocument()
   })
 
-  it('bottom tabs offer Today, Chat, Images, Files and More, with the rest under More', () => {
+  it('bottom tabs offer Today, Chat, Images, Analysis and More, with the rest under More', () => {
     mockFetch({ 'GET /api/health': healthy })
     render(<AppShell onSignOut={() => {}} />)
     const tabs = screen.getByRole('navigation', { name: 'Tabs' })
     const names = within(tabs).getAllByRole('button').map((b) => b.textContent)
-    expect(names).toEqual(['Today', 'Chat', 'Images', 'Files', 'More'])
+    expect(names).toEqual(['Today', 'Chat', 'Images', 'Analysis', 'More'])
 
     fireEvent.click(within(tabs).getByRole('button', { name: 'More' }))
     const sheet = screen.getByRole('dialog', { name: 'More' })
