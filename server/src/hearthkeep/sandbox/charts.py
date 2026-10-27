@@ -7,8 +7,9 @@ paint values, tooltips); a deny-list of keys and strings backs them up:
 
 * no `config` (the app supplies its own theme at render time) and no legacy `selection`
 * every `data` object is `{"values": [objects], "name"?}`; no `url`, `format`, `datasets`
-* no `url`, `href`, `usermeta`, `loader`, `$ref` keys; no `image` mark, no `image` key outside
-  data rows, no string `image` outside data rows (tooltip images through derived fields)
+* no `url`, `href`, `usermeta`, `loader`, `$ref` keys; no `image` mark; `image` keys are
+  rejected both in data rows and everywhere else; no string `image` outside data rows
+  (tooltip images through derived fields)
 * no Vega expressions: the keys `expr`, `signal`, `calculate` and anything ending in
   `expr` (`labelExpr`, ...); `test` only as `{"param": ...}` inside a `condition`
 * transforms are limited to filter (field predicates), aggregate, bin, timeUnit, fold,
@@ -19,9 +20,14 @@ paint values, tooltips); a deny-list of keys and strings backs them up:
   size shape`, as encoding channels, conditions and mark properties): a `value` or `datum`
   string is a hex colour, `rgb()/rgba()/hsl()/hsla()` of digits, a colour keyword, or (for
   `shape`) a Vega shape name; numbers and number lists are fine. Their scales are never
-  `null`, `identity`, or a `range` that names a `field`, in the channel or any condition.
+  `null`, `false`, `identity`, or a `range` that names a `field`, in the channel or any
+  condition, and the string items of a `range` list pass the same allow-list.
+* colour-like keys (any key ending in `color` or `background`, such as `labelColor`,
+  `gridColor`, `fillColor`, `subtitleColor`): their strings pass the colour allow-list too
+* `cursor` (any depth) is one of the standard CSS cursor keywords; no `image-set()` or URL
 * a `tooltip` encoding is a field definition, a list of them, `null` or `false` (a `value`
-  is never an object or list); a mark `tooltip` is a boolean, `null` or `{"content": ...}`
+  is never an object or list), and so is each of its conditions (dict or list, nested);
+  a mark `tooltip` is a boolean, `null` or `{"content": ...}`
 * `formatType` is `number`, `time` or `utc`; `format` is short text, no `( [ {`, no 4+ digit run
 * no string outside data rows holds a URL (`http(s)://`, `ftp://`, `file://`, `javascript:`,
   `data:` with a type or `,;`, a start of `http:`/`ftp:`/`file:` or of two slashes) or a CSS
@@ -98,6 +104,12 @@ _SHAPES = {
     "wedge",
     "triangle",
 }
+_CURSORS = frozenset(
+    "auto default none context-menu help pointer progress wait cell crosshair text"
+    " vertical-text alias copy move no-drop not-allowed grab grabbing all-scroll col-resize"
+    " row-resize n-resize e-resize s-resize w-resize ne-resize nw-resize se-resize sw-resize"
+    " ew-resize ns-resize nesw-resize nwse-resize zoom-in zoom-out".split()
+)
 _PROTOCOL_RELATIVE = re.compile(r"[/\\]{2}")
 _STRIP_IN_SCHEME = re.compile(r"[\t\r\n\x00]")
 _LEADING_JUNK = re.compile(r"^[\s\x00-\x1f\x7f\u200b-\u200f\u2028\u2029\ufeff]+")
@@ -278,10 +290,15 @@ class _Walker:
                 raise _bad(f"the key {_q(key)} is not allowed")
             if lowered.strip() == "image" or key.strip().casefold() == "image":
                 raise _bad("an 'image' key is not allowed")
+            if lowered.strip() == "cursor":
+                if not isinstance(child, str) or child.strip().lower() not in _CURSORS:
+                    raise _bad(f"a cursor must be a CSS cursor keyword: {_q(child)}")
             if lowered == "tooltip":
                 self._tooltip(child, in_mark=where == "mark")
             elif lowered in _PAINT_KEYS:
                 self._paint(lowered, child, in_mark=where == "mark")
+            elif lowered.endswith(("color", "background")):
+                self._colour_like(child)
             if lowered.endswith("formattype"):
                 if not isinstance(child, str) or child not in _FORMAT_TYPES:
                     raise _bad("formatType must be 'number', 'time' or 'utc'")
@@ -321,18 +338,22 @@ class _Walker:
                 self.walk(child, depth, where=key, ctx="channel" if ctx == "encoding" else None)
 
     @staticmethod
-    def _scale(defn: dict) -> None:
+    def _scale(name: str, defn: dict) -> None:
         """A paint channel keeps a real scale: not null, not identity, no range from a field."""
         if "scale" not in defn:
             return
         scale = defn["scale"]
-        if scale is None:
-            raise _bad("a paint channel needs a scale (not null)")
+        if scale is None or scale is False:
+            raise _bad("a paint channel needs a scale (not null or false)")
         if isinstance(scale, dict):
             if str(scale.get("type")).strip().lower() == "identity":
                 raise _bad("an identity scale is not allowed on a paint channel")
             if isinstance(scale.get("range"), dict) and "field" in scale["range"]:
                 raise _bad("a paint scale range cannot come from a field")
+            if isinstance(scale.get("range"), list):
+                for item in scale["range"]:
+                    if isinstance(item, str):
+                        _Walker._paint_string(name, item)
 
     @staticmethod
     def _paint_string(name: str, text: str) -> None:
@@ -370,7 +391,7 @@ class _Walker:
     def _paint_def(self, name: str, defn: dict, level: int) -> None:
         if level > MAX_DEPTH:
             raise _bad(f"the chart is nested deeper than {MAX_DEPTH} levels")
-        self._scale(defn)
+        self._scale(name, defn)
         for key in ("value", "datum"):
             if key in defn:
                 self._paint_value(name, defn[key])
@@ -381,8 +402,18 @@ class _Walker:
                     raise _bad("a condition must be an object")
                 self._paint_def(name, item, level + 1)
 
+    def _colour_like(self, child: object) -> None:
+        """A key such as `labelColor` or `background`: its colour strings are allow-listed."""
+        if isinstance(child, dict):
+            self._paint_def("color", child, 0)
+        elif isinstance(child, list):
+            for item in child:
+                self._colour_like(item)
+        else:
+            self._paint_value("color", child)
+
     @staticmethod
-    def _tooltip(child: object, *, in_mark: bool) -> None:
+    def _tooltip(child: object, *, in_mark: bool, level: int = 0) -> None:
         if in_mark:
             if child is None or isinstance(child, bool):
                 return
@@ -390,6 +421,8 @@ class _Walker:
                 if child["content"] in ("data", "encoding"):
                     return
             raise _bad("a mark tooltip is true, false, null or {content: data|encoding}")
+        if level > MAX_DEPTH:
+            raise _bad(f"the chart is nested deeper than {MAX_DEPTH} levels")
         if child is None or child is False:
             return
         for item in child if isinstance(child, list) else [child]:
@@ -397,6 +430,8 @@ class _Walker:
                 raise _bad("a tooltip is a field definition, a list of them, null or false")
             if isinstance(item.get("value"), dict | list):
                 raise _bad("a tooltip value must be plain text or a number")
+            if "condition" in item:
+                _Walker._tooltip(item["condition"], in_mark=False, level=level + 1)
 
     @staticmethod
     def _format(value: object) -> None:

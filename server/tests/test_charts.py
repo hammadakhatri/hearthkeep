@@ -679,3 +679,156 @@ def test_backslash_paren_exemption_is_narrow():
     rejected(base(layer=[{"mark": "point", "field": esc}]))
     rejected(base(params=[{"name": "p", "select": {"type": "point", "encodings": [esc]}}]))
     rejected(base(facet={"field": esc}, spec={"mark": "point"}))
+
+
+CURSORS = "auto default none context-menu help pointer progress wait cell crosshair text"
+CURSORS += " vertical-text alias copy move no-drop not-allowed grab grabbing all-scroll col-resize"
+CURSORS += " row-resize n-resize e-resize s-resize w-resize ne-resize nw-resize se-resize"
+CURSORS += " sw-resize ew-resize ns-resize nesw-resize nwse-resize zoom-in zoom-out"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        'image-set("/api/x" 1x), auto',
+        '-webkit-image-set("/api/x" 1x), auto',
+        "//evil.example/a.png",
+        "/api/x.png, auto",
+        "pointer, auto",
+        "hand",
+        "",
+        {"value": "pointer"},
+        ["pointer"],
+        1,
+    ],
+)
+def test_cursor_values_are_keywords_only(bad):
+    rejected(base(mark={"type": "point", "cursor": bad}))
+    rejected(base(params=[{"name": "b", "select": {"type": "interval", "mark": {"cursor": bad}}}]))
+    rejected(base(layer=[{"mark": {"type": "rule", "Cursor": bad}}]))
+    rejected(base(legend={"cursor": bad}))
+
+
+def test_cursor_keywords_pass():
+    for keyword in CURSORS.split():
+        validate_chart_spec(base(mark={"type": "point", "cursor": keyword}))
+    validate_chart_spec(base(mark={"type": "point", "cursor": "pointer"}))
+    # a data column called cursor is data
+    validate_chart_spec(base(data={"values": [{"cursor": "image-set(x)"}]}))
+
+
+COLOUR_KEYS = [
+    ("axis", "labelColor"),
+    ("axis", "gridColor"),
+    ("axis", "domainColor"),
+    ("axis", "tickColor"),
+    ("axis", "titleColor"),
+    ("legend", "fillColor"),
+    ("legend", "strokeColor"),
+    ("legend", "labelColor"),
+    ("header", "labelColor"),
+    ("header", "titleColor"),
+    ("title", "subtitleColor"),
+]
+
+
+@pytest.mark.parametrize("bad", ["var(--x)", 'image-set("/api/x" 1x)', "url(x)", "a b", ["x y"]])
+def test_colour_like_keys_are_allow_listed(bad):
+    for parent, key in COLOUR_KEYS:
+        enc = {"x": {"field": "a", parent: {key: bad}}}
+        if parent == "title":
+            rejected(base(title={"text": "t", key: bad}))
+        else:
+            rejected(base(encoding=enc))
+            rejected(base(encoding={"x": {"field": "a", parent: {key.upper(): bad}}}))
+    rejected(base(background=bad))
+    rejected(base(view={"fill": "red", "Background": bad}))
+    rejected(
+        base(
+            encoding={
+                "x": {
+                    "field": "a",
+                    "axis": {
+                        "labelColor": {"condition": {"param": "p", "value": bad}, "value": "red"}
+                    },
+                }
+            }
+        )
+    )
+
+
+def test_colour_like_keys_good_values():
+    for good in ("#fff", "steelblue"):
+        for parent, key in COLOUR_KEYS:
+            if parent == "title":
+                validate_chart_spec(base(title={"text": "t", key: good}))
+            else:
+                validate_chart_spec(base(encoding={"x": {"field": "a", parent: {key: good}}}))
+        validate_chart_spec(base(background=good))
+    validate_chart_spec(base(data={"values": [{"labelColor": "var(--x)", "background": "x y"}]}))
+
+
+@pytest.mark.parametrize("bad", ["var(--x)", 'image-set("/api/x" 1x)', "url(x)", "hexagon x"])
+def test_paint_scale_range_strings_allow_listed(bad):
+    for channel in ("color", "fill", "stroke"):
+        rejected(base(encoding={channel: {"field": "a", "scale": {"range": ["red", bad]}}}))
+        rejected(
+            base(
+                encoding={
+                    channel: {
+                        "condition": {"param": "p", "field": "a", "scale": {"range": [bad]}},
+                        "value": "red",
+                    }
+                }
+            )
+        )
+    rejected(base(encoding={"shape": {"field": "a", "scale": {"range": ["circle", bad]}}}))
+
+
+def test_paint_scale_range_good_values():
+    validate_chart_spec(
+        base(encoding={"color": {"field": "a", "scale": {"range": ["#fff", "steelblue"]}}})
+    )
+    validate_chart_spec(
+        base(encoding={"shape": {"field": "a", "scale": {"range": ["circle", "square"]}}})
+    )
+    validate_chart_spec(base(encoding={"size": {"field": "a", "scale": {"range": [10, 100]}}}))
+    validate_chart_spec(
+        base(encoding={"strokeDash": {"field": "a", "scale": {"range": [[1, 0], [4, 4]]}}})
+    )
+
+
+@pytest.mark.parametrize("channel", PAINT)
+def test_scale_false_on_paint_channels_rejected(channel):
+    rejected(base(encoding={channel: {"field": "a", "scale": False}}))
+    rejected(base(encoding={channel: {"condition": {"param": "p", "field": "a", "scale": False}}}))
+    validate_chart_spec(base(encoding={"x": {"field": "a", "scale": {"zero": False}}}))
+
+
+def test_tooltip_conditions_shape_checked():
+    for value in ({"image": "x"}, ["x"], {"a": 1}):
+        cond = {"param": "p", "value": value}
+        rejected(base(encoding={"tooltip": {"field": "a", "condition": cond}}))
+        rejected(base(encoding={"tooltip": {"field": "a", "condition": [cond]}}))
+        rejected(base(encoding={"tooltip": [{"field": "a", "condition": [cond]}]}))
+        rejected(
+            base(
+                encoding={"tooltip": {"field": "a", "condition": {"param": "q", "condition": cond}}}
+            )
+        )
+    rejected(base(encoding={"tooltip": {"field": "a", "condition": "x"}}))
+    rejected(base(encoding={"tooltip": {"field": "a", "condition": ["x"]}}))
+    validate_chart_spec(
+        base(encoding={"tooltip": {"field": "a", "condition": {"param": "p", "value": "hi"}}})
+    )
+    validate_chart_spec(
+        base(encoding={"tooltip": {"condition": [{"param": "p", "field": "b"}], "value": 3}})
+    )
+
+
+def test_docstring_names_image_keys_everywhere():
+    import hearthkeep.sandbox.charts as charts
+
+    doc = " ".join(charts.__doc__.split())
+    assert "`image` key" in doc
+    assert "both in data rows and everywhere else" in doc
