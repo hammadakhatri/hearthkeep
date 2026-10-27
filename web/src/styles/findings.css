@@ -1,0 +1,408 @@
+/* Findings card: headline, charts, cleaning notes, problem rows, files and "How I got this". */
+
+.findings {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.findings-glance {
+  margin: 0;
+  font-size: var(--text-xs);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.findings-block,
+.problem-table,
+.chart {
+  min-width: 0;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--s1);
+}
+
+.findings-charts,
+.findings-tables {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.findings-label,
+.problem-name {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.findings-cleaning ul {
+  margin: 8px 0 0;
+  padding-left: 1.2em;
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  color: var(--fg2);
+}
+
+.findings-cleaning li + li {
+  margin-top: 4px;
+}
+
+.findings-cleaning li::marker {
+  color: var(--muted);
+}
+
+.findings .btn:not(.ghost) {
+  padding: 6px 12px;
+  font-size: var(--text-xs);
+  background: var(--s3);
+}
+
+.findings-failed {
+  justify-content: space-between;
+}
+
+/* ---- Checked numbers ------------------------------------------------------------------ */
+
+.num {
+  border-radius: 4px;
+  text-decoration-line: underline;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+}
+
+.num-computed {
+  text-decoration-style: solid;
+  text-decoration-color: color-mix(in srgb, var(--green) 55%, transparent);
+}
+
+.num-document {
+  text-decoration-style: dashed;
+  text-decoration-color: color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+.num-unverified {
+  padding: 0 3px;
+  color: var(--amber);
+  background: var(--amber-soft);
+  text-decoration-style: dotted;
+  text-decoration-color: var(--amber);
+}
+
+.num-note::before {
+  content: ' (';
+}
+
+.num-note::after {
+  content: ')';
+}
+
+.num-legend {
+  margin: -6px 0 0;
+  font-size: var(--text-xs);
+  color: var(--amber);
+}
+
+/* ---- Charts ---------------------------------------------------------------------------- */
+
+.chart {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chart-title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+
+.chart-canvas {
+  min-height: 120px;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.chart[data-state='loading'] .chart-canvas {
+  border-radius: var(--r-sm);
+  background: var(--s2);
+}
+
+.chart-canvas svg {
+  display: block;
+  max-width: none;
+}
+
+.chart-canvas[data-static] {
+  pointer-events: none;
+}
+
+.chart-failed {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+
+.chart-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.chart-save-failed {
+  font-size: var(--text-xs);
+  color: var(--red);
+}
+
+.chart-tip {
+  position: fixed;
+  z-index: 50;
+  max-width: min(280px, calc(100vw - 24px));
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--s3);
+  color: var(--fg);
+  font: 12px / 1.45 var(--font);
+  box-shadow: var(--shadow-float);
+  pointer-events: none;
+  overflow-wrap: anywhere;
+}
+
+.chart-tip[hidden] {
+  display: none;
+}
+
+.chart-tip-title {
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+
+.chart-tip dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 10px;
+  margin: 0;
+}
+
+.chart-tip dt {
+  color: var(--muted);
+}
+
+.chart-tip dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Problem rows ---------------------------------------------------------------------- */
+
+.problem-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.problem-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.problem-note,
+.problem-cut {
+  margin: 8px 0 0;
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+
+.problem-scroll {
+  max-height: 320px;
+  margin-top: 10px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border-radius: var(--r-sm);
+}
+
+.problem-scroll table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.problem-scroll th,
+.problem-scroll td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.problem-scroll th {
+  position: sticky;
+  top: 0;
+  background: var(--s1);
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.problem-scroll tr:last-child td {
+  border-bottom: 0;
+}
+
+.problem-row {
+  color: var(--muted);
+  font-family: var(--mono);
+}
+
+/* ---- Files ----------------------------------------------------------------------------- */
+
+.findings-files ul {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.findings-file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  font-size: var(--text-sm);
+}
+
+.findings-file + .findings-file {
+  margin-top: 8px;
+}
+
+.findings-file-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.findings-file-size {
+  color: var(--muted);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+/* ---- How I got this -------------------------------------------------------------------- */
+
+.how summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-sm);
+  color: var(--muted);
+  list-style: none;
+  cursor: pointer;
+  border-radius: var(--r-sm);
+  transition: color var(--dur-fast) var(--ease);
+}
+
+.how summary::-webkit-details-marker {
+  display: none;
+}
+
+.how summary::after {
+  content: '';
+  width: 6px;
+  height: 6px;
+  margin-left: 2px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform var(--dur) var(--ease);
+}
+
+.how[open] summary::after {
+  transform: translateY(1px) rotate(225deg);
+}
+
+.how summary:hover {
+  color: var(--fg2);
+}
+
+.how-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 10px;
+  padding-left: 14px;
+  border-left: 1px solid var(--line);
+  min-width: 0;
+}
+
+.how-run {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.how-run-name {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.how-label,
+.how-note,
+.how-facts {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+
+.how .md-code {
+  max-height: 360px;
+  overflow: auto;
+  font-size: 12px;
+}
+
+.how-out {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.how-error {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  background: var(--red-soft);
+  color: var(--red);
+  font-size: var(--text-sm);
+}
+
+@media (max-width: 480px) {
+  .findings-block,
+  .problem-table,
+  .chart {
+    padding: 10px;
+  }
+
+  .how-body {
+    padding-left: 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .how summary,
+  .how summary::after {
+    transition: none;
+  }
+}

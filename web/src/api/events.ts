@@ -1,6 +1,7 @@
 /** The live event stream of one agent turn (Server-Sent Events). */
 
 import { api, isApiError } from './client'
+import type { NumberMark } from './runs'
 
 export type ApprovalStatus = 'pending' | 'approved' | 'declined' | 'expired'
 
@@ -20,6 +21,8 @@ export type AgentEvent = { seq: number } & (
       requires_step_up: boolean
     }
   | { type: 'approval_resolved'; approval_id: string; status: Exclude<ApprovalStatus, 'pending'> }
+  /** The server's check of the finished reply's numbers, sent just before `turn_done`. */
+  | { type: 'number_check'; text: string; marks: NumberMark[] }
   | { type: 'turn_done' }
   | { type: 'turn_error'; message: string }
 )
@@ -36,6 +39,7 @@ export const EVENT_TYPES: readonly AgentEventType[] = [
   'attachments',
   'approval_required',
   'approval_resolved',
+  'number_check',
   'turn_done',
   'turn_error',
 ]

@@ -1,6 +1,7 @@
 /** What the chat thread shows, built from saved messages and live turn events. */
 
 import type { AgentEvent, ApprovalStatus, Attachment } from '../api/events'
+import type { NumberCheck } from '../api/runs'
 
 export type ChatSummary = {
   id: string
@@ -21,6 +22,8 @@ export type ServerMessage = {
   images?: string[]
   /** On a tool message: ids of the analysis runs that tool call made, in order. */
   runs?: string[]
+  /** On an assistant message: the turn's number check (only the last message of a checked turn). */
+  number_check?: NumberCheck | null
 }
 
 export type Step = {
@@ -61,6 +64,8 @@ export type AssistantItem = {
   workedMs: number
   /** Text written before the latest tool step: the next text starts a new paragraph. */
   pendingBreak: boolean
+  /** The server's check of the reply's numbers, once the reply is finished. */
+  check?: NumberCheck | null
 }
 
 export type Item = UserItem | AssistantItem
@@ -132,6 +137,8 @@ export function applyEvent(item: AssistantItem, e: AgentEvent, now: number): Ass
     }
     case 'approval_resolved':
       return setApproval(item, e.approval_id, e.status)
+    case 'number_check':
+      return { ...item, check: { text: e.text, marks: e.marks } }
     case 'turn_done':
       return { ...item, state: 'done', workedMs: worked(item, now), approvals: expireOpen(item) }
     case 'turn_error':
@@ -195,6 +202,7 @@ export function itemsFromMessages(messages: ServerMessage[]): Item[] {
     let next: AssistantItem = turn
     if (m.role === 'assistant') {
       if (m.content.trim()) next = applyEvent(next, { type: 'text_delta', seq: 0, text: m.content }, 0)
+      if (m.number_check) next = { ...next, check: m.number_check }
       for (const call of m.tool_calls ?? []) {
         const tool = call.function?.name || 'a tool'
         const step_id = call.id ?? `${m.id}-${next.steps.length}`

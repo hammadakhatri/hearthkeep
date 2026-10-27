@@ -25,6 +25,8 @@ export default defineConfig({
   build: {
     // The server's CSP has no data: in font-src/script-src: every asset ships as a file.
     assetsInlineLimit: 0,
+    // The chart runtime (Vega) is one large chunk, loaded only when a chart is shown.
+    chunkSizeWarningLimit: 900,
   },
   test: {
     environment: 'jsdom',

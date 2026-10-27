@@ -7,7 +7,7 @@ import { ApprovalCard } from '../components/ApprovalCard'
 import { ConfirmDelete } from '../components/ConfirmDelete'
 import { ImageGrid, type GridImage } from '../components/ImageGrid'
 import { ImageViewer } from '../components/ImageViewer'
-import { Markdown } from '../components/Markdown'
+import { Headline, TurnFindings } from '../components/FindingsCard'
 import { AttachedFiles, FileChips, chipFromInfo, useChatFiles, type FileChipItem } from '../components/FileChips'
 import { attachedPhotoLine, PhotoChip, uploadUrl, usePhoto } from '../components/Photo'
 import { WorkedSteps } from '../components/WorkedSteps'
@@ -537,6 +537,7 @@ function AssistantTurn({
 }) {
   const streaming = item.state === 'streaming'
   const quiet = streaming && !item.text && !item.reasoning && item.steps.length === 0
+  const hasRuns = item.steps.some((step) => step.runs?.length)
   return (
     <div className="ai" data-state={item.state}>
       {item.reasoning && (
@@ -556,11 +557,7 @@ function AssistantTurn({
           onResolved={(s) => onResolved(request.approval_id, s)}
         />
       ))}
-      {item.text && (
-        <div className="ai-text" data-testid="assistant-text">
-          <Markdown text={item.text} />
-        </div>
-      )}
+      {hasRuns ? <TurnFindings item={item} /> : <Headline item={item} />}
       {quiet && (
         <div className="typing" role="status" aria-label="Hearthkeep is writing">
           <span />
