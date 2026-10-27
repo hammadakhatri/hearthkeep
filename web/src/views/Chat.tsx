@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { api, isApiError, post } from '../api/client'
 import { subscribeTurn, type AgentEvent, type ApprovalStatus } from '../api/events'
+import { isPhotoFile, listChatFiles, attachedFileLine, splitAttachments, type ChatFileInfo } from '../api/files'
 import { ApprovalCard } from '../components/ApprovalCard'
 import { ImageGrid, type GridImage } from '../components/ImageGrid'
 import { ImageViewer } from '../components/ImageViewer'
 import { Markdown } from '../components/Markdown'
-import { attachedPhotoLine, PhotoChip, splitPhotos, uploadUrl, usePhoto } from '../components/Photo'
+import { AttachedFiles, FileChips, chipFromInfo, useChatFiles, type FileChipItem } from '../components/FileChips'
+import { attachedPhotoLine, PhotoChip, uploadUrl, usePhoto } from '../components/Photo'
 import { WorkedSteps } from '../components/WorkedSteps'
 import { Composer } from '../shell/Composer'
 import { AlertIcon, ChatsIcon, NewChatIcon } from '../shell/icons'
@@ -38,9 +40,19 @@ function sendError(error: unknown): string {
   return "Your message couldn't be sent. Try again."
 }
 
-/** The chat's title from its first message, as the server makes it: words only, else "Photo". */
-function titleFor(text: string): string {
-  return splitPhotos(text).text.split(/\s+/).join(' ').trim().slice(0, TITLE_CHARS) || 'Photo'
+/**
+ * The chat's title from its first message, as the server makes it: the words only, else the first
+ * attached file's name, else "Photo".
+ */
+function titleFor(text: string, firstFileName?: string): string {
+  const squash = (s: string) => s.split(/\s+/).join(' ').trim()
+  return (squash(splitAttachments(text).text) || squash(firstFileName ?? '')).slice(0, TITLE_CHARS) || 'Photo'
+}
+
+/** A chip for a stored file the thread mentions; a placeholder until the file list has its name. */
+function chipFor(id: string, known: Record<string, ChatFileInfo>): FileChipItem {
+  const info = known[id]
+  return info ? chipFromInfo(info) : { key: id, id, name: 'Attached file', state: 'ready' }
 }
 
 function lastUserIndex(messages: ServerMessage[]): number {
@@ -59,12 +71,29 @@ export function Chat({ model }: { model?: string | null }) {
   const [notice, setNotice] = useState<string | null>(null)
   const [sheetOpen, setSheetOpen] = useState(false)
   const attach = usePhoto()
+  const files = useChatFiles()
+  // What the thread knows about stored files (names, types, sizes), by file id.
+  const [known, setKnown] = useState<Record<string, ChatFileInfo>>({})
+  const creating = useRef<Promise<string> | null>(null)
+  const listed = useRef(new Set<string>())
+  const asked = useRef(new Set<string>())
   const opening = useRef(0)
   const scroller = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
 
   const currentChat = chats?.find((c) => c.id === current) ?? null
   const busy = live !== null && live.chatId === current
+
+  const learnFiles = useCallback(async (chatId: string) => {
+    if (listed.current.has(chatId)) return
+    listed.current.add(chatId)
+    try {
+      const list = await listChatFiles(chatId)
+      setKnown((all) => ({ ...all, ...Object.fromEntries(list.map((f) => [f.id, f])) }))
+    } catch {
+      listed.current.delete(chatId) // try again the next time it is needed
+    }
+  }, [])
 
   const open = useCallback(async (chat: ChatSummary, keepNotice = false) => {
     const token = ++opening.current
@@ -78,6 +107,10 @@ export function Chat({ model }: { model?: string | null }) {
     try {
       const messages = await api<ServerMessage[]>(`/api/chats/${encodeURIComponent(chat.id)}/messages`)
       if (token !== opening.current) return
+      // Reopened from history: the owner's file lines need their names, fetched once per chat.
+      if (messages.some((m) => m.role === 'user' && splitAttachments(m.content).files.length)) {
+        void learnFiles(chat.id)
+      }
       if (chat.active_turn) {
         // The running turn replays from its first event, so leave out what it has saved so far.
         const user = lastUserIndex(messages)
@@ -118,6 +151,19 @@ export function Chat({ model }: { model?: string | null }) {
       opening.current += 1
     }
   }, [loadChats, open])
+
+  // Files a step brought in or made: look up their names when the thread has not seen them yet
+  // (each unknown id is asked for once, so a file that is gone doesn't loop).
+  useEffect(() => {
+    if (!current) return
+    const unknown = items
+      .flatMap((it) => (it.kind === 'assistant' ? it.steps.flatMap((st) => st.files ?? []) : []))
+      .filter((id) => !known[id] && !asked.current.has(id))
+    if (!unknown.length) return
+    for (const id of unknown) asked.current.add(id)
+    listed.current.delete(current)
+    void learnFiles(current)
+  }, [items, current, known, learnFiles])
 
   // Follow the running turn. Reconnects (and de-duplicates) inside subscribeTurn.
   useEffect(() => {
@@ -161,6 +207,7 @@ export function Chat({ model }: { model?: string | null }) {
 
   function newChat() {
     attach.clear()
+    files.clear()
     opening.current += 1
     setCurrent(null)
     setItems([])
@@ -170,20 +217,49 @@ export function Chat({ model }: { model?: string | null }) {
     setSheetOpen(false)
   }
 
+  /** Start a chat with the draft's Think choice and make it the open one. */
+  async function startChat(): Promise<string> {
+    const stamp = opening.current
+    const chat = await api<ChatSummary>('/api/chats', post({ think: draftThink }))
+    // The owner moved on (New chat, another chat) while it was being made: don't pull them back.
+    if (stamp !== opening.current) throw new Error('superseded')
+    opening.current += 1
+    setCurrent(chat.id)
+    setChats((all) => [chat, ...(all ?? [])])
+    return chat.id
+  }
+
+  /** Where an upload goes: the open chat, or a new one made first (once, however many files). */
+  function chatForUpload(): Promise<string> {
+    if (current !== null) return Promise.resolve(current)
+    creating.current ??= startChat().finally(() => {
+      creating.current = null
+    })
+    return creating.current
+  }
+
+  /** One paperclip for both: photos keep the photo path, everything else is a chat file. */
+  function pickFile(file: File) {
+    if (isPhotoFile(file)) {
+      void attach.pick(file)
+      return
+    }
+    void files.add(file, chatForUpload).then((info) => {
+      if (info) setKnown((all) => ({ ...all, [info.id]: info }))
+    })
+  }
+
   async function send(words: string): Promise<boolean> {
     setNotice(null)
-    // The photo rides along as its own line; the bubble shows it as a thumbnail.
+    // Photos and files ride along as their own lines; the bubble shows them as thumbnails and chips.
     const photoId = attach.photo.state === 'ready' ? attach.photo.id : null
-    const text = photoId ? [words, attachedPhotoLine(photoId)].filter(Boolean).join('\n') : words
+    const fileIds = files.readyIds
+    const text = [words, ...(photoId ? [attachedPhotoLine(photoId)] : []), ...fileIds.map(attachedFileLine)]
+      .filter(Boolean)
+      .join('\n')
     let chatId = current
     try {
-      if (chatId === null) {
-        const chat = await api<ChatSummary>('/api/chats', post({ think: draftThink }))
-        chatId = chat.id
-        opening.current += 1
-        setCurrent(chat.id)
-        setChats((all) => [chat, ...(all ?? [])])
-      }
+      if (chatId === null) chatId = await (creating.current ?? startChat())
       const { turn_id } = await api<{ turn_id: string }>(
         `/api/chats/${encodeURIComponent(chatId)}/messages`,
         post({ text }),
@@ -192,12 +268,13 @@ export function Chat({ model }: { model?: string | null }) {
       setItems((all) => [...all, { kind: 'user', key: `u-${turn_id}`, text }, liveTurn(turn_id, Date.now())])
       setLive({ chatId, turnId: turn_id })
       if (photoId) attach.clear()
+      if (fileIds.length) files.sent()
       const id = chatId
       setChats(
         (all) =>
           all?.map((c) =>
             c.id === id
-              ? { ...c, active_turn: turn_id, title: c.title || titleFor(text) }
+              ? { ...c, active_turn: turn_id, title: c.title || titleFor(text, known[fileIds[0]]?.name) }
               : c,
           ) ?? null,
       )
@@ -223,8 +300,11 @@ export function Chat({ model }: { model?: string | null }) {
       failed={listFailed}
       current={current}
       onOpen={(c) => {
-        // A photo picked for one chat doesn't follow the owner into another.
-        if (c.id !== current) attach.clear()
+        // A photo or file picked for one chat doesn't follow the owner into another.
+        if (c.id !== current) {
+          attach.clear()
+          files.clear()
+        }
         void open(c)
       }}
       onNew={newChat}
@@ -253,11 +333,12 @@ export function Chat({ model }: { model?: string | null }) {
             {items.length === 0 && !loading && <EmptyChat />}
             {items.map((item) =>
               item.kind === 'user' ? (
-                <UserBubble key={item.key} text={item.text} />
+                <UserBubble key={item.key} text={item.text} known={known} />
               ) : (
                 <AssistantTurn
                   key={item.key}
                   item={item}
+                  known={known}
                   onResolved={(id, status) => resolved(item.key, id, status)}
                 />
               ),
@@ -271,7 +352,8 @@ export function Chat({ model }: { model?: string | null }) {
               <span>{notice}</span>
             </div>
           )}
-          <PhotoChip attach={attach} />
+          <PhotoChip attach={attach} alsoAnnounce={files.announcement} />
+          <AttachedFiles attach={files} />
           <Composer
             onSend={send}
             busy={busy}
@@ -280,7 +362,8 @@ export function Chat({ model }: { model?: string | null }) {
             thinkLocked={current !== null}
             model={model ?? null}
             photo={attach.photo}
-            onPickPhoto={(file) => void attach.pick(file)}
+            files={{ uploading: files.uploading, ready: files.readyIds.length }}
+            onPickFile={pickFile}
           />
         </div>
       </section>
@@ -290,13 +373,14 @@ export function Chat({ model }: { model?: string | null }) {
 }
 
 /** The owner's message: any attached photos, then the words, without the attachment lines. */
-function UserBubble({ text }: { text: string }) {
-  const { photos, text: words } = splitPhotos(text)
+function UserBubble({ text, known }: { text: string; known: Record<string, ChatFileInfo> }) {
+  const { photos, files: fileIds, text: words } = splitAttachments(text)
   return (
     <div className="me" data-photos={photos.length || undefined}>
       {photos.map((id, i) => (
         <img key={`${id}-${i}`} className="me-photo" src={uploadUrl(id)} alt="Your photo" loading="lazy" />
       ))}
+      <FileChips className="me-files" files={fileIds.map((id) => chipFor(id, known))} />
       {words}
     </div>
   )
@@ -314,9 +398,11 @@ function EmptyChat() {
 
 function AssistantTurn({
   item,
+  known,
   onResolved,
 }: {
   item: AssistantItem
+  known: Record<string, ChatFileInfo>
   onResolved: (approvalId: string, status: ApprovalStatus) => void
 }) {
   const streaming = item.state === 'streaming'
@@ -331,6 +417,7 @@ function AssistantTurn({
       )}
       <WorkedSteps steps={item.steps} workedMs={item.workedMs} running={streaming} />
       <StepImages steps={item.steps} />
+      <StepFiles steps={item.steps} known={known} />
       {item.approvals.map(({ request, status }) => (
         <ApprovalCard
           key={request.approval_id}
@@ -359,6 +446,13 @@ function AssistantTurn({
       )}
     </div>
   )
+}
+
+/** The files a turn's steps brought into the chat or made, under the steps. */
+function StepFiles({ steps, known }: { steps: Step[]; known: Record<string, ChatFileInfo> }) {
+  const ids = [...new Set(steps.flatMap((step) => step.files ?? []))]
+  if (!ids.length) return null
+  return <FileChips className="turn-files" files={ids.map((id) => chipFor(id, known))} />
 }
 
 /** The images a turn's steps made: a grid under the steps, opening into the shared viewer. */

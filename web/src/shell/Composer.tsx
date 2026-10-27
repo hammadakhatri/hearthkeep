@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { FILE_ACCEPT } from '../api/files'
 import { PhotoButton, type Photo } from '../components/Photo'
 import { PaperclipIcon, SendIcon, ThinkIcon } from './icons'
 
@@ -14,19 +15,23 @@ type Props = {
   model: string | null
   /** The photo for the next message, when attaching one is offered. */
   photo?: Photo
-  onPickPhoto?: (file: File) => void
+  /** The files for the next message: some still uploading, some stored. */
+  files?: { uploading: boolean; ready: number }
+  /** One call per picked file, photo or not; the caller routes each by type. */
+  onPickFile?: (file: File) => void
 }
 
 const MAX_HEIGHT = 200
 
-/** The floating message box: text, a photo, Think, the model in use, Send. */
-export function Composer({ onSend, busy, think, onThinkChange, thinkLocked, model, photo, onPickPhoto }: Props) {
+/** The floating message box: text, photos and files, Think, the model in use, Send. */
+export function Composer({ onSend, busy, think, onThinkChange, thinkLocked, model, photo, files, onPickFile }: Props) {
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
   const box = useRef<HTMLTextAreaElement>(null)
-  // A ready photo can go on its own; one still uploading holds the message back.
-  const hasContent = text.trim() !== '' || photo?.state === 'ready'
-  const canSend = hasContent && photo?.state !== 'uploading' && !busy && !sending
+  // A ready photo or file can go on its own; one still uploading holds the message back.
+  const hasContent = text.trim() !== '' || photo?.state === 'ready' || (files?.ready ?? 0) > 0
+  const uploading = photo?.state === 'uploading' || files?.uploading === true
+  const canSend = hasContent && !uploading && !busy && !sending
 
   // Grow with the text, up to a few lines, then scroll inside.
   useLayoutEffect(() => {
@@ -84,8 +89,14 @@ export function Composer({ onSend, busy, think, onThinkChange, thinkLocked, mode
         </span>
       )}
       <div className="composer-tools">
-        {onPickPhoto && (
-          <PhotoButton className="chipbtn opt attach" label="Attach a photo" onPick={onPickPhoto}>
+        {onPickFile && (
+          <PhotoButton
+            className="chipbtn opt attach"
+            label="Attach a photo"
+            accept={FILE_ACCEPT}
+            multiple
+            onPick={onPickFile}
+          >
             <PaperclipIcon />
           </PhotoButton>
         )}

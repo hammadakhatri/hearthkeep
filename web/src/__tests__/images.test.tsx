@@ -312,8 +312,11 @@ describe('photos', () => {
     render(<Chat model="Local model 12B" />)
     const clip = await screen.findByRole('button', { name: 'Attach a photo' })
     expect(clip).toBeEnabled()
-    expect(fileInput()).toHaveAttribute('accept', 'image/png,image/jpeg,image/webp')
-    expect(fileInput().multiple).toBe(false)
+    // One paperclip for photos and files; a photo is still routed down the photo path.
+    expect(fileInput().accept.split(',')).toEqual(
+      expect.arrayContaining(['image/png', 'image/jpeg', 'image/webp', '.csv']),
+    )
+    expect(fileInput().multiple).toBe(true)
     // The live region is there before anything happens, so screen readers pick up changes.
     expect(announcer()).toHaveAttribute('role', 'status')
     expect(announcer()).toHaveTextContent('')

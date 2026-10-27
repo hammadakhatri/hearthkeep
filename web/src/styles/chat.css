@@ -844,3 +844,134 @@
     animation: none;
   }
 }
+
+/* ---- Attached files ------------------------------------------------------------------- */
+
+.file-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  white-space: normal;
+}
+
+.file-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 6px 6px 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  color: var(--fg2);
+  font-size: var(--text-sm);
+  text-align: left;
+  animation: rise var(--dur) var(--ease);
+}
+
+.file-chip[data-state='failed'] {
+  border-color: color-mix(in srgb, var(--red) 50%, var(--line));
+  background: var(--red-soft);
+}
+
+.file-chip-icon {
+  flex: none;
+  color: var(--muted);
+}
+
+.file-chip[data-state='failed'] .file-chip-icon {
+  color: var(--red);
+}
+
+.file-chip-wait {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: file-spin 0.8s linear infinite;
+}
+
+@keyframes file-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.file-chip-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.file-chip-name {
+  overflow: hidden;
+  color: var(--fg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow-wrap: anywhere;
+}
+
+.file-chip-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.file-chip-error {
+  color: var(--red);
+  overflow-wrap: anywhere;
+}
+
+.file-chip-unchecked {
+  color: var(--amber);
+  cursor: help;
+}
+
+.file-chip-action {
+  width: 32px;
+  height: 32px;
+}
+
+.me-files,
+.turn-files {
+  margin-bottom: 8px;
+}
+
+.me-files:last-child,
+.turn-files:last-child {
+  margin-bottom: 0;
+}
+
+.me .file-chip {
+  background: var(--s2);
+}
+
+@media (max-width: 640px) {
+  .file-chip {
+    flex: 1 1 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .file-chip {
+    animation: none;
+  }
+
+  .file-chip-wait {
+    animation: none;
+    border-top-color: var(--line);
+    border-right-color: var(--accent);
+  }
+}

@@ -98,13 +98,19 @@ export function PhotoButton({
   className,
   label,
   describedBy,
+  accept = PHOTO_ACCEPT,
+  multiple = false,
   children,
 }: {
+  /** Called once per picked file. */
   onPick: (file: File) => void
   disabled?: boolean
   className: string
   label?: string
   describedBy?: string
+  /** What the picker offers; photos only unless the caller also takes files. */
+  accept?: string
+  multiple?: boolean
   children: ReactNode
 }) {
   const input = useRef<HTMLInputElement>(null)
@@ -123,14 +129,15 @@ export function PhotoButton({
       <input
         ref={input}
         type="file"
-        accept={PHOTO_ACCEPT}
+        accept={accept}
+        multiple={multiple}
         hidden
         tabIndex={-1}
         onChange={(event) => {
-          const file = event.target.files?.[0]
+          const picked = Array.from(event.target.files ?? [])
           // Cleared so picking the same file again still counts as a change.
           event.target.value = ''
-          if (file) onPick(file)
+          for (const file of multiple ? picked : picked.slice(0, 1)) onPick(file)
         }}
       />
     </>
@@ -141,12 +148,19 @@ export function PhotoButton({
  * The picked photo while it uploads and once it is ready, with Remove; or why it failed. The
  * live region is always mounted (and visually hidden) so its changes are announced.
  */
-export function PhotoChip({ attach }: { attach: ReturnType<typeof usePhoto> }) {
+export function PhotoChip({
+  attach,
+  alsoAnnounce = '',
+}: {
+  attach: ReturnType<typeof usePhoto>
+  /** More for the same live region, such as file upload progress. */
+  alsoAnnounce?: string
+}) {
   const { photo, announcement, remove, clear } = attach
   return (
     <>
       <span className="sr-only" role="status" data-testid="photo-status">
-        {announcement}
+        {[announcement, alsoAnnounce].filter(Boolean).join('. ')}
       </span>
       {photo.state === 'failed' ? (
         <div className="note error photo-error" role="alert">

@@ -9,7 +9,7 @@ export type AgentEvent = { seq: number } & (
   | { type: 'reasoning_delta'; text: string }
   | { type: 'step_started'; step_id: string; tool: string; summary: string }
   | { type: 'step_finished'; step_id: string; ok: boolean; preview: string }
-  /** What a step made for the owner to see (generated images), sent just before it finishes. */
+  /** What a step made for the owner to see (generated images, analysis runs, files), sent just before it finishes. */
   | { type: 'attachments'; step_id: string; items: Attachment[] }
   | {
       type: 'approval_required'
@@ -24,7 +24,7 @@ export type AgentEvent = { seq: number } & (
   | { type: 'turn_error'; message: string }
 )
 
-export type Attachment = { kind: 'image'; id: string }
+export type Attachment = { kind: 'image' | 'run' | 'file'; id: string }
 
 export type AgentEventType = AgentEvent['type']
 

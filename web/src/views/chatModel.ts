@@ -1,6 +1,6 @@
 /** What the chat thread shows, built from saved messages and live turn events. */
 
-import type { AgentEvent, ApprovalStatus } from '../api/events'
+import type { AgentEvent, ApprovalStatus, Attachment } from '../api/events'
 
 export type ChatSummary = {
   id: string
@@ -19,6 +19,8 @@ export type ServerMessage = {
   created_at: string
   /** On a tool message: ids of the images that tool call made, in order. */
   images?: string[]
+  /** On a tool message: ids of the analysis runs that tool call made, in order. */
+  runs?: string[]
 }
 
 export type Step = {
@@ -28,6 +30,10 @@ export type Step = {
   state: 'running' | 'ok' | 'failed'
   /** Ids of the images this step made, in order. */
   images?: string[]
+  /** Ids of the analysis runs this step made, in order. */
+  runs?: string[]
+  /** Ids of the files this step brought into the chat or made, in order. */
+  files?: string[]
 }
 
 export type ApprovalRequest = {
@@ -98,12 +104,19 @@ export function applyEvent(item: AssistantItem, e: AgentEvent, now: number): Ass
         steps: item.steps.map((s) => (s.id === e.step_id ? { ...s, state: e.ok ? 'ok' : 'failed' } : s)),
       }
     case 'attachments': {
-      const ids = e.items.filter((a) => a.kind === 'image' && typeof a.id === 'string').map((a) => a.id)
+      const idsOf = (kind: Attachment['kind']) =>
+        e.items.filter((a) => a.kind === kind && typeof a.id === 'string').map((a) => a.id)
+      const merge = (had: string[] | undefined, more: string[]) => [...new Set([...(had ?? []), ...more])]
+      const [images, runs, files] = [idsOf('image'), idsOf('run'), idsOf('file')]
       return {
         ...item,
-        steps: item.steps.map((s) =>
-          s.id === e.step_id ? { ...s, images: [...new Set([...(s.images ?? []), ...ids])] } : s,
-        ),
+        steps: item.steps.map((s) => {
+          if (s.id !== e.step_id) return s
+          const next = { ...s, images: merge(s.images, images) }
+          if (runs.length) next.runs = merge(s.runs, runs)
+          if (files.length) next.files = merge(s.files, files)
+          return next
+        }),
       }
     }
     case 'approval_required': {
@@ -190,9 +203,12 @@ export function itemsFromMessages(messages: ServerMessage[]): Item[] {
     } else {
       const state = toolFailed(m.content) ? 'failed' : 'ok'
       next = { ...next, steps: next.steps.map((s) => (s.id === m.tool_call_id ? { ...s, state } : s)) }
-      if (m.tool_call_id && m.images?.length) {
+      if (m.tool_call_id && (m.images?.length || m.runs?.length)) {
         // The same shape a live turn's attachments event has, so it shows the same way.
-        const items = m.images.map((id) => ({ kind: 'image' as const, id }))
+        const items: Attachment[] = [
+          ...(m.images ?? []).map((id) => ({ kind: 'image' as const, id })),
+          ...(m.runs ?? []).map((id) => ({ kind: 'run' as const, id })),
+        ]
         next = applyEvent(next, { type: 'attachments', seq: 0, step_id: m.tool_call_id, items }, 0)
       }
     }
