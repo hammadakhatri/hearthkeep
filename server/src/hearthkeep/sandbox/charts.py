@@ -141,11 +141,15 @@ def _css_unescape(text: str) -> str:
     return _CSS_ESCAPE.sub(one, text)
 
 
-def _has_css_url(text: str) -> bool:
+def _has_css_url(text: str, *, column: bool = False) -> bool:
     """A CSS url( written plainly or with escapes (u\\72l(, url\\28 ), or a backslash with ( )."""
     if _CSS_URL.search(text):
         return True
-    return "\\" in text and ("(" in text or bool(_CSS_URL.search(_css_unescape(text))))
+    if "\\" not in text:
+        return False
+    if "(" in text and not column:  # column names (`field`) legitimately hold hk's escapes
+        return True
+    return bool(_CSS_URL.search(_css_unescape(text)))
 
 
 def _check_text(text: str, *, what: str) -> None:
@@ -179,7 +183,7 @@ class _Walker:
                 return
             if _has_url(node):
                 raise _bad(f"a text in {_q(where)} looks like a URL: {_q(node)}")
-            if _has_css_url(node):
+            if _has_css_url(node, column=where in ("field", "fields")):
                 raise _bad(f"a text in {_q(where)} has a CSS url(): {_q(node)}")
             if node.strip().casefold() == "image":
                 raise _bad(f"the text 'image' in {_q(where)} is not allowed")

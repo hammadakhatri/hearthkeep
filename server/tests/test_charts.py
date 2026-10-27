@@ -31,7 +31,7 @@ def compact_size(spec: dict) -> int:
     return len(json.dumps(spec, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
 
 
-@pytest.mark.parametrize("name", ["bar", "line_highlight", "scatter"])
+@pytest.mark.parametrize("name", ["bar", "line_highlight", "scatter", "line_paren_column"])
 def test_accepts_hk_bar_line_scatter_specs(name):
     spec = json.loads((FIXTURES / f"{name}.json").read_text(encoding="utf-8"))
     assert validate_chart_spec(spec) == spec
@@ -491,3 +491,34 @@ def test_format_rejects_long_digit_runs():
     rejected(axis("1234"))
     validate_chart_spec(axis("0>999,.2f"))
     validate_chart_spec(axis("%Y-%m-%d"))
+
+
+def test_field_names_may_carry_hk_escapes_with_parentheses():
+    esc = "cost (usd)" + chr(92) + ".total"
+    validate_chart_spec(base(encoding={"y": {"field": esc, "type": "quantitative"}}))
+    validate_chart_spec(
+        base(
+            params=[
+                {"name": "legend", "select": {"type": "point", "fields": [esc]}, "bind": "legend"}
+            ]
+        )
+    )
+    # still checked by every other rule
+    for bad in (
+        "url" + chr(92) + "28 x" + chr(92) + "29",
+        "u" + chr(92) + "72l(x)",
+        "image",
+        "https://x",
+        "x" * 3 + chr(0xD800),
+    ):
+        rejected(base(encoding={"y": {"field": bad}}))
+        rejected(
+            base(
+                params=[
+                    {"name": "p", "select": {"type": "point", "fields": [bad]}, "bind": "legend"}
+                ]
+            )
+        )
+    # other strings keep the backslash plus parenthesis rule
+    rejected(base(title=esc))
+    rejected(base(encoding={"y": {"field": "a", "title": esc}}))

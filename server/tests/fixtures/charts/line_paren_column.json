@@ -1,0 +1,90 @@
+{
+ "$schema": "https://vega.github.io/schema/vega-lite/v6.json",
+ "title": "Cost",
+ "width": "container",
+ "data": {
+  "values": [
+   {
+    "month": "Jan",
+    "cost (usd).total": 10.5,
+    "kind (x)": "a"
+   },
+   {
+    "month": "Feb",
+    "cost (usd).total": 20.0,
+    "kind (x)": "b"
+   },
+   {
+    "month": "Mar",
+    "cost (usd).total": 15.25,
+    "kind (x)": "a"
+   }
+  ]
+ },
+ "layer": [
+  {
+   "mark": {
+    "type": "line",
+    "point": true
+   },
+   "encoding": {
+    "x": {
+     "field": "month",
+     "type": "nominal",
+     "title": "month"
+    },
+    "y": {
+     "field": "cost (usd)\\.total",
+     "type": "quantitative",
+     "title": "cost (usd).total"
+    },
+    "tooltip": [
+     {
+      "field": "month",
+      "type": "nominal",
+      "title": "month"
+     },
+     {
+      "field": "cost (usd)\\.total",
+      "type": "quantitative",
+      "title": "cost (usd).total"
+     },
+     {
+      "field": "kind (x)",
+      "type": "nominal",
+      "title": "kind (x)"
+     }
+    ],
+    "color": {
+     "field": "kind (x)",
+     "type": "nominal",
+     "title": "kind (x)"
+    },
+    "opacity": {
+     "condition": {
+      "param": "legend",
+      "value": 1
+     },
+     "value": 0.2
+    }
+   },
+   "params": [
+    {
+     "name": "zoom",
+     "select": "interval",
+     "bind": "scales"
+    },
+    {
+     "name": "legend",
+     "select": {
+      "type": "point",
+      "fields": [
+       "kind (x)"
+      ]
+     },
+     "bind": "legend"
+    }
+   ]
+  }
+ ]
+}
