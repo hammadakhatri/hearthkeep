@@ -179,7 +179,11 @@ class RunStore:
             body = json.dumps(dataclasses.asdict(table))
             rows.append((self.new_id(), "table", table.name, TABLE_MIME, len(body), body, None))
         moves: list[tuple[Path, Path]] = []
+        seen: set[str] = set()
         for ref in parsed.files:
+            if ref.member in seen:  # the same file reported twice: one output
+                continue
+            seen.add(ref.member)
             source = raw.members.get(ref.member)
             if source is None or not source.is_file():
                 record.problems.append(f"file {ref.name}: not among the run's output files")
@@ -190,6 +194,8 @@ class RunStore:
             moves.append((source, files_dir / file_name))
             rows.append((output_id, "file", ref.name, mime, source.stat().st_size, None, file_name))
 
+        run_dir = files_dir.parent
+        made_run_dir = not run_dir.exists()
         placed: list[Path] = []
         try:
             with db.transaction(self._conn):
@@ -209,12 +215,14 @@ class RunStore:
                 if moves:
                     files_dir.mkdir(parents=True, exist_ok=True)
                 for source, target in moves:
+                    placed.append(target)  # before the move: a cut copy is removed too
                     _move(source, target)
-                    placed.append(target)
         except BaseException:
             for target in placed:
                 with contextlib.suppress(OSError):
-                    target.unlink()
+                    target.unlink(missing_ok=True)
+            if made_run_dir:
+                shutil.rmtree(run_dir, ignore_errors=True)
             raise
         return record
 

@@ -213,3 +213,20 @@ def test_entry_kills_escaped_processes_before_writing_status(sandbox_image, tmp_
     assert printed == b"parent waiting\n"
     # The script limit plus start-up; waiting on the escaped writer's pipe would add 5 s.
     assert elapsed < 3 + 4
+
+
+def test_docker_probes_and_build_open_no_window_and_no_stdin(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(kwargs)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(image.subprocess, "run", fake_run)
+    assert image.docker_ok() is True
+    assert image.image_present("hearthkeep-sandbox:0123456789ab") is True
+    assert image.build_image("hearthkeep-sandbox:0123456789ab") == 0
+    assert len(calls) == 3
+    for kwargs in calls:
+        assert kwargs["stdin"] == subprocess.DEVNULL
+        assert kwargs["creationflags"] == getattr(subprocess, "CREATE_NO_WINDOW", 0)

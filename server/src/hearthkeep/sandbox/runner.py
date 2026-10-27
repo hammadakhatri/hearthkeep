@@ -20,6 +20,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
+import os
 import re
 import shutil
 import subprocess
@@ -46,6 +48,8 @@ NAME_PREFIX = "hk-run-"
 TMPFS_BYTES = 268_435_456
 STDERR_BYTES = 65_536
 STATUS_BYTES = 65_536
+DIAGNOSTICS_BYTES = 2048
+HEADER_BYTES = 65_536  # a PAX or GNU long-name header larger than this is refused unread
 STATUS_CACHE_S = 30.0
 CHUNK = 65_536
 KILL_TIMEOUT_S = 15.0  # for `docker kill` / `docker rm` themselves
@@ -53,6 +57,7 @@ KILL_GRACE_S = 5.0  # how long the `docker run` client may outlive `docker kill`
 EXIT_GRACE_S = 10.0  # after its stdout closes, the client should exit about at once
 SWEEP_TIMEOUT_S = 30.0
 _IS_WINDOWS = sys.platform == "win32"
+_log = logging.getLogger(__name__)
 
 # Exactly these names, and nothing else, may come back (ASCII only: no Unicode digits).
 MEMBER_NAME = re.compile(
@@ -74,6 +79,19 @@ NO_IMAGE_MESSAGE = (
     "Running Python needs the sandbox image, which isn't built yet. "
     "Build it once with: hearthkeep sandbox build --data <data>"
 )
+DATA_PATH_MESSAGE = (
+    "Hearthkeep's data folder path contains a comma or quote, which Docker can't mount. "
+    "Move the data folder to a simpler path."
+)
+# What a failed run says (the model sees these): never Docker's own words.
+ERROR_START = "The sandbox couldn't start the container."
+ERROR_ENTRY = "The sandbox couldn't run its entry program."
+ERROR_OUTPUT = "The sandbox returned output Hearthkeep couldn't read."
+ERROR_UNEXPECTED = "The sandbox stopped unexpectedly."
+DOCKER_KILLED_EXIT = 137  # the container was killed: by its memory limit, unless the host did
+SCRIPT_KILLED_EXIT = -9  # the entry's report for a script ended by SIGKILL (outside a timeout)
+# Tar header types whose data is header text for the next member.
+_LONG_HEADER_TYPES = frozenset(b"xgLK")
 
 
 @dataclass(frozen=True)
@@ -115,6 +133,9 @@ class RawRun:
     duration_ms: int
     members: dict[str, Path]  # accepted member name -> its copy inside the job folder
     error: str | None
+    # Docker's stderr (first 2 KB, the data and home folders replaced) or why the output was
+    # refused: for the server log only, never saved with the run or shown to the model.
+    diagnostics: str | None = field(default=None, repr=False)
     job_dir: Path | None = field(default=None, repr=False)
 
     def cleanup(self) -> None:
@@ -146,6 +167,26 @@ def _mount_source(path: Path) -> str:
     return source
 
 
+def _path_forms(path: Path) -> list[str]:
+    """How a host path may show up in Docker's messages: as given, with forward slashes, and
+    as Docker Desktop's Linux side spells it (`/c/Users/...`)."""
+    forms = {str(path), path.as_posix()}
+    if path.drive and len(path.drive) == 2 and path.drive[1] == ":":
+        forms.add("/" + path.drive[0].lower() + path.as_posix()[2:])
+    return [f for f in forms if len(f) > 3]
+
+
+def redact(text: str, data_dir: Path) -> str:
+    """`text` with the data folder shown as <data> and the home folder as <home>."""
+    pairs = []
+    for base, label in ((Path(data_dir), "<data>"), (Path.home(), "<home>")):
+        for candidate in {base, base.resolve()}:
+            pairs.extend((form, label) for form in _path_forms(candidate))
+    for form, label in sorted(pairs, key=lambda pair: -len(pair[0])):
+        text = re.sub(re.escape(form), label, text, flags=re.IGNORECASE)
+    return text
+
+
 def _format_number(value: float) -> str:
     return f"{value:g}"
 
@@ -172,9 +213,37 @@ def _check_member(member: tarfile.TarInfo) -> str:
     return name
 
 
+def _header_size(field_bytes: bytes) -> int:
+    """A tar header's size field: octal text, or GNU base-256 (high bit set)."""
+    if field_bytes[0] & 0x80:
+        if field_bytes[0] & 0x40:
+            raise _BadOutput("a member has a negative size")
+        return int.from_bytes(bytes([field_bytes[0] & 0x3F]) + field_bytes[1:], "big")
+    text = field_bytes.split(b"\0", 1)[0].strip(b" ")
+    try:
+        return int(text or b"0", 8)
+    except ValueError:
+        raise _BadOutput("a member has a bad size") from None
+
+
+def _scan_headers(tar_path: Path) -> None:
+    """Walk the raw headers before tarfile does: tarfile reads a PAX or GNU long-name header
+    into memory whole, so a huge one is refused here, unread."""
+    with open(tar_path, "rb") as raw:
+        while True:
+            block = raw.read(512)
+            if len(block) < 512 or not block.strip(b"\0"):
+                return  # the end (or a cut stream, which tarfile then refuses)
+            size = _header_size(block[124:136])
+            if block[156] in _LONG_HEADER_TYPES and size > HEADER_BYTES:
+                raise _BadOutput("a member header is too large")
+            raw.seek((size + 511) // 512 * 512, os.SEEK_CUR)
+
+
 def _unpack(tar_path: Path, out_dir: Path, max_members: int, stop: threading.Event) -> dict:
     """Copy the accepted members of `tar_path` into `out_dir` (as m000, m001, ...); raise
     _BadOutput at the first member that breaks a rule. Never `tarfile.extract`."""
+    _scan_headers(tar_path)
     out_dir.mkdir()
     members: dict[str, Path] = {}
     with (
@@ -217,9 +286,9 @@ def _unpack(tar_path: Path, out_dir: Path, max_members: int, stop: threading.Eve
 
 
 def _read_status(path: Path) -> dict:
-    data = path.read_bytes()
-    if len(data) > STATUS_BYTES:
+    if os.stat(path).st_size > STATUS_BYTES:
         raise _BadOutput("status.json is too large")
+    data = path.read_bytes()
     try:
         status = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError):
@@ -309,6 +378,7 @@ class SandboxRunner:
         self._chats = self.data_dir / "workspace" / "chats"
         self._status: tuple[float, SandboxStatus] | None = None
         self._status_lock = asyncio.Lock()
+        self._active: set[str] = set()
 
     # The container
 
@@ -325,6 +395,8 @@ class SandboxRunner:
             *self.docker,
             "run",
             "--rm",
+            "--pull", "never",
+            "--log-driver", "none",
             "--network", "none",
             "--read-only",
             "--user", "10001:10001",
@@ -346,7 +418,8 @@ class SandboxRunner:
         ]  # fmt: skip
 
     def _files_dir(self, files_dir: Path) -> Path:
-        """Only a chat's own `files` folder is ever mounted (created empty if missing)."""
+        """Only a chat's own `files` folder is ever mounted. It must exist already (the chat
+        creates it through `ChatFileStore.files_dir`): the runner never makes folders there."""
         folder = Path(files_dir)
         if folder.name != "files" or not CHAT_ID.fullmatch(folder.parent.name):
             raise ValueError("not a chat's files folder")
@@ -357,9 +430,8 @@ class SandboxRunner:
         for path in (folder.parent, folder):
             if path.is_symlink():
                 raise ValueError("a chat's files folder may not be a link")
-        resolved.mkdir(parents=True, exist_ok=True)
-        if resolved.resolve() != resolved:
-            raise ValueError("a chat's files folder may not be a link")
+        if not resolved.is_dir():
+            raise FileNotFoundError("the chat's files folder does not exist")
         return resolved
 
     # Docker itself
@@ -403,8 +475,11 @@ class SandboxRunner:
             return result
 
     async def sweep(self) -> int:
-        """Remove containers a stopped Hearthkeep left behind, and their job folders. Call at
-        startup only, before any run can be live. Returns how many containers were removed."""
+        """Remove containers a stopped Hearthkeep left behind, and their job folders. Meant
+        for startup; refused (RuntimeError) while any run of this runner is live. Returns how
+        many containers were removed."""
+        if self._active:
+            raise RuntimeError("the sandbox sweep can't run while a run is live")
         for leftover in self._jobs.iterdir() if self._jobs.is_dir() else ():
             if RUN_ID.fullmatch(leftover.name) and not leftover.is_symlink():
                 _remove_tree(leftover)
@@ -453,6 +528,8 @@ class SandboxRunner:
             raise SandboxUnavailable(NO_DOCKER_MESSAGE)
         if not state.image:
             raise SandboxUnavailable(NO_IMAGE_MESSAGE)
+        if _UNSAFE_MOUNT.search(str(self.data_dir.resolve())):
+            raise SandboxUnavailable(DATA_PATH_MESSAGE)
         files = self._files_dir(files_dir)
         limits = self.limits
         timeout = limits.timeout_s if timeout_s is None else float(timeout_s)
@@ -462,6 +539,8 @@ class SandboxRunner:
         self._jobs.mkdir(parents=True, exist_ok=True)
         job = self._jobs / run_id
         job.mkdir()  # a run id is used once: an existing folder is an error
+        self._active.add(run_id)
+        killed = False  # whether the host sent `docker kill`, on any path
         proc: asyncio.subprocess.Process | None = None
         stderr_task: asyncio.Task | None = None
         handed_over = False
@@ -485,17 +564,21 @@ class SandboxRunner:
             stderr_task = asyncio.ensure_future(_read_capped(proc.stderr, STDERR_BYTES))
             outcome = await self._collect(proc, tar_path, timeout)
             if outcome != "done" or not await _wait_exit(proc, EXIT_GRACE_S):
+                killed = True
                 await self._stop(name, proc)
             duration_ms = int((time.monotonic() - started) * 1000)
             stderr = await _finish(stderr_task)
 
             raw = await self._result(
-                outcome, proc.returncode, stderr, duration_ms, job, tar_path, timeout
+                outcome, proc.returncode, killed, stderr, duration_ms, job, tar_path, timeout
             )
+            if raw.diagnostics:
+                _log.warning("sandbox %s %s: %s", name, raw.status, raw.diagnostics)
             handed_over = bool(raw.members)
             return raw
         except BaseException:
             if proc is not None and proc.returncode is None:
+                killed = True
                 with contextlib.suppress(BaseException):
                     await asyncio.shield(self._stop(name, proc))
                 if proc.returncode is None:
@@ -503,6 +586,7 @@ class SandboxRunner:
                         proc.kill()
             raise
         finally:
+            self._active.discard(run_id)
             if stderr_task is not None and not stderr_task.done():
                 stderr_task.cancel()
             if not handed_over:
@@ -536,14 +620,20 @@ class SandboxRunner:
         self,
         outcome: str,
         returncode: int | None,
+        killed: bool,
         stderr: bytes,
         duration_ms: int,
         job: Path,
         tar_path: Path,
         timeout: float,
     ) -> RawRun:
-        def fail(status: RunStatus, error: str) -> RawRun:
-            return RawRun(status, None, "", False, duration_ms, {}, error, job)
+        diagnostics = self._diagnostics(stderr.decode("utf-8", "replace").strip())
+
+        def fail(status: RunStatus, error: str, why: str | None = None) -> RawRun:
+            note = "; ".join(x for x in (why, diagnostics) if x) or None
+            if note is not None:
+                note = self._diagnostics(note)
+            return RawRun(status, None, "", False, duration_ms, {}, error, note, job)
 
         if outcome == "timeout":
             return fail("timeout", f"The run took longer than {timeout:g} seconds and was stopped.")
@@ -553,16 +643,16 @@ class SandboxRunner:
                 "too_much_output",
                 f"The run produced more than {megabytes:g} MB of output and was stopped.",
             )
-        detail = stderr.decode("utf-8", "replace").strip()
-        if returncode is not None and 125 <= returncode <= 127:
+        if killed:  # the host had to kill it although its time wasn't up
+            return fail("sandbox_error", ERROR_UNEXPECTED, f"killed by the host ({returncode})")
+        if returncode in (125, 126, 127):
             self._status = None  # Docker or the image may have gone: look again next time
-            return fail(
-                "sandbox_error", detail or f"Docker could not start the sandbox ({returncode})."
-            )
+            message = ERROR_START if returncode == 125 else ERROR_ENTRY
+            return fail("sandbox_error", message, f"docker exited {returncode}")
+        if returncode == DOCKER_KILLED_EXIT:
+            return fail("failed", self._memory_message())
         if returncode != 0:
-            return fail(
-                "sandbox_error", detail or f"The sandbox stopped unexpectedly ({returncode})."
-            )
+            return fail("sandbox_error", ERROR_UNEXPECTED, f"docker exited {returncode}")
 
         stop = threading.Event()
         work = asyncio.ensure_future(
@@ -579,7 +669,7 @@ class SandboxRunner:
             raise
         except (_BadOutput, tarfile.TarError, EOFError, UnicodeError, OSError, ValueError) as exc:
             reason = str(exc) if isinstance(exc, _BadOutput) else "the archive could not be read"
-            return fail("sandbox_error", f"The sandbox's output was refused: {reason}.")
+            return fail("sandbox_error", ERROR_OUTPUT, f"output refused: {reason}")
         with contextlib.suppress(OSError):
             tar_path.unlink()
         _remove_tree(job / "in")
@@ -592,11 +682,24 @@ class SandboxRunner:
                 f"The script took longer than {self._script_timeout(timeout)} seconds "
                 "and was stopped."
             )
+        elif exit_code == SCRIPT_KILLED_EXIT:  # in the container only the OOM killer sends that
+            run_status, error = "failed", self._memory_message()
         elif exit_code != 0:
             run_status, error = "failed", None
         else:
             run_status, error = "ok", None
-        return RawRun(run_status, exit_code, stdout, truncated, duration_ms, members, error, job)
+        return RawRun(
+            run_status, exit_code, stdout, truncated, duration_ms, members, error, None, job
+        )
+
+    def _memory_message(self) -> str:
+        memory = _format_number(self.limits.memory_gb)
+        return f"The script used more than {memory} GB of memory and was stopped."
+
+    def _diagnostics(self, text: str) -> str:
+        """Redacted first, then cut to 2 KB, so no path is left half-replaced."""
+        cut = redact(text, self.data_dir).encode("utf-8")[:DIAGNOSTICS_BYTES]
+        return cut.decode("utf-8", "ignore")
 
     def _script_timeout(self, timeout: float) -> int:
         """The script's own limit sits inside the container's, by the same margin."""

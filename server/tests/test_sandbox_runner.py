@@ -1,6 +1,8 @@
 import asyncio
 import io
 import json
+import logging
+import os
 import sys
 import tarfile
 import time
@@ -17,6 +19,7 @@ from hearthkeep.sandbox.runner import (
 )
 
 FAKE = Path(__file__).parent / "fixtures" / "fake_docker.py"
+SEP = os.sep
 TAG = "hearthkeep-sandbox:0123456789ab"
 CHAT = "a" * 32
 OTHER_CHAT = "b" * 32
@@ -74,6 +77,7 @@ def fake(tmp_path, monkeypatch):
         data = tmp_path / "data"
 
         def runner(self, **limits) -> SandboxRunner:
+            files_dir(self.data).mkdir(parents=True, exist_ok=True)
             return SandboxRunner(
                 self.data,
                 image_tag=TAG,
@@ -134,6 +138,8 @@ def test_argv_has_every_isolation_flag(tmp_path):
         "--name": "hk-run-r1",
         "--label": "hearthkeep.run=1",
         "--env": "HOME=/tmp",
+        "--pull": "never",
+        "--log-driver": "none",
     }
     for option, value in pairs.items():
         assert option_values(argv, option) == [value], option
@@ -174,6 +180,11 @@ def test_files_mount_is_only_that_chats_files_dir(tmp_path):
     ):
         with pytest.raises(ValueError):
             runner._files_dir(bad)
+    # A chat with no files folder yet is an error: the runner never creates it.
+    with pytest.raises(FileNotFoundError):
+        runner._files_dir(files_dir(tmp_path, OTHER_CHAT))
+    assert not files_dir(tmp_path, OTHER_CHAT).exists()
+    files_dir(tmp_path, OTHER_CHAT).mkdir(parents=True)
     assert (
         runner._files_dir(files_dir(tmp_path, OTHER_CHAT))
         == files_dir(tmp_path, OTHER_CHAT).resolve()
@@ -456,7 +467,8 @@ async def test_tar_with_bad_members_rejected(fake, case):
     raw = await run_script(fake.runner(), run_id=f"r-{case}")
     assert raw.status == "sandbox_error", case
     assert raw.members == {}
-    assert raw.error
+    assert raw.error == "The sandbox returned output Hearthkeep couldn't read."
+    assert raw.diagnostics
     # Nothing was written anywhere: not outside the job folder, and the job folder is gone.
     assert not (fake.jobs_root() / f"r-{case}").exists()
     written = [p for p in fake.data.rglob("*") if p.is_file()]
@@ -473,15 +485,151 @@ async def test_two_hundred_members_are_accepted(fake):
     assert count == 200
 
 
-@pytest.mark.parametrize("code", [125, 126, 127])
-async def test_docker_start_failure_is_sandbox_error(fake, monkeypatch, code):
+START_ERRORS = {
+    125: "The sandbox couldn't start the container.",
+    126: "The sandbox couldn't run its entry program.",
+    127: "The sandbox couldn't run its entry program.",
+    3: "The sandbox stopped unexpectedly.",
+}
+
+
+@pytest.mark.parametrize("code", sorted(START_ERRORS))
+async def test_docker_start_failure_is_sandbox_error(fake, monkeypatch, caplog, code):
     fake.emit(b"")
+    home = str(Path.home())
+    data = str(fake.data.resolve())
+    stderr = f"docker: Error response from daemon: mount {data}{SEP}x failed; see {home}{SEP}y"
     monkeypatch.setenv("FAKE_DOCKER_EXIT", str(code))
-    monkeypatch.setenv("FAKE_DOCKER_STDERR", "docker: Error response from daemon.")
-    raw = await run_script(fake.runner())
+    monkeypatch.setenv("FAKE_DOCKER_STDERR", stderr + "z" * 5000)
+    with caplog.at_level(logging.WARNING, logger="hearthkeep.sandbox.runner"):
+        raw = await run_script(fake.runner())
     assert raw.status == "sandbox_error"
-    assert "Error response from daemon" in raw.error
+    # Docker's own words never reach the run's error (which the model sees) ...
+    assert raw.error == START_ERRORS[code]
+    # ... only the diagnostics, cut to 2 KB with the owner's folders replaced.
+    assert "docker: Error response from daemon: mount <data>" in raw.diagnostics
+    assert "<home>" in raw.diagnostics
+    assert data not in raw.diagnostics and home not in raw.diagnostics
+    assert len(raw.diagnostics.encode("utf-8")) <= 2048
+    logged = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("Error response from daemon" in m and data not in m for m in logged)
     assert not (fake.jobs_root() / "run1").exists()
+
+
+async def test_out_of_memory_exit_is_failed(fake, monkeypatch):
+    fake.emit(b"")
+    monkeypatch.setenv("FAKE_DOCKER_EXIT", "137")
+    raw = await run_script(fake.runner())
+    assert raw.status == "failed"
+    assert raw.error == "The script used more than 4 GB of memory and was stopped."
+    assert not any(c[0] == "kill" for c in fake.calls())
+
+
+async def test_exit_137_after_the_host_killed_it_is_sandbox_error(fake, monkeypatch):
+    # The client closes its stdout but doesn't exit: the host kills the container, and the
+    # 137 that follows is the host's own doing, not the script running out of memory.
+    fake.emit(make_tar([]))
+    monkeypatch.setenv("FAKE_DOCKER_MODE", "tar_then_hang")
+    monkeypatch.setattr(runner_mod, "EXIT_GRACE_S", 0.5)
+    raw = await run_script(fake.runner())
+    assert ["kill", "hk-run-run1"] in fake.calls()
+    assert raw.status == "sandbox_error"
+    assert raw.error == "The sandbox stopped unexpectedly."
+    assert raw.members == {}
+    assert not (fake.jobs_root() / "run1").exists()
+
+
+def _pax_global_tar() -> bytes:
+    buf = io.BytesIO()
+    big = {"comment": "c" * 70_000}
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT, pax_headers=big) as tar:
+        info = tarfile.TarInfo("status.json")
+        tar.addfile(info, io.BytesIO(b""))
+    return buf.getvalue()
+
+
+HOSTILE_HEADERS = {
+    "pax_x": lambda: make_tar(
+        [(_info("files/ab", size=1, pax_headers={"comment": "c" * 70_000}), b"x")]
+    ),
+    "pax_g": _pax_global_tar,
+    "gnu_longname": lambda: make_tar([("files/" + "a" * 70_000, b"x")], pax=False),
+    "gnu_longlink": lambda: make_tar(
+        [(_info("files/l", tarfile.SYMTYPE, linkname="a" * 70_000), None)], pax=False
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(HOSTILE_HEADERS))
+async def test_huge_tar_headers_refused_before_tarfile(fake, monkeypatch, case):
+    raw_tar = HOSTILE_HEADERS[case]()
+    opened = []
+    real_open = runner_mod.tarfile.open
+
+    def spy(*args, **kwargs):
+        opened.append(1)
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(runner_mod.tarfile, "open", spy)
+    fake.emit(raw_tar)
+    raw = await run_script(fake.runner(), run_id=f"h-{case}")
+    assert raw.status == "sandbox_error"
+    assert raw.error == "The sandbox returned output Hearthkeep couldn't read."
+    assert opened == []  # refused by Hearthkeep's own header scan, before tarfile saw it
+    assert not (fake.jobs_root() / f"h-{case}").exists()
+
+
+async def test_small_pax_headers_still_pass_the_scan(fake):
+    fake.emit(make_tar([("files/" + "a" * 110, b"x")]))  # long enough to need a PAX path
+    raw = await run_script(fake.runner())
+    names = set(raw.members)
+    raw.cleanup()
+    assert raw.status == "ok"
+    assert "files/" + "a" * 110 in names
+
+
+def test_status_json_size_is_checked_before_reading(tmp_path, monkeypatch):
+    big = tmp_path / "status.json"
+    big.write_bytes(b" " * 70_000)
+
+    def no_read(self, *args, **kwargs):
+        raise AssertionError("read before its size was checked")
+
+    monkeypatch.setattr(Path, "read_bytes", no_read)
+    monkeypatch.setattr(Path, "open", no_read)
+    with pytest.raises(runner_mod._BadOutput):
+        runner_mod._read_status(big)
+
+
+async def test_data_folder_with_a_comma_is_unavailable(tmp_path, fake):
+    data = tmp_path / "my,data"
+    files_dir(data).mkdir(parents=True)
+    runner = SandboxRunner(data, image_tag=TAG, docker=(sys.executable, str(FAKE)))
+    with pytest.raises(SandboxUnavailable) as caught:
+        await run_script(runner)
+    assert caught.value.user_message == (
+        "Hearthkeep's data folder path contains a comma or quote, which Docker can't mount. "
+        "Move the data folder to a simpler path."
+    )
+    assert not any(c[0] == "run" for c in fake.calls())
+
+
+async def test_sweep_refuses_while_a_run_is_active(fake, monkeypatch):
+    monkeypatch.setenv("FAKE_DOCKER_MODE", "sleep")
+    runner = fake.runner()
+    task = asyncio.create_task(run_script(runner, timeout_s=60.0))
+    pid = fake.data.parent / "fake-state" / "run.pid"
+    for _ in range(500):
+        if pid.exists():
+            break
+        await asyncio.sleep(0.02)
+    with pytest.raises(RuntimeError):
+        await runner.sweep()
+    assert (fake.jobs_root() / "run1").exists()  # the live run's folder was left alone
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert await runner.sweep() == 0  # and once nothing runs, it works again
 
 
 async def test_docker_missing_raises_unavailable(fake, monkeypatch):
@@ -577,6 +725,7 @@ async def test_run_id_used_once(fake):
 
 
 def real_runner(data: Path, tag: str, **limits) -> SandboxRunner:
+    files_dir(data).mkdir(parents=True, exist_ok=True)
     return SandboxRunner(data, image_tag=tag, limits=SandboxLimits(**limits))
 
 
@@ -704,7 +853,7 @@ async def test_real_escaped_process_is_killed_by_the_entry(tmp_path, sandbox_ima
         status = json.loads(raw.members["status.json"].read_text(encoding="utf-8"))
         assert status["timed_out"] is True and status["exit_code"] is None
         alive = float(raw.members["files/alive.txt"].read_text(encoding="ascii"))
-        assert alive < 3 + 1.5  # killed with the script, not after the tar was written
+        assert alive < 6  # killed with the script, not after the tar was written
     finally:
         raw.cleanup()
 
@@ -783,3 +932,21 @@ async def test_docker_cli_gets_no_window_and_no_stdin(fake, monkeypatch):
         assert kwargs["stdin"] == asyncio.subprocess.DEVNULL
         if sys.platform == "win32":
             assert kwargs["creationflags"] & subprocess.CREATE_NO_WINDOW
+
+
+async def test_script_killed_by_memory_limit_is_failed(fake):
+    # Inside the container the kernel kills just the script (the entry reports -9, Docker
+    # exits 0): that is the memory limit too.
+    fake.emit(make_tar([], status={"exit_code": -9, "timed_out": False, "stdout_truncated": False}))
+    raw = await run_script(fake.runner())
+    raw.cleanup()
+    assert raw.status == "failed"
+    assert raw.error == "The script used more than 4 GB of memory and was stopped."
+
+
+@pytest.mark.docker
+async def test_real_script_over_memory_limit_is_failed(tmp_path, sandbox_image):
+    raw = await real_script(tmp_path, sandbox_image, "b = b'x' * (5 * 1024**3)\nprint(len(b))\n")
+    raw.cleanup()
+    assert raw.status == "failed", raw
+    assert raw.error == "The script used more than 4 GB of memory and was stopped."

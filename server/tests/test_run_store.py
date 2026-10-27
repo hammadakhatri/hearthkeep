@@ -192,3 +192,39 @@ def test_results_column_is_json(store, tmp_path):
     results, problems = row.fetchone()
     assert json.loads(results)["values"][0]["is_date"] is True
     assert json.loads(problems) == []
+
+
+def test_duplicate_file_records_make_one_output(store, tmp_path):
+    raw = raw_run(tmp_path, {"files/a.csv": b"a\n"})
+    ref = FileRef("a.csv", "files/a.csv")
+    record = store.save(
+        raw, parsed(files=[ref, FileRef("a.csv", "files/a.csv")]), run_id="r1", chat_id=CHAT,
+        turn_id="t", purpose="analysis", script="",
+    )  # fmt: skip
+    assert store.get(record.id) is not None
+    (output,) = store.outputs(record.id)
+    assert store.output_path(output.id).read_bytes() == b"a\n"
+
+
+def test_failed_save_leaves_no_run_folder(store, tmp_path, monkeypatch):
+    from hearthkeep.sandbox import runs as runs_mod
+
+    raw = raw_run(tmp_path, {"files/a.csv": b"a\n", "files/b.csv": b"b\n"})
+    moved = []
+    real_move = runs_mod._move
+
+    def flaky(source, target):
+        if moved:
+            target.write_bytes(b"partial")  # a copy cut short
+            raise OSError("disk full")
+        moved.append(target)
+        real_move(source, target)
+
+    monkeypatch.setattr(runs_mod, "_move", flaky)
+    refs = [FileRef("a.csv", "files/a.csv"), FileRef("b.csv", "files/b.csv")]
+    with pytest.raises(OSError):
+        store.save(raw, parsed(files=refs), run_id="r1", chat_id=CHAT, turn_id="t",
+                   purpose="analysis", script="")  # fmt: skip
+    assert not (tmp_path / "workspace" / "chats" / CHAT / "runs" / "r1").exists()
+    assert store.get("r1") is None
+    assert store._conn.execute("SELECT COUNT(*) FROM outputs").fetchone()[0] == 0

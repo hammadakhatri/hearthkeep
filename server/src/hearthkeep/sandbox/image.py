@@ -15,6 +15,8 @@ DOCKER_INSPECT_TIMEOUT_S = 30
 # Bytecode and test caches are never part of the image (see .dockerignore).
 _IGNORED_DIRS = frozenset({"__pycache__", ".pytest_cache"})
 _IGNORED_SUFFIXES = frozenset({".pyc", ".pyo"})
+# No console window flashes up for each docker command on Windows (0 elsewhere).
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def _image_files(image_dir: Path) -> list[tuple[str, Path]]:
@@ -49,6 +51,7 @@ def _quiet(command: list[str], timeout: float) -> bool:
             stderr=subprocess.DEVNULL,
             timeout=timeout,
             check=False,
+            creationflags=_NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError):
         return False
@@ -68,7 +71,10 @@ def build_image(tag: str, docker: Sequence[str] = DOCKER) -> int:
     """`docker build -t <tag> <IMAGE_DIR>` with its output shown as it runs."""
     try:
         return subprocess.run(
-            [*docker, "build", "-t", tag, str(IMAGE_DIR)], stdin=subprocess.DEVNULL, check=False
+            [*docker, "build", "-t", tag, str(IMAGE_DIR)],
+            stdin=subprocess.DEVNULL,
+            check=False,
+            creationflags=_NO_WINDOW,
         ).returncode
     except OSError:
         return 127
