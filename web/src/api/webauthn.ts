@@ -9,7 +9,7 @@ import {
 } from '@simplewebauthn/browser'
 import { api, isApiError, post } from './client'
 
-export type StepUpPurpose = 'approval' | 'settings' | 'add_device'
+export type StepUpPurpose = 'approval' | 'settings' | 'add_device' | 'add_folder' | 'delete'
 
 export type Device = { id: string; device_name: string; created_at: string; current: boolean }
 
@@ -70,17 +70,24 @@ export async function login(): Promise<Device> {
   return result.device
 }
 
-/** Confirm a sensitive action with this session's passkey; returns the step-up token. */
-export async function stepUp(purpose: StepUpPurpose, approvalId?: string): Promise<string> {
-  const target = approvalId === undefined ? { purpose } : { purpose, approval_id: approvalId }
+/**
+ * Confirm a sensitive action with this session's passkey; returns the step-up token. An
+ * approval names its `approvalId`; a deletion names its `target` (`chat:<id>` or `file:<id>`).
+ */
+export async function stepUp(purpose: StepUpPurpose, approvalId?: string, target?: string): Promise<string> {
+  const bound = {
+    purpose,
+    ...(approvalId === undefined ? {} : { approval_id: approvalId }),
+    ...(target === undefined ? {} : { target }),
+  }
   const { challenge_id, options } = await api<Ceremony<PublicKeyCredentialRequestOptionsJSON>>(
     '/api/auth/stepup/options',
-    post(target),
+    post(bound),
   )
   const response = await assert(options)
   const result = await api<{ step_up_token: string }>(
     '/api/auth/stepup/verify',
-    post({ ...target, challenge_id, response }),
+    post({ ...bound, challenge_id, response }),
   )
   return result.step_up_token
 }

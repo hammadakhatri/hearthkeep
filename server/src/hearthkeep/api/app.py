@@ -52,6 +52,7 @@ from hearthkeep.auth.enrollment import EnrollmentCodes
 from hearthkeep.auth.sessions import SessionStore, StepUp
 from hearthkeep.auth.webauthn import ChallengeStore, Verifier
 from hearthkeep.config import LOOPBACK_HOSTS, Settings, detect_docker
+from hearthkeep.deletion import sweep_orphans
 from hearthkeep.files.store import ChatFileStore
 from hearthkeep.folders import FolderStore
 from hearthkeep.images import ImageStore
@@ -315,6 +316,8 @@ def create_app(
             files = ChatFileStore(conn, settings.data_dir)
             # Uploads cut off by a stop leave temporary files behind; none can be live yet.
             files.sweep_temp()
+            # Folders of chats whose deletion a stop cut short (rows gone, files left).
+            sweep_orphans(conn, Path(settings.data_dir))
             # Inspections a stop cut short: those files couldn't be checked.
             files.settle_pending()
             handle = await _sandbox_handle(settings, sandbox, detected)

@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from hearthkeep.api.common import ApiError, actor, current_session, record, services
 from hearthkeep.api.downloads import chat_file_download
 from hearthkeep.api.multipart import multipart_boundary, parse_file_part, read_limited_body
 from hearthkeep.auth.sessions import Session
+from hearthkeep.deletion import delete_chat_file
 from hearthkeep.files.checks import (
     MAX_FILE_BYTES,
     MESSAGES,
@@ -43,6 +46,10 @@ _STATUS_FOR_REASON = {
     "invalid_json": 422,
     "damaged": 422,
 }
+
+
+class DeleteBody(BaseModel):
+    step_up_token: str = Field(max_length=256)
 
 
 def _too_big() -> ApiError:
@@ -117,6 +124,12 @@ async def attach_file(chat_id: str, session: SessionDep, request: Request) -> JS
         )
     except FileRefused as error:
         raise _refusal(error) from None
+    # The chat may have been deleted while the file was being read: keep nothing for it.
+    try:
+        _require_chat(request, chat_id)
+    except ApiError:
+        hk.files.discard(staged)
+        raise
     # The row is added here: the SQLite connection belongs to the event loop's thread.
     saved = hk.files.record(staged, name=name, check=check, source="upload", status="pending")
     saved = await inspect_recorded(hk.inspector, hk.files, saved)
@@ -147,3 +160,26 @@ async def get_file(file_id: str, session: SessionDep, request: Request) -> dict:
 @router.get("/files/{file_id}/download")
 async def download_file(file_id: str, session: SessionDep, request: Request) -> FileResponse:
     return chat_file_download(services(request).files, _found(request, file_id))
+
+
+@router.delete("/files/{file_id}")
+async def delete_file(
+    file_id: str, body: DeleteBody, session: SessionDep, request: Request
+) -> dict:
+    """Delete one file of a chat, with a step-up for exactly `file:<id>`. Runs that used it
+    keep their results."""
+    hk = services(request)
+    found = _found(request, file_id)
+    # Before the token, so a refusal here doesn't spend it.
+    if hk.runner.active_turn(found.chat_id) is not None:
+        raise ApiError(409, "turn_in_progress")
+    if not hk.step_up.check(body.step_up_token, session.id, f"file:{found.id}", "delete"):
+        record(hk, actor(session), "file.delete_denied",
+               {"id": found.id, "reason": "step_up_required"})  # fmt: skip
+        raise ApiError(403, "step_up_required")
+    chat_id = delete_chat_file(hk.conn, Path(hk.settings.data_dir), found.id)
+    if chat_id is None:
+        raise ApiError(404, "not_found")
+    # Never the name: the id only.
+    record(hk, actor(session), "file.deleted", {"id": found.id})
+    return {"deleted": {"id": found.id, "chat_id": chat_id}}

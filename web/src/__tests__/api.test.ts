@@ -72,6 +72,17 @@ describe('stepUp', () => {
     await stepUp('settings')
     expect(bodyOf(calls[0])).toEqual({ purpose: 'settings' })
   })
+
+  it('binds a delete to its target in both requests', async () => {
+    vi.mocked(startAuthentication).mockResolvedValue({ id: 'cred-1' } as never)
+    const { calls } = mockFetch({
+      'POST /api/auth/stepup/options': { body: { challenge_id: 'ch-9', options: { challenge: 'eA' } } },
+      'POST /api/auth/stepup/verify': { body: { step_up_token: 't' } },
+    })
+    await stepUp('delete', undefined, 'chat:abc')
+    expect(bodyOf(calls[0])).toEqual({ purpose: 'delete', target: 'chat:abc' })
+    expect(bodyOf(calls[1])).toMatchObject({ purpose: 'delete', target: 'chat:abc', challenge_id: 'ch-9' })
+  })
 })
 
 describe('insecure dev auth stub', () => {

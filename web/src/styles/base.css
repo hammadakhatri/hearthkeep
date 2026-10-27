@@ -432,3 +432,67 @@ textarea:focus-visible {
     scroll-behavior: auto !important;
   }
 }
+
+/* ---- Confirm delete ------------------------------------------------------------------ */
+
+.btn.danger {
+  background: var(--red);
+  color: var(--black);
+}
+
+.btn.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--red) 86%, #ffffff);
+}
+
+.btn[aria-disabled='true'] {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+/* A bottom sheet on a phone, a centred card on wider screens. */
+.confirm {
+  width: 100%;
+  margin: 8px;
+  margin-bottom: max(8px, env(safe-area-inset-bottom));
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  border-radius: 22px;
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-float);
+  animation: sheet-up 0.3s var(--ease);
+}
+
+.confirm-title {
+  font-size: var(--text-lg);
+  letter-spacing: var(--tracking-snug);
+  overflow-wrap: anywhere;
+}
+
+.confirm-body {
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  color: var(--fg2);
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+@media (min-width: 640px) {
+  .confirm-scrim {
+    align-items: center;
+    justify-content: center;
+  }
+
+  .confirm {
+    width: min(420px, calc(100% - 32px));
+    animation: fade var(--dur) var(--ease);
+  }
+}

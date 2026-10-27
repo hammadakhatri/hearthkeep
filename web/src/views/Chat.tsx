@@ -2,7 +2,9 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Keyboar
 import { api, isApiError, post } from '../api/client'
 import { subscribeTurn, type AgentEvent, type ApprovalStatus } from '../api/events'
 import { isPhotoFile, listChatFiles, attachedFileLine, splitAttachments, type ChatFileInfo } from '../api/files'
+import { stepUp } from '../api/webauthn'
 import { ApprovalCard } from '../components/ApprovalCard'
+import { ConfirmDelete } from '../components/ConfirmDelete'
 import { ImageGrid, type GridImage } from '../components/ImageGrid'
 import { ImageViewer } from '../components/ImageViewer'
 import { Markdown } from '../components/Markdown'
@@ -10,7 +12,7 @@ import { AttachedFiles, FileChips, chipFromInfo, useChatFiles, type FileChipItem
 import { attachedPhotoLine, PhotoChip, uploadUrl, usePhoto } from '../components/Photo'
 import { WorkedSteps } from '../components/WorkedSteps'
 import { Composer } from '../shell/Composer'
-import { AlertIcon, ChatsIcon, NewChatIcon } from '../shell/icons'
+import { AlertIcon, ChatsIcon, NewChatIcon, TrashIcon } from '../shell/icons'
 import {
   applyEvent,
   itemsFromMessages,
@@ -25,6 +27,17 @@ import {
 
 const TITLE_CHARS = 60
 const STICK_PX = 96
+const LONG_PRESS_MS = 500
+const UNNAMED_FILE = 'Attached file'
+
+export const DELETE_CHAT_TITLE = 'Delete this chat?'
+export const DELETE_CHAT_BODY =
+  "This removes its messages, files, analysis, images and anything sent from it. It can't be undone."
+export const DELETE_FILE_BODY =
+  "This removes the file from this chat. Answers already given keep their results. It can't be undone."
+
+/** What the open confirm dialog would delete. */
+type Deleting = { kind: 'chat'; chat: ChatSummary } | { kind: 'file'; id: string; name: string }
 export const LOST_STREAM = 'Lost connection to this reply. Reload to see the latest.'
 
 type Live = { chatId: string; turnId: string }
@@ -52,7 +65,7 @@ function titleFor(text: string, firstFileName?: string): string {
 /** A chip for a stored file the thread mentions; a placeholder until the file list has its name. */
 function chipFor(id: string, known: ReadonlyMap<string, ChatFileInfo>): FileChipItem {
   const info = known.get(id)
-  return info ? chipFromInfo(info) : { key: id, id, name: 'Attached file', state: 'ready' }
+  return info ? chipFromInfo(info) : { key: id, id, name: UNNAMED_FILE, state: 'ready' }
 }
 
 function lastUserIndex(messages: ServerMessage[]): number {
@@ -70,6 +83,9 @@ export function Chat({ model }: { model?: string | null }) {
   const [draftThink, setDraftThink] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const [sheetOpen, setSheetOpen] = useState(false)
+  const [deleting, setDeleting] = useState<Deleting | null>(null)
+  // Stored files the owner deleted here: their chips leave the thread.
+  const [deletedFiles, setDeletedFiles] = useState<ReadonlySet<string>>(() => new Set())
   const attach = usePhoto()
   const files = useChatFiles()
   const clearFiles = files.clear
@@ -304,6 +320,37 @@ export function Chat({ model }: { model?: string | null }) {
     }
   }
 
+  /** Delete with a passkey step-up bound to exactly this chat or file; throws to the dialog. */
+  async function confirmDelete(target: Deleting) {
+    const path =
+      target.kind === 'chat'
+        ? `/api/chats/${encodeURIComponent(target.chat.id)}`
+        : `/api/files/${encodeURIComponent(target.id)}`
+    const bound = target.kind === 'chat' ? `chat:${target.chat.id}` : `file:${target.id}`
+    const token = await stepUp('delete', undefined, bound)
+    await api(path, { method: 'DELETE', body: JSON.stringify({ step_up_token: token }) })
+    setDeleting(null)
+    if (target.kind === 'chat') {
+      const id = target.chat.id
+      setChats((all) => all?.filter((c) => c.id !== id) ?? null)
+      listed.current.delete(id)
+      // It was open: a new, empty chat takes its place.
+      if (shown.current === id || current === id) newChat()
+    } else {
+      const id = target.id
+      setDeletedFiles((all) => new Set(all).add(id))
+      setKnown((all) => {
+        const next = new Map(all)
+        next.delete(id)
+        return next
+      })
+    }
+  }
+
+  function askDeleteFile(id: string) {
+    setDeleting({ kind: 'file', id, name: known.get(id)?.name ?? UNNAMED_FILE })
+  }
+
   function resolved(key: string, approvalId: string, status: ApprovalStatus) {
     setItems((all) => all.map((it) => (it.kind === 'assistant' && it.key === key ? setApproval(it, approvalId, status) : it)))
   }
@@ -320,6 +367,7 @@ export function Chat({ model }: { model?: string | null }) {
       }}
       onNew={newChat}
       onRetry={() => void loadChats()}
+      onDelete={(chat) => setDeleting({ kind: 'chat', chat })}
     />
   )
 
@@ -344,12 +392,21 @@ export function Chat({ model }: { model?: string | null }) {
             {items.length === 0 && !loading && <EmptyChat />}
             {items.map((item, index) =>
               item.kind === 'user' ? (
-                <UserBubble key={item.key} text={item.text} known={known} n={index + 1} />
+                <UserBubble
+                  key={item.key}
+                  text={item.text}
+                  known={known}
+                  deleted={deletedFiles}
+                  onDeleteFile={askDeleteFile}
+                  n={index + 1}
+                />
               ) : (
                 <AssistantTurn
                   key={item.key}
                   item={item}
                   known={known}
+                  deleted={deletedFiles}
+                  onDeleteFile={askDeleteFile}
                   n={index + 1}
                   onResolved={(id, status) => resolved(item.key, id, status)}
                 />
@@ -380,12 +437,29 @@ export function Chat({ model }: { model?: string | null }) {
         </div>
       </section>
       {sheetOpen && <ChatSheet onClose={() => setSheetOpen(false)}>{list}</ChatSheet>}
+      {deleting && (
+        <ConfirmDelete
+          key={deleting.kind === 'chat' ? `chat:${deleting.chat.id}` : `file:${deleting.id}`}
+          title={deleting.kind === 'chat' ? DELETE_CHAT_TITLE : `Delete ${deleting.name}?`}
+          body={deleting.kind === 'chat' ? DELETE_CHAT_BODY : DELETE_FILE_BODY}
+          onConfirm={() => confirmDelete(deleting)}
+          onCancel={() => setDeleting(null)}
+        />
+      )}
     </div>
   )
 }
 
+type FileProps = {
+  known: ReadonlyMap<string, ChatFileInfo>
+  /** Files deleted here: left out. */
+  deleted: ReadonlySet<string>
+  /** Asks to delete a stored file (with a passkey). */
+  onDeleteFile: (id: string) => void
+}
+
 /** The owner's message: any attached photos, then the words, without the attachment lines. */
-function UserBubble({ text, known, n }: { text: string; known: ReadonlyMap<string, ChatFileInfo>; n: number }) {
+function UserBubble({ text, known, deleted, onDeleteFile, n }: FileProps & { text: string; n: number }) {
   const { photos, files: fileIds, text: words } = splitAttachments(text)
   return (
     <div className="me" data-photos={photos.length || undefined}>
@@ -395,7 +469,8 @@ function UserBubble({ text, known, n }: { text: string; known: ReadonlyMap<strin
       <FileChips
         className="me-files"
         label={`Files you sent in message ${n}`}
-        files={fileIds.map((id) => chipFor(id, known))}
+        files={fileIds.filter((id) => !deleted.has(id)).map((id) => chipFor(id, known))}
+        onDelete={onDeleteFile}
       />
       {words}
     </div>
@@ -415,11 +490,12 @@ function EmptyChat() {
 function AssistantTurn({
   item,
   known,
+  deleted,
+  onDeleteFile,
   n,
   onResolved,
-}: {
+}: FileProps & {
   item: AssistantItem
-  known: ReadonlyMap<string, ChatFileInfo>
   n: number
   onResolved: (approvalId: string, status: ApprovalStatus) => void
 }) {
@@ -435,7 +511,7 @@ function AssistantTurn({
       )}
       <WorkedSteps steps={item.steps} workedMs={item.workedMs} running={streaming} />
       <StepImages steps={item.steps} />
-      <StepFiles steps={item.steps} known={known} n={n} />
+      <StepFiles steps={item.steps} known={known} deleted={deleted} onDeleteFile={onDeleteFile} n={n} />
       {item.approvals.map(({ request, status }) => (
         <ApprovalCard
           key={request.approval_id}
@@ -467,13 +543,14 @@ function AssistantTurn({
 }
 
 /** The files a turn's steps brought into the chat or made, under the steps. */
-function StepFiles({ steps, known, n }: { steps: Step[]; known: ReadonlyMap<string, ChatFileInfo>; n: number }) {
-  const ids = [...new Set(steps.flatMap((step) => step.files ?? []))]
+function StepFiles({ steps, known, deleted, onDeleteFile, n }: FileProps & { steps: Step[]; n: number }) {
+  const ids = [...new Set(steps.flatMap((step) => step.files ?? []))].filter((id) => !deleted.has(id))
   if (!ids.length) return null
   return <FileChips
       className="turn-files"
       label={`Files from reply ${n}`}
       files={ids.map((id) => chipFor(id, known))}
+      onDelete={onDeleteFile}
     />
 }
 
@@ -524,6 +601,7 @@ function ChatList({
   onOpen,
   onNew,
   onRetry,
+  onDelete,
 }: {
   chats: ChatSummary[] | null
   failed: boolean
@@ -531,6 +609,8 @@ function ChatList({
   onOpen: (chat: ChatSummary) => void
   onNew: () => void
   onRetry: () => void
+  /** Asks to delete a chat (with a passkey). */
+  onDelete: (chat: ChatSummary) => void
 }) {
   return (
     <div className="chat-list">
@@ -550,17 +630,13 @@ function ChatList({
           <p className="label chat-list-label">Recent</p>
           <ul>
             {chats.map((chat) => (
-              <li key={chat.id}>
-                <button
-                  type="button"
-                  className="chat-link"
-                  aria-current={chat.id === current ? 'page' : undefined}
-                  onClick={() => onOpen(chat)}
-                >
-                  <span className="chat-link-title">{chat.title || 'New chat'}</span>
-                  {chat.active_turn && <span className="chat-live" title="Answering" aria-label="Answering" />}
-                </button>
-              </li>
+              <ChatRow
+                key={chat.id}
+                chat={chat}
+                current={chat.id === current}
+                onOpen={() => onOpen(chat)}
+                onDelete={() => onDelete(chat)}
+              />
             ))}
           </ul>
         </>
@@ -568,6 +644,78 @@ function ChatList({
         <p className="chat-list-note">Your chats will appear here.</p>
       ) : null}
     </div>
+  )
+}
+
+/** One chat in the list. Its delete button, a right-click or a long press asks to delete it. */
+function ChatRow({
+  chat,
+  current,
+  onOpen,
+  onDelete,
+}: {
+  chat: ChatSummary
+  current: boolean
+  onOpen: () => void
+  onDelete: () => void
+}) {
+  const timer = useRef<number | null>(null)
+  const pressed = useRef(false)
+  const title = chat.title || 'New chat'
+
+  function stop() {
+    if (timer.current !== null) window.clearTimeout(timer.current)
+    timer.current = null
+  }
+
+  useEffect(() => stop, [])
+
+  return (
+    <li className="chat-row">
+      <button
+        type="button"
+        className="chat-link"
+        aria-current={current ? 'page' : undefined}
+        onClick={() => {
+          // The long press already asked to delete: this tap is its end, not an open.
+          if (pressed.current) {
+            pressed.current = false
+            return
+          }
+          onOpen()
+        }}
+        onContextMenu={(event) => {
+          event.preventDefault()
+          stop()
+          onDelete()
+        }}
+        onPointerDown={(event) => {
+          pressed.current = false
+          if (event.pointerType !== 'touch') return
+          stop()
+          timer.current = window.setTimeout(() => {
+            timer.current = null
+            pressed.current = true
+            onDelete()
+          }, LONG_PRESS_MS)
+        }}
+        onPointerUp={stop}
+        onPointerLeave={stop}
+        onPointerCancel={stop}
+      >
+        <span className="chat-link-title">{title}</span>
+        {chat.active_turn && <span className="chat-live" title="Answering" aria-label="Answering" />}
+      </button>
+      <button
+        type="button"
+        className="iconbtn chat-row-delete"
+        aria-label={`Delete chat ${title}`}
+        title="Delete"
+        onClick={onDelete}
+      >
+        <TrashIcon />
+      </button>
+    </li>
   )
 }
 

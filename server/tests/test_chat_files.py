@@ -428,6 +428,13 @@ def test_startup_removes_leftover_temporary_files(harness):
     (folder / "abc.tmp").write_bytes(b"half")
     (folder / "keep.csv").write_bytes(CSV)
     (harness.data / "workspace" / "chats" / "other.tmp").write_bytes(b"not in a files folder")
+    conn = harness.conn()  # the chat exists, so the orphan sweep leaves its folder
+    try:
+        conn.execute(
+            "INSERT INTO chats (id, title, think, created_at) VALUES (?, '', 0, '')", (chat_id,)
+        )
+    finally:
+        conn.close()
     harness.start()
     assert sorted(p.name for p in folder.iterdir()) == ["keep.csv"]
     assert (harness.data / "workspace" / "chats" / "other.tmp").exists()

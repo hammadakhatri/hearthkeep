@@ -7,6 +7,7 @@ import contextlib
 import json
 import uuid
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -15,10 +16,11 @@ from pydantic import BaseModel, Field
 
 from hearthkeep import db
 from hearthkeep.agent.runner import TERMINAL_EVENTS, TurnInProgressError
-from hearthkeep.api.common import ApiError, Services, current_session, services
+from hearthkeep.api.common import ApiError, Services, actor, current_session, record, services
 from hearthkeep.auth.sessions import Session
+from hearthkeep.deletion import delete_chat
 from hearthkeep.files.checks import MAX_FILES_PER_MESSAGE, TOO_MANY
-from hearthkeep.files.store import ATTACHED_FILE_LINE
+from hearthkeep.files.store import ATTACHED_FILE_LINE, CHAT_ID
 from hearthkeep.images import ATTACHED_PHOTO_LINE, normalize_newlines, without_photo_lines
 from hearthkeep.secrets import SecretStoreError
 
@@ -40,6 +42,10 @@ class NewChatBody(BaseModel):
 
 class NewMessageBody(BaseModel):
     text: str = Field(min_length=1, max_length=MESSAGE_MAX_CHARS)
+
+
+class DeleteBody(BaseModel):
+    step_up_token: str = Field(max_length=256)
 
 
 def _chat_row(hk: Services, chat_id: str):
@@ -79,6 +85,28 @@ async def create_chat(body: NewChatBody, session: SessionDep, request: Request) 
         (chat_id, " ".join(body.title.split()), int(body.think), db.utcnow()),
     )
     return _chat_json(_chat_row(hk, chat_id), None)
+
+
+@router.delete("/chats/{chat_id}")
+async def delete_chat_route(
+    chat_id: str, body: DeleteBody, session: SessionDep, request: Request
+) -> dict:
+    """Delete the chat and everything it owns, with a step-up for exactly `chat:<id>`."""
+    hk = services(request)
+    if not CHAT_ID.fullmatch(chat_id):
+        raise ApiError(404, "not_found")
+    _chat_row(hk, chat_id)
+    # Checked before the token, so a refusal here doesn't spend it. Nothing awaits between
+    # this check and the deletion, so no turn can start in between.
+    if hk.runner.active_turn(chat_id) is not None:
+        raise ApiError(409, "turn_in_progress")
+    if not hk.step_up.check(body.step_up_token, session.id, f"chat:{chat_id}", "delete"):
+        record(hk, actor(session), "chat.delete_denied",
+               {"chat_id": chat_id, "reason": "step_up_required"})  # fmt: skip
+        raise ApiError(403, "step_up_required")
+    counts = delete_chat(hk.conn, Path(hk.settings.data_dir), chat_id)
+    record(hk, actor(session), "chat.deleted", {"chat_id": chat_id, "counts": counts})
+    return {"deleted": counts}
 
 
 @router.get("/chats/{chat_id}/messages")

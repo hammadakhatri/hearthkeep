@@ -31,7 +31,9 @@ from hearthkeep.auth.webauthn import VerificationError, b64url_decode
 router = APIRouter(prefix="/api")
 
 OWNER_USER_ID = b"hearthkeep-owner"
-StepUpPurpose = Literal["approval", "settings", "add_device", "add_folder"]
+StepUpPurpose = Literal["approval", "settings", "add_device", "add_folder", "delete"]
+# What a `delete` step-up is for: exactly one chat or one file.
+STEP_UP_TARGET = r"^(chat|file):[A-Za-z0-9_-]{1,32}$"
 
 SessionDep = Annotated[Session, Depends(current_session)]
 
@@ -55,6 +57,13 @@ class LoginVerifyBody(BaseModel):
 class StepUpOptionsBody(BaseModel):
     purpose: StepUpPurpose
     approval_id: str | None = Field(default=None, max_length=128)
+    target: str | None = Field(default=None, max_length=80, pattern=STEP_UP_TARGET)
+
+    @property
+    def binding(self) -> str | None:
+        """What the challenge and the token are bound to besides the purpose: the approval
+        for `approval`, the target for `delete` (the same slot), else nothing."""
+        return self.target if self.purpose == "delete" else self.approval_id
 
 
 class StepUpVerifyBody(StepUpOptionsBody):
@@ -195,7 +204,13 @@ async def whoami(session: SessionDep, request: Request) -> dict:
 # ---- step-up ----------------------------------------------------------------------------
 
 
-def _check_step_up_target(hk: Services, purpose: str, approval_id: str | None) -> None:
+def _check_step_up_target(hk: Services, body: StepUpOptionsBody) -> None:
+    purpose, approval_id = body.purpose, body.approval_id
+    if purpose == "delete":
+        if body.target is None:
+            raise ApiError(422, "target_required")
+    elif body.target is not None:
+        raise ApiError(422, "target_not_allowed")
     if purpose != "approval":
         if approval_id is not None:
             raise ApiError(422, "approval_id_not_allowed")
@@ -222,7 +237,7 @@ def _session_credential(hk: Services, session: Session) -> Credential:
 @router.post("/auth/stepup/options")
 async def step_up_options(body: StepUpOptionsBody, session: SessionDep, request: Request) -> dict:
     hk = services(request)
-    _check_step_up_target(hk, body.purpose, body.approval_id)
+    _check_step_up_target(hk, body)
     cred = _session_credential(hk, session)
     # Only the passkey this session signed in with can step it up.
     options = hk.verifier.authentication_options([cred.id])
@@ -230,7 +245,7 @@ async def step_up_options(body: StepUpOptionsBody, session: SessionDep, request:
         _challenge(options),
         ceremony="step_up",
         session_id=session.id,
-        approval_id=body.approval_id,
+        approval_id=body.binding,
         purpose=body.purpose,
     )
     return {"challenge_id": challenge_id, "options": options}
@@ -243,12 +258,12 @@ async def step_up_verify(body: StepUpVerifyBody, session: SessionDep, request: R
         body.challenge_id,
         ceremony="step_up",
         session_id=session.id,
-        approval_id=body.approval_id,
+        approval_id=body.binding,
         purpose=body.purpose,
     )
     if challenge is None:
         raise ApiError(400, "challenge_invalid")
-    _check_step_up_target(hk, body.purpose, body.approval_id)
+    _check_step_up_target(hk, body)
     cred = _session_credential(hk, session)
     try:
         if body.response.get("id") != cred.id:
@@ -258,13 +273,12 @@ async def step_up_verify(body: StepUpVerifyBody, session: SessionDep, request: R
         record(hk, actor(session), "step_up.failed", {"purpose": body.purpose})
         raise ApiError(400, "verification_failed") from None
     hk.credentials.update_sign_count(cred.id, count)
-    token = hk.step_up.issue(session.id, body.approval_id, body.purpose)
-    record(
-        hk,
-        actor(session),
-        "step_up.verified",
-        {"purpose": body.purpose, "approval_id": body.approval_id},
-    )
+    token = hk.step_up.issue(session.id, body.binding, body.purpose)
+    if body.purpose == "delete":
+        bound = {"target": body.target}
+    else:
+        bound = {"approval_id": body.approval_id}
+    record(hk, actor(session), "step_up.verified", {"purpose": body.purpose, **bound})
     return {"step_up_token": token}
 
 

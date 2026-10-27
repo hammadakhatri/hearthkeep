@@ -975,3 +975,38 @@
     border-right-color: var(--accent);
   }
 }
+
+/* ---- Deleting a chat ------------------------------------------------------------------ */
+
+.chat-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.chat-link {
+  -webkit-touch-callout: none;
+}
+
+.chat-row-delete {
+  width: 32px;
+  height: 32px;
+  color: var(--muted);
+}
+
+.chat-row-delete:hover {
+  color: var(--red);
+}
+
+/* With a mouse the delete button shows on hover or focus; on touch it stays, quietly. */
+@media (hover: hover) {
+  .chat-row-delete {
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease);
+  }
+
+  .chat-row:hover .chat-row-delete,
+  .chat-row:focus-within .chat-row-delete {
+    opacity: 1;
+  }
+}
