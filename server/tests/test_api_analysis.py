@@ -40,18 +40,18 @@ def seeded(harness):
     client = signed_in(harness)
     conn = harness.conn()
     try:
-        seed(conn, A, "Old bank", files=[("fa", "ready", "2026-03-01T10:00:00.000000Z")])
+        seed(conn, A, "Old bank", files=[("fa", "ready", "2026-03-01T10:00:00.000000+00:00")])
         seed(
             conn, B, "New sales",
-            files=[("fb1", "unchecked", "2026-03-02T10:00:00.000000Z"),
-                   ("fb2", "pending", "2026-03-02T10:30:00.000000Z")],
-            runs=[("rb", "2026-03-05T10:00:00.000000Z")],
-            charts=[("ob1", "rb", "By month", "2026-03-05T10:00:01.000000Z"),
-                    ("ob2", "rb", "By shop", "2026-03-05T10:00:02.000000Z")],
+            files=[("fb1", "unchecked", "2026-03-02T10:00:00.000000+00:00"),
+                   ("fb2", "pending", "2026-03-02T10:30:00.000000+00:00")],
+            runs=[("rb", "2026-03-05T10:00:00.000000+00:00")],
+            charts=[("ob1", "rb", "By month", "2026-03-05T10:00:01.000000+00:00"),
+                    ("ob2", "rb", "By shop", "2026-03-05T10:00:02.000000+00:00")],
         )  # fmt: skip
         # No file at all, only a pending one, and only a run: none of these are listed.
-        seed(conn, C, "No files", runs=[("rc", "2026-03-09T10:00:00.000000Z")])
-        seed(conn, D, "Pending only", files=[("fd", "pending", "2026-03-08T10:00:00.000000Z")])
+        seed(conn, C, "No files", runs=[("rc", "2026-03-09T10:00:00.000000+00:00")])
+        seed(conn, D, "Pending only", files=[("fd", "pending", "2026-03-08T10:00:00.000000+00:00")])
         conn.commit()
     finally:
         conn.close()
@@ -65,13 +65,13 @@ def test_lists_only_chats_with_files_newest_first(harness):
     sales = body["chats"][0]
     assert sales["title"] == "New sales"
     # The newest of the chat's files and runs.
-    assert sales["updated_at"] == "2026-03-05T10:00:00.000000Z"
-    assert body["chats"][1]["updated_at"] == "2026-03-01T10:00:00.000000Z"
+    assert sales["updated_at"] == "2026-03-05T10:00:00.000000+00:00"
+    assert body["chats"][1]["updated_at"] == "2026-03-01T10:00:00.000000+00:00"
     # A pending file is not shown.
     assert [f["id"] for f in sales["files"]] == ["fb1"]
     assert sales["files"][0] == {
         "id": "fb1", "chat_id": B, "name": "fb1.csv", "kind": "csv", "size": 10,
-        "status": "unchecked", "created_at": "2026-03-02T10:00:00.000000Z",
+        "status": "unchecked", "created_at": "2026-03-02T10:00:00.000000+00:00",
     }  # fmt: skip
 
 
@@ -80,9 +80,9 @@ def test_includes_charts_per_chat(harness):
     chats = {c["chat_id"]: c for c in client.get("/api/analysis").json()["chats"]}
     assert chats[B]["charts"] == [
         {"id": "ob1", "run_id": "rb", "title": "By month",
-         "created_at": "2026-03-05T10:00:01.000000Z"},
+         "created_at": "2026-03-05T10:00:01.000000+00:00"},
         {"id": "ob2", "run_id": "rb", "title": "By shop",
-         "created_at": "2026-03-05T10:00:02.000000Z"},
+         "created_at": "2026-03-05T10:00:02.000000+00:00"},
     ]  # fmt: skip
     assert chats[A]["charts"] == []
     # The list stays small: no spec in it.
@@ -99,9 +99,31 @@ def test_paginates_with_before(harness):
     end = client.get(
         "/api/analysis", params={"limit": 1, "before": second["chats"][-1]["updated_at"]}
     ).json()
-    assert end == {"chats": []}
+    assert end == {"chats": [], "more": False}
+    assert first["more"] is True and second["more"] is False
+    # A cursor in another notation (Z, or no zone) is read as the same time.
+    again = client.get(
+        "/api/analysis", params={"limit": 1, "before": cursor.replace("+00:00", "Z")}
+    ).json()
+    assert [c["chat_id"] for c in again["chats"]] == [A]
     for bad in ({"limit": 0}, {"limit": 51}, {"before": "not a date"}):
         assert client.get("/api/analysis", params=bad).status_code == 422, bad
+
+
+def test_default_limit_is_twenty_and_more_says_so(harness):
+    client = signed_in(harness)
+    conn = harness.conn()
+    try:
+        for n in range(21):
+            at = f"2026-04-01T10:{n:02d}:00.000000+00:00"
+            seed(conn, f"{n:032x}", f"Chat {n}", files=[(f"f{n}", "ready", at)])
+        conn.commit()
+    finally:
+        conn.close()
+    page = client.get("/api/analysis").json()
+    assert len(page["chats"]) == 20 and page["more"] is True
+    rest = client.get("/api/analysis", params={"before": page["chats"][-1]["updated_at"]}).json()
+    assert [c["title"] for c in rest["chats"]] == ["Chat 0"] and rest["more"] is False
 
 
 def test_analysis_requires_session(harness):
@@ -115,24 +137,31 @@ def test_output_includes_turn_headline(harness, tmp_path):
     chart = client.get(f"/api/outputs/{chart_id}").json()
     assert chart["turn_id"] == turn_id and chart["headline"] is None
 
+    assistants = harness.query(
+        "SELECT id, content FROM messages WHERE role = 'assistant' ORDER BY id"
+    )
+    final_id = assistants[-1][0]
+    assert assistants[-1][1] == "Done." and len(assistants) >= 2
+    earlier_id = assistants[0][0]
     marks = [{"start": 4, "end": 8, "text": "42.5", "kind": "computed", "page": None, "note": None}]
-    conn = harness.conn()
-    try:
-        for message_id, text, shown in ((900, "Early 1.0", []), (901, "Total 42.5 in all", marks)):
+
+    def check(message_id, text, shown, turn="t"):
+        conn = harness.conn()
+        try:
             conn.execute(
                 "INSERT INTO number_checks (message_id, chat_id, turn_id, text, marks, created_at)"
-                " VALUES (?, ?, ?, ?, ?, '2026-03-05T10:00:00Z')",
-                (message_id, chat_id, turn_id, text, json.dumps(shown)),
+                " VALUES (?, ?, ?, ?, ?, '2026-03-05T10:00:00+00:00')",
+                (message_id, chat_id, turn, text, json.dumps(shown)),
             )
-        # Another turn's check never leaks in.
-        conn.execute(
-            "INSERT INTO number_checks (message_id, chat_id, turn_id, text, marks, created_at)"
-            " VALUES (999, ?, 'other', 'Other', '[]', '2026-03-05T10:00:00Z')",
-            (chat_id,),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+            conn.commit()
+        finally:
+            conn.close()
+
+    # An earlier step's check is never the headline when the final reply has none.
+    check(earlier_id, "Early 1.0", [], turn_id)
+    check(999, "Other chat message", [], "other")
+    assert client.get(f"/api/outputs/{chart_id}").json()["headline"] is None
+    check(final_id, "Total 42.5 in all", marks, turn_id)
     chart = client.get(f"/api/outputs/{chart_id}").json()
     assert chart["turn_id"] == turn_id
     assert chart["headline"] == {"text": "Total 42.5 in all", "marks": marks}

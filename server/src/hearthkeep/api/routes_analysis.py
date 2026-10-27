@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -37,13 +37,16 @@ LIMIT ?
 
 
 def _before(value: str | None) -> str | None:
+    """The cursor in the stored form (UTC ISO-8601, microseconds); 422 when it isn't a time."""
     if value is None:
         return None
     try:
-        datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         raise ApiError(422, "invalid_request", message="`before` must be a time.") from None
-    return value
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).isoformat(timespec="microseconds")
 
 
 @router.get("/analysis")
@@ -58,9 +61,12 @@ async def analysis(
     (`/api/outputs/{id}`), so this stays small."""
     conn = services(request).conn
     cursor = _before(before)
-    chats = conn.execute(_CHATS, (cursor, cursor, limit)).fetchall()
+    # One more than asked for tells whether there is another page.
+    chats = conn.execute(_CHATS, (cursor, cursor, limit + 1)).fetchall()
+    more = len(chats) > limit
+    chats = chats[:limit]
     if not chats:
-        return {"chats": []}
+        return {"chats": [], "more": False}
     ids = [c["id"] for c in chats]
     marks = ",".join("?" * len(ids))
     files: dict[str, list[dict]] = {i: [] for i in ids}
@@ -81,6 +87,7 @@ async def analysis(
              "created_at": row["created_at"]}  # fmt: skip
         )
     return {
+        "more": more,
         "chats": [
             {
                 "chat_id": c["id"],

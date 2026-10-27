@@ -94,7 +94,7 @@ export function AppShell({ initialView = DEFAULT_VIEW, onSignOut }: Props) {
         {view === 'chat' ? (
           // Chat scrolls its own thread under a floating composer.
           <div className="view view-fill" key={view}>
-            <Chat model={modelName(health)} target={target} />
+            <Chat model={modelName(health)} target={target} onTargetHandled={() => setTarget(null)} />
           </div>
         ) : (
           <div className="scroll" ref={scroller}>

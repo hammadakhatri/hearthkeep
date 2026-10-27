@@ -82,7 +82,16 @@ function lastUserIndex(messages: ServerMessage[]): number {
   return -1
 }
 
-export function Chat({ model, target = null }: { model?: string | null; target?: ChatTarget | null }) {
+export function Chat({
+  model,
+  target = null,
+  onTargetHandled,
+}: {
+  model?: string | null
+  target?: ChatTarget | null
+  /** Called once the target has been opened (or given up on): the asker should forget it. */
+  onTargetHandled?: () => void
+}) {
   const [chats, setChats] = useState<ChatSummary[] | null>(null)
   const [listFailed, setListFailed] = useState(false)
   const [current, setCurrent] = useState<string | null>(null)
@@ -112,10 +121,11 @@ export function Chat({ model, target = null }: { model?: string | null; target?:
   const scroller = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
   // The turn to bring into view once its chat has loaded.
-  const [reveal, setReveal] = useState<{ chatId: string; runId?: string } | null>(null)
+  const [reveal, setReveal] = useState<{ chatId: string; runId?: string; tries: number } | null>(null)
+  // Read once, when Chat opens: a target is for the visit that carries it, never a later one.
   const targetRef = useRef(target)
-  targetRef.current = target
-  const handled = useRef<number | null>(null)
+  const handledRef = useRef(onTargetHandled)
+  handledRef.current = onTargetHandled
 
   const currentChat = chats?.find((c) => c.id === current) ?? null
   const busy = live !== null && live.chatId === current
@@ -139,6 +149,7 @@ export function Chat({ model, target = null }: { model?: string | null; target?:
     // Files picked for one chat never follow the owner into another, however it was opened.
     if (shown.current !== chat.id) clearFiles()
     shown.current = chat.id
+    setReveal((r) => (r && r.chatId !== chat.id ? null : r))
     setCurrent(chat.id)
     setLive(null)
     setItems([])
@@ -181,63 +192,55 @@ export function Chat({ model, target = null }: { model?: string | null; target?:
     }
   }, [])
 
-  /** Open the chat another view asked for (once per ask); false when it is gone or already handled. */
-  const openTarget = useCallback(
-    (list: ChatSummary[] | null): boolean => {
-      const want = targetRef.current
-      if (!want || handled.current === want.nonce) return false
-      handled.current = want.nonce
-      const chat = list?.find((c) => c.id === want.chatId)
-      if (!chat) return false
-      setReveal({ chatId: chat.id, runId: want.runId })
-      void open(chat)
-      return true
-    },
-    [open],
-  )
-
   // Open the chat that was asked for; else the one still answering, or else the most recent.
+  // The ask is consumed here, whether it was opened or given up on (chat gone, list failed).
   useEffect(() => {
     let alive = true
+    const want = targetRef.current
     void loadChats().then((list) => {
-      if (!alive || openTarget(list)) return
+      if (want) handledRef.current?.()
+      if (!alive) return
+      const chat = want ? list?.find((c) => c.id === want.chatId) : undefined
+      if (want && chat) {
+        setReveal({ chatId: chat.id, runId: want.runId, tries: 0 })
+        void open(chat)
+        return
+      }
       const pick = list?.find((c) => c.active_turn) ?? list?.[0]
-      if (alive && pick) void open(pick)
+      if (pick) void open(pick)
     })
     return () => {
       alive = false
       opening.current += 1
     }
-  }, [loadChats, open, openTarget])
+  }, [loadChats, open])
 
-  // Asked again while Chat is already open.
-  const nonce = target?.nonce
-  useEffect(() => {
-    if (nonce === undefined || handled.current === nonce) return
-    let alive = true
-    void loadChats().then((list) => {
-      if (alive) openTarget(list)
-    })
-    return () => {
-      alive = false
-    }
-  }, [nonce, loadChats, openTarget])
-
-  // Once the asked-for chat has loaded: scroll to the turn that made the run and focus it.
-  // Without that turn the chat stays at the bottom, where a chat opens.
+  // Once the asked-for chat has loaded: scroll to the turn that made the run and focus it. If
+  // it isn't there yet, look once more shortly after; then settle at the bottom, where a chat opens.
   useLayoutEffect(() => {
     if (!reveal || loading || current !== reveal.chatId) return
-    setReveal(null)
     const { runId } = reveal
-    if (!runId) return
-    const turn = [...(scroller.current?.querySelectorAll<HTMLElement>('.ai[data-runs]') ?? [])].find((el) =>
-      el.dataset.runs?.split(' ').includes(runId),
-    )
-    if (!turn) return
-    stick.current = false
-    const calm = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
-    turn.scrollIntoView?.({ block: 'start', behavior: calm ? 'auto' : 'smooth' })
-    turn.focus({ preventScroll: true })
+    const turn = runId
+      ? [...(scroller.current?.querySelectorAll<HTMLElement>('.ai[data-runs]') ?? [])].find((el) =>
+          el.dataset.runs?.split(' ').includes(runId),
+        )
+      : undefined
+    if (turn) {
+      setReveal(null)
+      stick.current = false
+      const calm = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+      turn.scrollIntoView?.({ block: 'start', behavior: calm ? 'auto' : 'smooth' })
+      turn.focus({ preventScroll: true })
+      return
+    }
+    if (runId && reveal.tries === 0) {
+      const timer = window.setTimeout(() => setReveal((r) => (r ? { ...r, tries: 1 } : r)), 250)
+      return () => window.clearTimeout(timer)
+    }
+    setReveal(null)
+    stick.current = true
+    const el = scroller.current
+    if (el) el.scrollTop = el.scrollHeight
   }, [reveal, loading, current, items])
 
   // Files a step brought in or made: look up their names when the thread has not seen them yet

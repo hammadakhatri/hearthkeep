@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, Response
 from hearthkeep.api.common import ApiError, current_session, services
 from hearthkeep.api.downloads import output_download, table_fields
 from hearthkeep.auth.sessions import Session
-from hearthkeep.sandbox.runs import OutputRecord, RunStore
+from hearthkeep.sandbox.runs import OutputRecord, RunRecord, RunStore
 
 router = APIRouter(prefix="/api")
 
@@ -68,20 +68,37 @@ async def get_run(run_id: str, session: SessionDep, request: Request) -> dict:
     }
 
 
-def _headline(request: Request, chat_id: str, turn_id: str | None) -> dict | None:
-    """The number-checked reply of the turn that made an output (the turn's latest assistant
-    message that has a check): its text and marks. None when the turn has none."""
-    if not turn_id:
+def _headline(request: Request, run: RunRecord | None) -> dict | None:
+    """The number-checked final reply of the turn that made a run: the turn is the messages
+    between the owner's message before the run and the next one, and the reply is its latest
+    assistant message with words. That message's check, or None: an earlier step's check is
+    never used."""
+    if run is None:
         return None
-    row = (
-        services(request)
-        .conn.execute(
-            "SELECT text, marks FROM number_checks WHERE chat_id = ? AND turn_id = ?"
-            " ORDER BY message_id DESC LIMIT 1",
-            (chat_id, turn_id),
-        )
-        .fetchone()
-    )
+    conn = services(request).conn
+    chat_id = run.chat_id
+    start = conn.execute(
+        "SELECT id FROM messages WHERE chat_id = ? AND role = 'user' AND created_at <= ?"
+        " ORDER BY id DESC LIMIT 1",
+        (chat_id, run.created_at),
+    ).fetchone()
+    first = start["id"] if start else 0
+    end = conn.execute(
+        "SELECT MIN(id) AS id FROM messages WHERE chat_id = ? AND role = 'user' AND id > ?",
+        (chat_id, first),
+    ).fetchone()["id"]
+    final = conn.execute(
+        "SELECT id FROM messages WHERE chat_id = ? AND role = 'assistant' AND id > ?"
+        " AND (? IS NULL OR id < ?) AND TRIM(COALESCE(content, '')) != ''"
+        " ORDER BY id DESC LIMIT 1",
+        (chat_id, first, end, end),
+    ).fetchone()
+    if final is None:
+        return None
+    row = conn.execute(
+        "SELECT text, marks FROM number_checks WHERE message_id = ? AND chat_id = ?",
+        (final["id"], chat_id),
+    ).fetchone()
     if row is None:
         return None
     return {"text": row["text"] or "", "marks": json.loads(row["marks"] or "[]")}
@@ -99,7 +116,7 @@ async def get_output(output_id: str, session: SessionDep, request: Request) -> d
     run = _runs(request).get(out.run_id)
     turn_id = run.turn_id if run is not None else None
     if out.kind == "chart":
-        data["headline"] = _headline(request, out.chat_id, turn_id)
+        data["headline"] = _headline(request, run)
     # The record's own fields last: nothing in the data can replace them.
     return {**data, "id": out.id, "run_id": out.run_id, "chat_id": out.chat_id,
             "kind": out.kind, "name": out.name, "turn_id": turn_id}  # fmt: skip

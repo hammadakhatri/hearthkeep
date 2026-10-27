@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  PAGE_SIZE,
   getAnalysis,
   getChartOutput,
   type AnalysisChart,
@@ -276,7 +275,7 @@ export function Analysis({ onOpenChat }: { onOpenChat: (chatId: string, runId?: 
     getAnalysis().then(
       (page) => {
         setChats(page.chats)
-        setMore(page.chats.length >= PAGE_SIZE)
+        setMore(page.more)
       },
       () => setFailed(true),
     )
@@ -308,7 +307,7 @@ export function Analysis({ onOpenChat }: { onOpenChat: (chatId: string, runId?: 
         const seen = new Set((all ?? []).map((c) => c.chat_id))
         return [...(all ?? []), ...page.chats.filter((c) => !seen.has(c.chat_id))]
       })
-      setMore(page.chats.length >= PAGE_SIZE)
+      setMore(page.more)
     } catch {
       setMoreFailed(true)
     }

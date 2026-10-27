@@ -51,7 +51,7 @@ const MARK = { start: 22, end: 25, text: '31%', kind: 'unverified', page: null, 
 
 function routes(extra: Record<string, Reply | ((init: RequestInit) => Reply | Promise<Reply>)> = {}) {
   return mockFetch({
-    'GET /api/analysis?limit=20': { body: { chats: CHAT_ROWS } },
+    'GET /api/analysis?limit=20': { body: { chats: CHAT_ROWS, more: false } },
     'GET /api/health': healthy,
     'GET /api/outputs/o1': { body: output('o1', 'Sales by week', { text: HEADLINE, marks: [{ ...MARK, start: 11, end: 14 }] }) },
     'GET /api/outputs/o2': { body: output('o2', 'Costs by shop') },
@@ -92,11 +92,27 @@ describe('Analysis', () => {
   })
 
   it('shows the empty text, and Load more asks for the next page', async () => {
-    const { calls } = routes({ 'GET /api/analysis?limit=20': { body: { chats: [] } } })
+    const { calls } = routes({ 'GET /api/analysis?limit=20': { body: { chats: [], more: false } } })
     render(<Analysis onOpenChat={() => {}} />)
     expect(await screen.findByText(EMPTY)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull()
     expect(calls[0].path).toBe('/api/analysis?limit=20')
+  })
+
+  it('Load more fetches the next page by the last updated_at, only while the server has more', async () => {
+    const next = new URLSearchParams({ limit: '20', before: CHAT_ROWS[0].updated_at })
+    const older = { ...CHAT_ROWS[1], chat_id: 'c'.repeat(32), title: 'Older chat', updated_at: '2026-10-25T10:00:00.000000Z' }
+    const { calls } = routes({
+      'GET /api/analysis?limit=20': { body: { chats: [CHAT_ROWS[0]], more: true } },
+      [`GET /api/analysis?${next}`]: { body: { chats: [older], more: false } },
+    })
+    render(<Analysis onOpenChat={() => {}} />)
+    await screen.findByRole('region', { name: 'Shop sales' })
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }))
+    expect(await screen.findByRole('region', { name: 'Older chat' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Shop sales' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull()
+    expect(calls.filter((c) => c.path.startsWith('/api/analysis'))).toHaveLength(2)
   })
 
   it('opens a chart full size with its headline', async () => {
@@ -181,6 +197,29 @@ describe('Analysis', () => {
     expect(scroll.mock.contexts.at(-1)).toBe(turn)
     expect(screen.queryByRole('dialog', { name: 'Sales by week' })).toBeNull()
     expect(screen.getAllByText('Shop sales').length).toBeGreaterThan(0)
+  })
+
+  it('the open-in-chat target is used once: coming back to Chat opens the default pick', async () => {
+    const summary = (id: string, title: string) => ({ id, title, think: false, created_at: '2026-10-26T10:00:00Z', active_turn: null })
+    const said = (text: string) => [
+      { id: 1, role: 'user', content: text, tool_calls: null, tool_call_id: null, created_at: '2026-10-27T09:00:00Z' },
+    ]
+    routes({
+      'GET /api/chats': { body: [summary(CHAT_B, 'Bank statement'), summary(CHAT_A, 'Shop sales')] },
+      [`GET /api/chats/${CHAT_A}/messages`]: { body: said('From the shop chat') },
+      [`GET /api/chats/${CHAT_B}/messages`]: { body: said('From the bank chat') },
+      [`GET /api/chats/${CHAT_A}/files`]: { body: { files: [] } },
+    })
+    render(<AppShell initialView="analysis" onSignOut={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Sales by week full size' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Open in chat' }))
+    expect(await screen.findByText('From the shop chat', { selector: '.me' })).toBeInTheDocument()
+
+    const sidebar = screen.getByRole('navigation', { name: 'Hearthkeep' })
+    fireEvent.click(within(sidebar).getByRole('button', { name: 'Images' }))
+    fireEvent.click(within(sidebar).getByRole('button', { name: 'Chat' }))
+    expect(await screen.findByText('From the bank chat', { selector: '.me' })).toBeInTheDocument()
+    expect(screen.queryByText('From the shop chat', { selector: '.me' })).toBeNull()
   })
 
   it('open in chat opens the chat at the bottom when the turn is not there', async () => {

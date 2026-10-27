@@ -15,10 +15,11 @@ export type AnalysisChat = {
   charts: AnalysisChart[]
 }
 
+/** `more`: the server has another page after this one. */
 export const PAGE_SIZE = 20
 
 /** A page of chats, newest first; `before` is the last `updated_at` already shown. */
-export function getAnalysis(before?: string): Promise<{ chats: AnalysisChat[] }> {
+export function getAnalysis(before?: string): Promise<{ chats: AnalysisChat[]; more: boolean }> {
   const query = new URLSearchParams({ limit: String(PAGE_SIZE) })
   if (before) query.set('before', before)
   return api(`/api/analysis?${query}`)
