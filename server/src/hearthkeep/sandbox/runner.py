@@ -66,7 +66,9 @@ MEMBER_NAME = re.compile(
     re.ASCII,
 )
 # The PAX keys a plain member may carry (the entry writes nothing more exotic).
-_PAX_KEYS = frozenset({"path", "size", "mtime", "atime", "ctime", "uid", "gid", "uname", "gname"})
+# No `size`: a PAX size overrides the ustar one, so it would make Hearthkeep's header scan
+# and tarfile walk different archives (the entry never needs it under the 300 MB cap).
+_PAX_KEYS = frozenset({"path", "mtime", "atime", "ctime", "uid", "gid", "uname", "gname"})
 _REGULAR = (tarfile.REGTYPE, tarfile.AREGTYPE)
 # A bind-mount source is one value in --mount's comma-separated list: keep it plain.
 _UNSAFE_MOUNT = re.compile(r'[,"\'\n\r\x00]')
@@ -167,24 +169,67 @@ def _mount_source(path: Path) -> str:
     return source
 
 
-def _path_forms(path: Path) -> list[str]:
-    """How a host path may show up in Docker's messages: as given, with forward slashes, and
-    as Docker Desktop's Linux side spells it (`/c/Users/...`)."""
-    forms = {str(path), path.as_posix()}
-    if path.drive and len(path.drive) == 2 and path.drive[1] == ":":
-        forms.add("/" + path.drive[0].lower() + path.as_posix()[2:])
-    return [f for f in forms if len(f) > 3]
+def _windows_names(path: str) -> set[str]:
+    """The 8.3 short and the long spelling of an existing path (Windows; else nothing)."""
+    names: set[str] = set()
+    if not _IS_WINDOWS:
+        return names
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        for convert in (kernel32.GetShortPathNameW, kernel32.GetLongPathNameW):
+            buf = ctypes.create_unicode_buffer(32_768)
+            if 0 < convert(path, buf, len(buf)) < len(buf):
+                names.add(buf.value)
+    except Exception:  # no ctypes, no such call, or the path is gone: just fewer spellings
+        pass
+    return names
+
+
+def _spellings(path: Path) -> set[str]:
+    raw = str(path)
+    found = {raw, str(path.resolve()), os.path.realpath(raw)}
+    for name in list(found):
+        found |= _windows_names(name)
+    return found
+
+
+def _path_pattern(spelling: str) -> str | None:
+    """A pattern for one spelling of a folder: any run of / or \\ is a separator, and the
+    drive may also show as Docker Desktop's `/c` (with any prefix before it)."""
+    parts = [part for part in re.split(r"[\\/]+", spelling) if part]
+    if not parts or len("".join(parts)) < 3:
+        return None
+    sep = r"[\\/]+"
+    head, rest = parts[0], parts[1:]
+    if re.fullmatch(r"[A-Za-z]:", head):
+        start = f"(?:{re.escape(head)}|{sep}{re.escape(head[0])})"
+    else:
+        start = sep + re.escape(head) if spelling[:1] in "\\/" else re.escape(head)
+    # Ends where the last name ends (a longer sibling like `data2` is not this folder).
+    return start + "".join(sep + re.escape(part) for part in rest) + r"(?![\w~-])"
 
 
 def redact(text: str, data_dir: Path) -> str:
-    """`text` with the data folder shown as <data> and the home folder as <home>."""
+    """`text` with the data folder shown as <data> and the home folder as <home>, however a
+    message spells them: either separator (doubled or mixed), any case, the 8.3 short name,
+    the real path behind a link, or Docker Desktop's `/c/Users/...` form."""
     pairs = []
     for base, label in ((Path(data_dir), "<data>"), (Path.home(), "<home>")):
-        for candidate in {base, base.resolve()}:
-            pairs.extend((form, label) for form in _path_forms(candidate))
-    for form, label in sorted(pairs, key=lambda pair: -len(pair[0])):
-        text = re.sub(re.escape(form), label, text, flags=re.IGNORECASE)
+        for spelling in _spellings(base):
+            pattern = _path_pattern(spelling)
+            if pattern is not None:
+                pairs.append((pattern, label))
+    # Longest first, so the data folder wins over the home folder that holds it.
+    for pattern, label in sorted(set(pairs), key=lambda pair: -len(pair[0])):
+        text = re.sub(pattern, label, text, flags=re.IGNORECASE)
     return text
+
+
+def _one_line(text: str) -> str:
+    """Control characters (line breaks included) as spaces, so a log entry stays one line."""
+    return "".join(" " if unicodedata.category(ch) == "Cc" else ch for ch in text)
 
 
 def _format_number(value: float) -> str:
@@ -226,17 +271,54 @@ def _header_size(field_bytes: bytes) -> int:
         raise _BadOutput("a member has a bad size") from None
 
 
+def _pax_keys(body: bytes) -> list[str]:
+    """The keys of a PAX extended header's records (`<len> <key>=<value>\\n`), strictly."""
+    keys = []
+    pos = 0
+    while pos < len(body) and body[pos] != 0:
+        space = body.find(b" ", pos, pos + 20)
+        digits = body[pos:space] if space > pos else b""
+        if not digits.isdigit():
+            raise _BadOutput("a PAX header is malformed")
+        length = int(digits)
+        record = body[pos : pos + length]
+        equals = record.find(b"=")
+        if length <= len(digits) + 1 or len(record) != length or equals < 0:
+            raise _BadOutput("a PAX header is malformed")
+        if not record.endswith(b"\n"):
+            raise _BadOutput("a PAX header is malformed")
+        try:
+            keys.append(record[len(digits) + 1 : equals].decode("utf-8"))
+        except UnicodeDecodeError:
+            raise _BadOutput("a PAX header is malformed") from None
+        pos += length
+    return keys
+
+
 def _scan_headers(tar_path: Path) -> None:
-    """Walk the raw headers before tarfile does: tarfile reads a PAX or GNU long-name header
-    into memory whole, so a huge one is refused here, unread."""
+    """Walk the raw headers before tarfile does. tarfile reads a PAX or GNU long-name header
+    into memory whole, so a huge one is refused here, unread. Global PAX headers are refused,
+    and each extended one is read (it is small by then) and held to the member key list:
+    without a PAX `size`, this walk and tarfile's step over exactly the same bytes."""
     with open(tar_path, "rb") as raw:
         while True:
             block = raw.read(512)
             if len(block) < 512 or not block.strip(b"\0"):
                 return  # the end (or a cut stream, which tarfile then refuses)
             size = _header_size(block[124:136])
-            if block[156] in _LONG_HEADER_TYPES and size > HEADER_BYTES:
+            kind = block[156]
+            if kind == ord("g"):
+                raise _BadOutput("a global PAX header is not allowed")
+            if kind in _LONG_HEADER_TYPES and size > HEADER_BYTES:
                 raise _BadOutput("a member header is too large")
+            if kind == ord("x"):
+                body = raw.read(size)
+                if len(body) != size:
+                    raise _BadOutput("a PAX header is cut short")
+                if set(_pax_keys(body)) - _PAX_KEYS:
+                    raise _BadOutput("a member carries unexpected headers")
+                raw.seek(-size % 512, os.SEEK_CUR)
+                continue
             raw.seek((size + 511) // 512 * 512, os.SEEK_CUR)
 
 
@@ -379,6 +461,7 @@ class SandboxRunner:
         self._status: tuple[float, SandboxStatus] | None = None
         self._status_lock = asyncio.Lock()
         self._active: set[str] = set()
+        self._runs_lock = asyncio.Lock()  # a run registers, or a sweep runs: never both
 
     # The container
 
@@ -478,8 +561,12 @@ class SandboxRunner:
         """Remove containers a stopped Hearthkeep left behind, and their job folders. Meant
         for startup; refused (RuntimeError) while any run of this runner is live. Returns how
         many containers were removed."""
-        if self._active:
-            raise RuntimeError("the sandbox sweep can't run while a run is live")
+        async with self._runs_lock:
+            if self._active:
+                raise RuntimeError("the sandbox sweep can't run while a run is live")
+            return await self._sweep()
+
+    async def _sweep(self) -> int:
         for leftover in self._jobs.iterdir() if self._jobs.is_dir() else ():
             if RUN_ID.fullmatch(leftover.name) and not leftover.is_symlink():
                 _remove_tree(leftover)
@@ -528,18 +615,21 @@ class SandboxRunner:
             raise SandboxUnavailable(NO_DOCKER_MESSAGE)
         if not state.image:
             raise SandboxUnavailable(NO_IMAGE_MESSAGE)
-        if _UNSAFE_MOUNT.search(str(self.data_dir.resolve())):
-            raise SandboxUnavailable(DATA_PATH_MESSAGE)
+        for folder in (self.data_dir, self._chats, self._jobs):
+            # A link or junction may lead somewhere Docker can't mount: check where it ends.
+            if _UNSAFE_MOUNT.search(str(folder.resolve())):
+                raise SandboxUnavailable(DATA_PATH_MESSAGE)
         files = self._files_dir(files_dir)
         limits = self.limits
         timeout = limits.timeout_s if timeout_s is None else float(timeout_s)
         script_timeout = self._script_timeout(timeout)
         name = f"{NAME_PREFIX}{run_id}"
 
-        self._jobs.mkdir(parents=True, exist_ok=True)
         job = self._jobs / run_id
-        job.mkdir()  # a run id is used once: an existing folder is an error
-        self._active.add(run_id)
+        async with self._runs_lock:  # never while a sweep is clearing job folders
+            self._jobs.mkdir(parents=True, exist_ok=True)
+            job.mkdir()  # a run id is used once: an existing folder is an error
+            self._active.add(run_id)
         killed = False  # whether the host sent `docker kill`, on any path
         proc: asyncio.subprocess.Process | None = None
         stderr_task: asyncio.Task | None = None
@@ -573,7 +663,7 @@ class SandboxRunner:
                 outcome, proc.returncode, killed, stderr, duration_ms, job, tar_path, timeout
             )
             if raw.diagnostics:
-                _log.warning("sandbox %s %s: %s", name, raw.status, raw.diagnostics)
+                _log.warning("sandbox %s %s: %s", name, raw.status, _one_line(raw.diagnostics))
             handed_over = bool(raw.members)
             return raw
         except BaseException:

@@ -3,9 +3,11 @@ import io
 import json
 import logging
 import os
+import re
 import sys
 import tarfile
 import time
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -950,3 +952,202 @@ async def test_real_script_over_memory_limit_is_failed(tmp_path, sandbox_image):
     raw.cleanup()
     assert raw.status == "failed", raw
     assert raw.error == "The script used more than 4 GB of memory and was stopped."
+
+
+# Fix round 2
+
+
+def _block(info: tarfile.TarInfo, fmt=tarfile.USTAR_FORMAT) -> bytes:
+    return info.tobuf(format=fmt, encoding="utf-8", errors="strict")
+
+
+def _padded(data: bytes) -> bytes:
+    return data + b"\0" * (-len(data) % 512)
+
+
+def _pax_record(key: str, value: str) -> bytes:
+    body = f" {key}={value}\n".encode()
+    length = len(body) + 1
+    while len(str(length).encode()) + len(body) != length:
+        length += 1
+    return str(length).encode() + body
+
+
+def _size_override_probe() -> bytes:
+    """The re-review's probe: a PAX `size=1024` before status.json, whose data starts with a
+    zero block (so a scan by the ustar size thinks the archive ended), then a 70 KB `L`."""
+    pax_body = _pax_record("size", "1024")
+    pax = tarfile.TarInfo("././@PaxHeader")
+    pax.type = tarfile.XHDTYPE
+    pax.size = len(pax_body)
+    status = tarfile.TarInfo("status.json")
+    status.size = 0  # the ustar size; tarfile would use the PAX 1024
+    longname = b"files/" + b"a" * 70_000 + b"\0"
+    gnu = tarfile.TarInfo("././@LongLink")
+    gnu.type = tarfile.GNUTYPE_LONGNAME
+    gnu.size = len(longname)
+    member = tarfile.TarInfo("files/x")
+    return (
+        _block(pax) + _padded(pax_body)
+        + _block(status) + b"\0" * 1024
+        + _block(gnu, tarfile.GNU_FORMAT) + _padded(longname)
+        + _block(member) + b"\0" * 10240
+    )  # fmt: skip
+
+
+def _small_global_tar() -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(
+        fileobj=buf, mode="w", format=tarfile.PAX_FORMAT, pax_headers={"comment": "hi"}
+    ) as tar:
+        tar.addfile(tarfile.TarInfo("status.json"), io.BytesIO(b""))
+    return buf.getvalue()
+
+
+def _pax_tar(*records: tuple[str, str]) -> bytes:
+    body = b"".join(_pax_record(k, v) for k, v in records)
+    pax = tarfile.TarInfo("././@PaxHeader")
+    pax.type = tarfile.XHDTYPE
+    pax.size = len(body)
+    status = tarfile.TarInfo("status.json")
+    return _block(pax) + _padded(body) + _block(status) + b"\0" * 10240
+
+
+SCAN_REFUSED = {
+    "size_override_probe": _size_override_probe,
+    "small_global": _small_global_tar,
+    "pax_size_record": lambda: _pax_tar(("size", "0")),
+    "pax_unknown_key": lambda: _pax_tar(("comment", "hi")),
+    "pax_hdrcharset": lambda: _pax_tar(("hdrcharset", "BINARY")),
+    "pax_malformed": lambda: _pax_tar(("path", "status.json")).replace(b" path=", b"Xpath="),
+}
+
+
+@pytest.mark.parametrize("case", sorted(SCAN_REFUSED))
+async def test_pax_headers_are_parsed_by_the_scan(fake, monkeypatch, case):
+    opened = []
+    real_open = runner_mod.tarfile.open
+
+    def spy(*args, **kwargs):
+        opened.append(1)
+        return real_open(*args, **kwargs)
+
+    raw_tar = SCAN_REFUSED[case]()
+    monkeypatch.setattr(runner_mod.tarfile, "open", spy)
+    fake.emit(raw_tar)
+    raw = await run_script(fake.runner(), run_id=f"s-{case}")
+    assert raw.status == "sandbox_error"
+    assert raw.error == "The sandbox returned output Hearthkeep couldn't read."
+    assert opened == []  # tarfile never saw it (nor the hidden `L`)
+    assert not (fake.jobs_root() / f"s-{case}").exists()
+
+
+def test_pax_size_is_not_an_allowed_member_key():
+    assert "size" not in runner_mod._PAX_KEYS
+
+
+async def test_allowed_pax_records_still_pass(fake):
+    fake.emit(make_tar([("files/" + "b" * 110, b"x")]))  # tarfile writes a PAX `path`
+    raw = await run_script(fake.runner())
+    count = len(raw.members)
+    raw.cleanup()
+    assert raw.status == "ok"
+    assert count == 2
+
+
+@pytest.mark.parametrize(
+    "spell",
+    [
+        lambda p: str(p).replace("\\", "\\\\"),  # doubled backslashes (JSON-escaped)
+        lambda p: str(p).replace("\\", "/", 1),  # mixed separators
+        lambda p: str(p).upper(),
+        lambda p: p.as_posix(),
+    ],
+)
+def test_redact_finds_odd_spellings_of_the_data_folder(tmp_path, spell):
+    data = tmp_path / "Data Folder"
+    data.mkdir()
+    text = f"mount {spell(data)}{os.sep}files failed"
+    redacted = runner_mod.redact(text, data)
+    assert redacted.startswith("mount <data>"), redacted
+    assert "Data Folder" not in redacted and "DATA FOLDER" not in redacted
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="8.3 names are a Windows thing")
+def test_redact_finds_the_short_name_of_the_data_folder(tmp_path):
+    import ctypes
+
+    data = tmp_path / "a rather long data folder name"
+    data.mkdir()
+    buf = ctypes.create_unicode_buffer(1024)
+    if not ctypes.windll.kernel32.GetShortPathNameW(str(data), buf, 1024):
+        pytest.skip("no short names on this volume")
+    short = buf.value
+    if short.lower() == str(data).lower():
+        pytest.skip("8.3 names are off on this volume")
+    redacted = runner_mod.redact(f"mount {short}\\files failed", data)
+    assert redacted == "mount <data>\\files failed"
+
+
+async def test_logged_diagnostics_have_no_line_breaks(fake, monkeypatch, caplog):
+    fake.emit(b"")
+    monkeypatch.setenv("FAKE_DOCKER_EXIT", "125")
+    # (no NUL: an environment variable can't carry one)
+    monkeypatch.setenv("FAKE_DOCKER_STDERR", "first\r\nFAKE forged log line\x1b[31m\x07end")
+    with caplog.at_level(logging.WARNING, logger="hearthkeep.sandbox.runner"):
+        await run_script(fake.runner())
+    logged = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert logged
+    for message in logged:
+        assert not any(unicodedata.category(ch) == "Cc" for ch in message), repr(message)
+    assert any(re.search(r"first +FAKE forged log line", m) for m in logged)
+
+
+async def test_run_waits_for_a_sweep_in_progress(fake, monkeypatch):
+    fake.emit(make_tar([]))
+    runner = fake.runner()
+    release = asyncio.Event()
+    order = []
+    real_docker = SandboxRunner._docker
+
+    async def slow_ps(self, *args, timeout):
+        if args[0] == "ps":
+            order.append("sweep started")
+            await release.wait()
+            order.append("sweep done")
+        return await real_docker(self, *args, timeout=timeout)
+
+    monkeypatch.setattr(SandboxRunner, "_docker", slow_ps)
+    await runner.status()  # cached, so the run goes straight to registering
+    sweep = asyncio.create_task(runner.sweep())
+    while not order:
+        await asyncio.sleep(0.01)
+    run = asyncio.create_task(run_script(runner))
+    await asyncio.sleep(0.3)
+    assert not run.done()
+    assert not (fake.jobs_root() / "run1").exists()  # not registered, no folder yet
+    release.set()
+    await sweep
+    raw = await run
+    raw.cleanup()
+    assert raw.status == "ok"
+    assert order == ["sweep started", "sweep done"]
+
+
+async def test_chats_folder_leading_to_a_comma_path_is_unavailable(tmp_path, fake):
+    target = tmp_path / "odd,place" / "chats"
+    (target / CHAT / "files").mkdir(parents=True)
+    data = tmp_path / "data2"
+    (data / "workspace").mkdir(parents=True)
+    link = data / "workspace" / "chats"
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        os.symlink(target, link)
+    runner = SandboxRunner(data, image_tag=TAG, docker=(sys.executable, str(FAKE)))
+    with pytest.raises(SandboxUnavailable) as caught:
+        await run_script(runner)
+    assert caught.value.user_message == runner_mod.DATA_PATH_MESSAGE
+    assert not any(c[0] == "run" for c in fake.calls())
