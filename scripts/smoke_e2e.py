@@ -418,6 +418,12 @@ def main(argv: list[str] | None = None) -> int:
             ("number check", lambda: check_number_check(client, state), "analysis"),
         ]
     failed_steps: set[str] = set()
+
+    def fail(name: str, detail: str) -> None:
+        # Every FAIL line is recorded here, so any FAIL means a non-zero exit.
+        failed_steps.add(name)
+        print(f"FAIL {name}: {detail}".splitlines()[0])
+
     for name, run, needs in steps:
         if needs in failed_steps:
             failed_steps.add(name)
@@ -427,16 +433,13 @@ def main(argv: list[str] | None = None) -> int:
         try:
             detail = run()
         except httpx.TimeoutException:
-            failed_steps.add(name)
-            print(f"FAIL {name}: no result after {TIMEOUT.read:.0f}s")
-        except (SmokeError, httpx.HTTPError, ValueError, KeyError) as exc:
-            failed_steps.add(name)
-            detail = (
-                str(exc)
-                if isinstance(exc, (SmokeError, httpx.HTTPError))
-                else (f"unexpected response ({type(exc).__name__})")
-            )
-            print(f"FAIL {name}: {detail}".splitlines()[0])
+            fail(name, f"no result after {TIMEOUT.read:.0f}s")
+        except (SmokeError, httpx.HTTPError) as exc:
+            fail(name, str(exc))
+        except (ValueError, KeyError) as exc:
+            fail(name, f"unexpected response ({type(exc).__name__})")
+        except Exception as exc:  # a bug in a step is a failure too, never a pass
+            fail(name, f"the step crashed ({type(exc).__name__})")
         else:
             # A step may return a short result of its own to print in place of the time.
             took = f"({time.monotonic() - started:.1f}s)"
