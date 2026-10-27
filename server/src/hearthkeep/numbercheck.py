@@ -228,10 +228,19 @@ def _slash(m: re.Match, text: str) -> Mention | None:
     return _plain_mention(m.start(), m.end(), text, date=when) if when else None
 
 
+# A word after "May 3" that makes the 3 a count ("May 3 people join?"); joining words and
+# words that commonly follow a date don't.
+_NOUN_AFTER = re.compile(
+    r"[ \t]+(?!(?:and|or|to|through|till|until|at|in|on|from|was|is|were|will|we|i|the|this"
+    r"|that|when|with|for|but|by|onwards|only)(?![A-Za-z]))[A-Za-z]+",
+    re.I,
+)
+
+
 def _day_month(m: re.Match, text: str, ranged: bool, day_first: bool) -> Mention | None:
     month = _month(m["mon"])
-    if day_first and month == 5 and not m["y"]:
-        return None  # "12 May" may be "12 may …": May is a month only before a day or year
+    if not day_first and month == 5 and not m["y"] and _NOUN_AFTER.match(m.string, m.end()):
+        return None  # "May 3 people …": a count, not a date
     year = int(m["y"]) if m["y"] else 2000  # a leap year: 29 February stays valid
     first = _date(year, month, int(m["d1"]))
     last = _date(year, month, int(m["d2"])) if ranged else None

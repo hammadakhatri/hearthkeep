@@ -554,11 +554,22 @@ def test_times_fractions_short_dates_and_phone_numbers_skipped():
     assert [m.text for m in extract_mentions(text)] == ["6"]
 
 
-def test_may_is_a_month_only_before_a_day_or_year():
+def test_may_is_a_month_next_to_a_day_or_before_a_year():
     assert [m.text for m in extract_mentions("May 12 and May 2024")] == ["May 12", "May 2024"]
-    assert [m.text for m in extract_mentions("12 May")] == ["12"]
     assert [m.text for m in extract_mentions("12 May 2024")] == ["12 May 2024"]
     assert [m.text for m in extract_mentions("12 March")] == ["12 March"]
+    assert [m.text for m in extract_mentions("on 12 May.")] == ["12 May"]
+    assert [m.text for m in extract_mentions("May 3, 2024 people")] == ["May 3, 2024"]
+
+
+def test_12_may_is_a_date():
+    assert kinds("on 12 May", [day("2024-05-12")]) == [("12 May", "computed")]
+
+
+def test_may_before_a_count_and_a_noun_is_not_a_date():
+    mentions = extract_mentions("May 3 people join?")
+    assert [m.text for m in mentions] == ["3"]
+    assert all(m.date is None for m in mentions)
 
 
 async def test_check_runs_in_a_worker_thread(conn, runs, files, monkeypatch):
