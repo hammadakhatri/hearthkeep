@@ -522,3 +522,160 @@ def test_field_names_may_carry_hk_escapes_with_parentheses():
     # other strings keep the backslash plus parenthesis rule
     rejected(base(title=esc))
     rejected(base(encoding={"y": {"field": "a", "title": esc}}))
+
+
+# ---- fix round 3 ----
+
+PAINT = ["color", "fill", "stroke", "fillOpacity", "strokeOpacity", "strokeDash", "strokeWidth"]
+PAINT += ["opacity", "size", "shape"]
+
+
+def test_tooltip_value_objects_rejected():
+    rejected(base(encoding={"tooltip": {"value": {"image": "x"}}}))
+    rejected(base(encoding={"tooltip": [{"field": "a"}, {"value": {"a": 1}}]}))
+    rejected(base(encoding={"tooltip": {"value": ["a"]}}))
+    rejected(base(encoding={"tooltip": True}))
+    rejected(base(encoding={"tooltip": "a"}))
+    rejected(base(encoding={"tooltip": [1]}))
+    validate_chart_spec(base(encoding={"tooltip": None}))
+    validate_chart_spec(base(encoding={"tooltip": False}))
+    validate_chart_spec(base(encoding={"tooltip": {"value": "text"}}))
+    validate_chart_spec(base(encoding={"tooltip": [{"field": "a"}, {"value": 3}]}))
+
+
+def test_mark_tooltip_shapes():
+    for ok in (True, False, None, {"content": "data"}, {"content": "encoding"}):
+        validate_chart_spec(base(mark={"type": "bar", "tooltip": ok}))
+    for bad in ("x", {"content": "other"}, {"content": "data", "x": 1}, {"image": "x"}, [1]):
+        rejected(base(mark={"type": "bar", "tooltip": bad}))
+
+
+def test_image_key_rejected_at_any_depth_outside_rows():
+    rejected(base(encoding={"tooltip": {"value": {" Image ": "x"}}}))
+    rejected(base(layer=[{"mark": "point", "image": 1}]))
+    rejected(base(params=[{"name": "p", "value": {"IMAGE": 1}}]))
+    validate_chart_spec(base(data={"values": [{"images": 1}]}))
+
+
+def test_scale_checked_inside_conditions():
+    cond = {"param": "p", "field": "a"}
+    for channel in ("color", "fill", "opacity"):
+        rejected(base(encoding={channel: {"condition": {**cond, "scale": None}, "value": "red"}}))
+        rejected(base(encoding={channel: {"condition": [{**cond, "scale": None}], "value": "red"}}))
+        rejected(
+            base(
+                encoding={
+                    channel: {
+                        "condition": {"param": "p", "condition": {**cond, "scale": None}},
+                        "value": "red",
+                    }
+                }
+            )
+        )
+        rejected(
+            base(
+                encoding={
+                    channel: {
+                        "condition": [{"param": "q", "scale": {"type": "Identity"}}],
+                        "value": "red",
+                    }
+                }
+            )
+        )
+    validate_chart_spec(
+        base(
+            encoding={
+                "color": {"condition": {**cond, "scale": {"scheme": "blues"}}, "value": "red"}
+            }
+        )
+    )
+
+
+def test_scale_range_from_field_rejected():
+    rejected(base(encoding={"color": {"field": "a", "scale": {"range": {"field": "a"}}}}))
+    rejected(base(encoding={"size": {"field": "a", "scale": {"type": "IDENTITY"}}}))
+    validate_chart_spec(
+        base(encoding={"color": {"field": "a", "scale": {"range": ["red", "blue"]}}})
+    )
+
+
+@pytest.mark.parametrize("channel", PAINT)
+def test_paint_strings_are_allow_listed(channel):
+    bad_values = [
+        "url(x)",
+        "red;background:url(x)",
+        "var(--x)",
+        "#12",
+        "#12345678a",
+        "rgb(1,2,3);x",
+        "rgb(a)",
+        "calc(1px)",
+        "a b",
+        "toolongcolourkeywordname",
+        "",
+        "M0,0L1,1",
+        {"x": 1},
+        ["red"],
+        [1, "x"],
+    ]
+    for bad in bad_values:
+        rejected(base(encoding={channel: {"field": "a", "value": bad}}))
+        rejected(base(encoding={channel: {"datum": bad}}))
+        rejected(base(encoding={channel: {"condition": {"param": "p", "value": bad}}}))
+        rejected(base(mark={"type": "point", channel: bad}))
+    rejected(base(mark={"type": "point", channel: {"gradient": "linear"}}))
+
+
+def test_paint_good_values():
+    for good in ("red", "Steelblue", "#abc", "#aabbccdd", "rgb(1, 2, 3)", "RGBA(1,2,3,0.5)"):
+        validate_chart_spec(base(encoding={"color": {"value": good}}))
+        validate_chart_spec(base(mark={"type": "point", "fill": good, "stroke": good}))
+    validate_chart_spec(base(encoding={"fill": {"datum": "hsl(120, 50%, 50%)"}}))
+    validate_chart_spec(base(encoding={"opacity": {"value": 0.5}, "size": {"datum": 3}}))
+    validate_chart_spec(base(mark={"type": "rule", "strokeDash": [4, 4], "opacity": 0.2}))
+    validate_chart_spec(base(encoding={"strokeDash": {"value": [2, 3]}}))
+    validate_chart_spec(
+        base(encoding={"color": {"condition": {"param": "p", "value": "#fff"}, "value": "grey"}})
+    )
+
+
+def test_shape_values_are_a_fixed_list():
+    for ok in ("circle", "square", "cross", "diamond", "triangle-up", "triangle-down"):
+        validate_chart_spec(base(encoding={"shape": {"value": ok}}))
+    for ok in ("triangle-right", "triangle-left", "stroke", "arrow", "wedge", "triangle"):
+        validate_chart_spec(base(mark={"type": "point", "shape": ok}))
+    for bad in ("red", "M0,0L1,1", "hexagon"):
+        rejected(base(encoding={"shape": {"value": bad}}))
+        rejected(base(mark={"type": "point", "shape": bad}))
+
+
+@pytest.mark.parametrize(
+    "text", ["/\\x", "\\/x", "//x", "\\\\x", "  /\\x", "\t\\/x", "data:;base64,AA"]
+)
+def test_protocol_relative_and_data_semicolon_rejected(text):
+    rejected(base(title=text))
+    validate_chart_spec(base(data={"values": [{"a": text}]}))
+
+
+def test_single_slash_titles_pass():
+    for title in ("a/b", "/ path", "Q1/Q2", "\\ one"):
+        validate_chart_spec(base(title=title))
+
+
+def test_backslash_paren_exemption_is_narrow():
+    esc = "cost (usd)" + chr(92) + ".total"
+    validate_chart_spec(base(encoding={"y": {"field": esc}}))
+    validate_chart_spec(base(encoding={"tooltip": [{"field": esc}]}))
+    validate_chart_spec(
+        base(params=[{"name": "p", "select": {"type": "point", "fields": [esc]}, "bind": "legend"}])
+    )
+    validate_chart_spec(
+        base(encoding={"color": {"condition": {"param": "p", "field": esc}, "value": "red"}})
+    )
+    # a key called field/fields elsewhere is not a column reference
+    rejected(base(transform=[{"fold": [esc], "as": ["k", "v"]}]))
+    rejected(base(transform=[{"bin": True, "field": esc, "as": "b"}]))
+    rejected(base(transform=[{"filter": {"field": esc, "gt": 1}}]))
+    rejected(base(layer=[{"mark": "point", "field": esc}]))
+    rejected(base(params=[{"name": "p", "select": {"type": "point", "encodings": [esc]}}]))
+    rejected(base(facet={"field": esc}, spec={"mark": "point"}))
