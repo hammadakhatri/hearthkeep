@@ -1010,3 +1010,12 @@
     opacity: 1;
   }
 }
+
+/* A file that was deleted: named, quiet, nothing to do with it. */
+.file-chip[data-state='deleted'] {
+  opacity: 0.6;
+}
+
+.file-chip[data-state='deleted'] .file-chip-name {
+  font-style: italic;
+}

@@ -433,6 +433,10 @@ def test_startup_removes_leftover_temporary_files(harness):
         conn.execute(
             "INSERT INTO chats (id, title, think, created_at) VALUES (?, '', 0, '')", (chat_id,)
         )
+        conn.execute(  # and the file has its row, so the sweep keeps it too
+            "INSERT INTO chat_files (id, chat_id, file_name) VALUES ('keep', ?, 'keep.csv')",
+            (chat_id,),
+        )
     finally:
         conn.close()
     harness.start()

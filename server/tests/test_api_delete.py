@@ -219,3 +219,34 @@ def test_startup_sweeps_folders_of_deleted_chats(harness):
     (orphan / "files" / "left.csv").write_bytes(b"x")
     harness.start()
     assert not orphan.exists()
+
+
+def test_an_attach_that_ends_after_its_chat_was_deleted_keeps_nothing(harness, monkeypatch):
+    from test_chat_files import attach
+
+    from hearthkeep.api import routes_files
+    from hearthkeep.deletion import delete_chat
+
+    client = signed_in(harness)
+    chat_id = new_chat(client)
+    real = routes_files.inspect_recorded
+
+    async def inspect_then_delete(inspector, store, saved):
+        conn = harness.conn()  # the owner deletes the chat (another tab) meanwhile
+        try:
+            delete_chat(conn, harness.data, chat_id)
+        finally:
+            conn.close()
+        (harness.data / "workspace" / "chats" / chat_id / "files").mkdir(parents=True)
+        (harness.data / "workspace" / "chats" / chat_id / "files" / f"{saved.id}.csv").write_bytes(
+            b"left"
+        )
+        return await real(inspector, store, saved)
+
+    monkeypatch.setattr(routes_files, "inspect_recorded", inspect_then_delete)
+    response = attach(client, chat_id)
+    assert response.status_code == 404 and response.json() == {"reason": "not_found"}
+    assert harness.query("SELECT count(*) FROM chat_files") == [(0,)]
+    files = harness.data / "workspace" / "chats" / chat_id / "files"
+    assert not files.exists() or list(files.iterdir()) == []
+    assert not [e for e in harness.events() if e["event"] == "file.attached"]

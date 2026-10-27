@@ -27,7 +27,8 @@ export type FileChipItem = {
   /** Identifies the chip in lists (the file id once known). */
   key: string
   name: string
-  state: 'uploading' | 'failed' | 'ready' | 'unchecked'
+  /** `deleted`: a stored file that is gone; shown by name only, nothing to do with it. */
+  state: 'uploading' | 'failed' | 'ready' | 'unchecked' | 'deleted'
   /** The server's id: present once uploaded; it is what the download link uses. */
   id?: string
   kind?: ChatFileKind
@@ -83,6 +84,7 @@ export function FileChips({
             <span className="file-chip-meta">
               {file.state === 'uploading' && <span>Uploading…</span>}
               {file.state === 'failed' && <span className="file-chip-error">{file.message}</span>}
+              {file.state === 'deleted' && <span>Removed from this chat</span>}
               {(file.state === 'ready' || file.state === 'unchecked') && (
                 <>
                   {file.kind && <span>{KIND_LABEL[file.kind]}</span>}
@@ -107,7 +109,7 @@ export function FileChips({
               <DownloadIcon />
             </a>
           )}
-          {onDelete && file.state !== 'uploading' && (
+          {onDelete && file.state !== 'uploading' && file.state !== 'deleted' && (
             <button
               type="button"
               className="iconbtn file-chip-action"

@@ -238,6 +238,8 @@ def connect(path: Path) -> sqlite3.Connection:
     conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
+    # Deleted rows are overwritten with zeros, not left readable in free pages.
+    conn.execute("PRAGMA secure_delete = ON")
     _migrate(conn)
     return conn
 

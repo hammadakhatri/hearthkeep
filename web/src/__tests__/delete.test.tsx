@@ -76,6 +76,7 @@ describe('deleting a chat', () => {
     // It was the open chat: a new, empty one takes its place.
     expect(screen.getByRole('heading', { name: 'What can I help with?' })).toBeInTheDocument()
     expect(screen.queryByText('Sum it', { selector: '.me' })).not.toBeInTheDocument()
+    expect(within(chatList()).getByRole('button', { name: 'New chat' })).toHaveFocus()
   })
 
   it('cancel keeps the chat', async () => {
@@ -167,8 +168,39 @@ describe('deleting a file', () => {
     const sent = calls.find((c) => c.init.method === 'DELETE')!
     expect(sent.path).toBe('/api/files/f1')
     expect(bodyOf(sent)).toEqual({ step_up_token: 'delete-token' })
-    expect(screen.queryByRole('list', { name: 'Files you sent in message 1' })).not.toBeInTheDocument()
+    // The message still says a file was attached; the chip says it's gone and offers nothing.
+    const after = screen.getByRole('list', { name: 'Files you sent in message 1' })
+    expect(within(after).getByText('Deleted file')).toBeInTheDocument()
+    expect(within(after).queryByRole('button')).not.toBeInTheDocument()
+    expect(within(after).queryByRole('link')).not.toBeInTheDocument()
     expect(screen.getByText('Sum it', { selector: '.me' })).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Message Hearthkeep' })).toHaveFocus()
+  })
+
+  it('a file id missing from the loaded list is a plain deleted chip', async () => {
+    routes({
+      [`GET /api/chats/${CHAT_A}/messages`]: {
+        body: [userMessage(1, 'Sum both\nAttached file: f1\nAttached file: gone1')],
+      },
+    })
+    render(<Chat model="Local model 12B" />)
+    const chips = await screen.findByRole('list', { name: 'Files you sent in message 1' })
+    await within(chips).findByRole('button', { name: 'Delete bank.csv' })
+    const items = within(chips).getAllByRole('listitem')
+    expect(items).toHaveLength(2)
+    expect(items[1]).toHaveTextContent('Deleted file')
+    expect(within(items[1]).queryByRole('button')).not.toBeInTheDocument()
+    expect(within(items[1]).queryByRole('link')).not.toBeInTheDocument()
+  })
+
+  it('a file already deleted elsewhere counts as deleted', async () => {
+    routes({ 'DELETE /api/files/f1': { status: 404, body: { reason: 'not_found' } } })
+    render(<Chat model="Local model 12B" />)
+    const chips = await screen.findByRole('list', { name: 'Files you sent in message 1' })
+    fireEvent.click(await within(chips).findByRole('button', { name: 'Delete bank.csv' }))
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete with passkey' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(within(chips).getByText('Deleted file')).toBeInTheDocument()
   })
 
   it('composer chips keep a plain Remove with no passkey', async () => {

@@ -13,12 +13,13 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from hearthkeep import db
 from hearthkeep.agent.runner import TERMINAL_EVENTS, TurnInProgressError
 from hearthkeep.api.common import ApiError, Services, actor, current_session, record, services
 from hearthkeep.auth.sessions import Session
-from hearthkeep.deletion import delete_chat
+from hearthkeep.deletion import commit_chat_delete, remove_planned
 from hearthkeep.files.checks import MAX_FILES_PER_MESSAGE, TOO_MANY
 from hearthkeep.files.store import ATTACHED_FILE_LINE, CHAT_ID
 from hearthkeep.images import ATTACHED_PHOTO_LINE, normalize_newlines, without_photo_lines
@@ -104,8 +105,11 @@ async def delete_chat_route(
         record(hk, actor(session), "chat.delete_denied",
                {"chat_id": chat_id, "reason": "step_up_required"})  # fmt: skip
         raise ApiError(403, "step_up_required")
-    counts = delete_chat(hk.conn, Path(hk.settings.data_dir), chat_id)
+    counts, plan = commit_chat_delete(hk.conn, chat_id)
     record(hk, actor(session), "chat.deleted", {"chat_id": chat_id, "counts": counts})
+    # The rows are gone; the files go on a worker thread (no database there). Whatever
+    # can't be removed now is removed by the next startup's sweep.
+    await run_in_threadpool(remove_planned, Path(hk.settings.data_dir), plan)
     return {"deleted": counts}
 
 

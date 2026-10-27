@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from typing import Annotated
 
@@ -25,6 +26,7 @@ from hearthkeep.files.checks import (
     clean_file_name,
 )
 from hearthkeep.files.store import CHAT_ID, ChatFile, ChatFileStore, StagedFile
+from hearthkeep.images import inside
 from hearthkeep.sandbox.inspect import Inspector
 from hearthkeep.sandbox.inspect import inspect_recorded as inspect_file
 
@@ -80,6 +82,20 @@ def _require_chat(request: Request, chat_id: str) -> None:
         raise ApiError(404, "not_found")
 
 
+def _deleted_meanwhile(hk, chat_id: str, saved: ChatFile) -> bool:
+    """The chat (or the file) was deleted while the file was being inspected: whatever is
+    left of the file goes too (its row, its bytes), and the attach is answered 404."""
+    chat = hk.conn.execute("SELECT 1 FROM chats WHERE id = ?", (chat_id,)).fetchone()
+    if chat is not None and hk.files.get(saved.id) is not None:
+        return False
+    hk.files.remove(saved.id)
+    leftover = inside(hk.files.files_dir(chat_id), f"{saved.id}.{saved.kind}")
+    if leftover is not None:
+        with contextlib.suppress(OSError):
+            leftover.unlink()
+    return True
+
+
 def prepare_upload(
     store: ChatFileStore, chat_id: str, body: bytes | bytearray, boundary: bytes
 ) -> tuple[StagedFile, FileCheck, str]:
@@ -133,6 +149,8 @@ async def attach_file(chat_id: str, session: SessionDep, request: Request) -> JS
     # The row is added here: the SQLite connection belongs to the event loop's thread.
     saved = hk.files.record(staged, name=name, check=check, source="upload", status="pending")
     saved = await inspect_recorded(hk.inspector, hk.files, saved)
+    if _deleted_meanwhile(hk, chat_id, saved):
+        raise ApiError(404, "not_found")
     # Never the name: audit records the id, type and size only.
     record(hk, actor(session), "file.attached",
            {"id": saved.id, "type": saved.mime, "bytes": saved.size})  # fmt: skip

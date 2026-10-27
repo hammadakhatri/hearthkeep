@@ -8,7 +8,6 @@ export function deleteErrorMessage(error: unknown): string {
   if (isApiError(error, 'turn_in_progress')) {
     return 'Hearthkeep is still answering in this chat. Wait for it to finish, then try again.'
   }
-  if (isApiError(error, 'not_found')) return "It's already gone."
   if (isApiError(error, 'step_up_required')) return "Your passkey couldn't be confirmed. Try again."
   return passkeyErrorMessage(error, 'Delete')
 }

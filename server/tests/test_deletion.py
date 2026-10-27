@@ -2,6 +2,7 @@
 sweep of chat folders whose chat is gone."""
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -299,3 +300,157 @@ def test_sweep_orphans_removes_folders_of_missing_chats(conn, data, tmp_path):
 
 def test_sweep_orphans_without_a_chats_folder(conn, data):
     assert sweep_orphans(conn, data) == 0
+
+
+# ---- fix round 1 ---------------------------------------------------------------------------
+
+
+def _locked(names):
+    """Make unlink of any path whose name is in `names` fail as a locked file would."""
+    real = Path.unlink
+
+    def unlink(self, *args, **kwargs):
+        if self.name in names:
+            raise PermissionError(13, "locked", str(self))
+        return real(self, *args, **kwargs)
+
+    return unlink
+
+
+def test_a_failed_removal_is_logged_by_type_and_swept_at_next_startup(
+    conn, data, monkeypatch, caplog
+):
+    a = seed_chat(conn, data, A, "A")
+    monkeypatch.setattr(Path, "unlink", _locked({"imgA.png", "upA.png"}))
+    with caplog.at_level("WARNING", logger="hearthkeep.deletion"):
+        delete_chat(conn, data, A)
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("PermissionError" in m and "image" in m for m in messages)
+    assert any("PermissionError" in m and "photo" in m for m in messages)
+    assert not any(str(data) in m or "imgA" in m or "upA" in m for m in messages)
+    assert a["image"].exists() and a["upload"].exists()
+
+    monkeypatch.undo()
+    assert sweep_orphans(conn, data) == 2
+    assert not a["image"].exists() and not a["upload"].exists()
+
+
+def test_a_chat_file_left_behind_is_swept_at_next_startup(conn, data, monkeypatch, caplog):
+    a = seed_chat(conn, data, A, "A")
+    monkeypatch.setattr(Path, "unlink", _locked({"fileA.csv"}))
+    with caplog.at_level("WARNING", logger="hearthkeep.deletion"):
+        assert delete_chat_file(conn, data, "fileA") == A
+    assert any("PermissionError" in r.getMessage() for r in caplog.records)
+    assert a["file"].exists()
+    monkeypatch.undo()
+    files = a["chat_dir"] / "files"
+    (files / "partial.csv.tmp").write_bytes(b"x")  # temporary files are sweep_temp's
+    (files / "notes.txt").write_bytes(b"x")  # a stored-name file with no row
+    (files / "odd name.csv").write_bytes(b"x")  # not a stored name: not ours to judge
+
+    assert sweep_orphans(conn, data) == 2
+
+    assert not a["file"].exists() and not (files / "notes.txt").exists()
+    assert a["file2"].exists()  # it has its row
+    assert (files / "partial.csv.tmp").exists() and (files / "odd name.csv").exists()
+
+
+def test_sweep_leaves_images_and_photos_with_rows_and_temporary_files(conn, data):
+    a = seed_chat(conn, data, A, "A")
+    images = data / "workspace" / "output" / "images"
+    uploads = data / "workspace" / "uploads"
+    (images / "stray.png").write_bytes(b"x")
+    (images / "half.png.tmp").write_bytes(b"x")
+    (uploads / "stray.jpg").write_bytes(b"x")
+    (uploads / "half.jpg.tmp").write_bytes(b"x")
+    assert sweep_orphans(conn, data) == 2
+    assert not (images / "stray.png").exists() and not (uploads / "stray.jpg").exists()
+    assert (images / "half.png.tmp").exists() and (uploads / "half.jpg.tmp").exists()
+    assert a["image"].exists() and a["upload"].exists()
+
+
+def test_a_linked_images_folder_is_left_in_place_with_a_warning(conn, data, tmp_path, caplog):
+    seed_chat(conn, data, A, "A")
+    images = data / "workspace" / "output" / "images"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "imgA.png").write_bytes(b"theirs")
+    (outside / "other.png").write_bytes(b"theirs")
+    for child in images.iterdir():
+        child.unlink()
+    images.rmdir()
+    _link_folder(images, outside)
+    with caplog.at_level("WARNING", logger="hearthkeep.deletion"):
+        delete_chat(conn, data, A)
+        sweep_orphans(conn, data)
+    assert (outside / "imgA.png").exists() and (outside / "other.png").exists()
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("left in place" in m and "image" in m for m in messages)
+    assert not any(str(tmp_path) in m for m in messages)
+
+
+def test_remove_tree_rechecks_the_folder_is_not_a_link(data, tmp_path):
+    from hearthkeep.deletion import _remove_tree
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_bytes(b"x")
+    data.mkdir()
+    link = data / "linked"
+    _link_folder(link, outside)
+    _remove_tree(link)
+    assert (outside / "keep.txt").exists()
+
+
+def test_a_photo_sent_again_in_another_chat_stays_with_that_chat(conn, data):
+    a = seed_chat(conn, data, A, "A")
+    seed_chat(conn, data, B, "B")
+    conn.execute(
+        "INSERT INTO messages (chat_id, role, content, created_at) VALUES (?, 'user', ?, '')",
+        (B, "Again\nAttached photo: upA"),
+    )
+    # A mention that isn't its own line, or names a longer id, doesn't count.
+    conn.execute(
+        "INSERT INTO messages (chat_id, role, content, created_at) VALUES (?, 'user', ?, '')",
+        (B, "said Attached photo: upA inline\nAttached photo: upAB"),
+    )
+    counts = delete_chat(conn, data, A)
+    assert counts["uploads"] == 0
+    assert a["upload"].exists()
+    assert (
+        conn.execute("SELECT chat_id FROM upload_chats WHERE upload_id = 'upA'").fetchall()[0][0]
+        == B
+    )
+    delete_chat(conn, data, B)
+    assert not a["upload"].exists()
+    assert conn.execute("SELECT count(*) FROM uploads WHERE id = 'upA'").fetchone()[0] == 0
+
+
+def test_secure_delete_and_an_empty_log_after_a_chat_delete(conn, data):
+    seed_chat(conn, data, A, "A")
+    assert conn.execute("PRAGMA secure_delete").fetchone()[0] == 1
+    delete_chat(conn, data, A)
+    wal = data / "hearthkeep.db-wal"
+    assert not wal.exists() or wal.stat().st_size == 0
+
+
+def test_deleting_the_file_a_chat_is_named_after_retitles_it(conn, data):
+    seed_chat(conn, data, A, "A")
+    seed_chat(conn, data, B, "B")
+    conn.execute("UPDATE chats SET title = 'bank statement.csv' WHERE id = ?", (A,))
+    conn.execute("UPDATE chats SET title = 'My  budget' WHERE id = ?", (B,))
+    delete_chat_file(conn, data, "fileA")
+    delete_chat_file(conn, data, "keepB")  # "budget.csv": B's own title stays
+    titles = dict(conn.execute("SELECT id, title FROM chats").fetchall())
+    assert titles == {A: "Chat", B: "My  budget"}
+
+
+def test_commit_then_remove_planned(conn, data):
+    from hearthkeep.deletion import commit_chat_delete, remove_planned
+
+    a = seed_chat(conn, data, A, "A")
+    counts, plan = commit_chat_delete(conn, A)
+    assert counts["chats"] == 1
+    assert a["image"].exists() and a["chat_dir"].exists()  # nothing on disk yet
+    remove_planned(data, plan)
+    assert not a["image"].exists() and not a["chat_dir"].exists() and not a["upload"].exists()

@@ -29,6 +29,7 @@ const TITLE_CHARS = 60
 const STICK_PX = 96
 const LONG_PRESS_MS = 500
 const UNNAMED_FILE = 'Attached file'
+export const DELETED_FILE = 'Deleted file'
 
 export const DELETE_CHAT_TITLE = 'Delete this chat?'
 export const DELETE_CHAT_BODY =
@@ -62,10 +63,15 @@ function titleFor(text: string, firstFileName?: string): string {
   return (squash(splitAttachments(text).text) || squash(firstFileName ?? '')).slice(0, TITLE_CHARS) || 'Photo'
 }
 
-/** A chip for a stored file the thread mentions; a placeholder until the file list has its name. */
-function chipFor(id: string, known: ReadonlyMap<string, ChatFileInfo>): FileChipItem {
+/**
+ * A chip for a stored file the thread mentions: a placeholder until the chat's file list has its
+ * name, and a plain "Deleted file" (nothing to download or delete) once the list is in and lacks it.
+ */
+function chipFor(id: string, known: ReadonlyMap<string, ChatFileInfo>, missingMeansGone: boolean): FileChipItem {
   const info = known.get(id)
-  return info ? chipFromInfo(info) : { key: id, id, name: UNNAMED_FILE, state: 'ready' }
+  if (info) return chipFromInfo(info)
+  if (missingMeansGone) return { key: id, name: DELETED_FILE, state: 'deleted' }
+  return { key: id, id, name: UNNAMED_FILE, state: 'ready' }
 }
 
 function lastUserIndex(messages: ServerMessage[]): number {
@@ -84,8 +90,12 @@ export function Chat({ model }: { model?: string | null }) {
   const [notice, setNotice] = useState<string | null>(null)
   const [sheetOpen, setSheetOpen] = useState(false)
   const [deleting, setDeleting] = useState<Deleting | null>(null)
-  // Stored files the owner deleted here: their chips leave the thread.
-  const [deletedFiles, setDeletedFiles] = useState<ReadonlySet<string>>(() => new Set())
+  // Chats whose file list has loaded: a file id missing from it is a deleted file.
+  const [loaded, setLoaded] = useState<ReadonlySet<string>>(() => new Set())
+  // Files deleted here, whether or not their chat's list has loaded.
+  const [gone, setGone] = useState<ReadonlySet<string>>(() => new Set())
+  // Where focus goes once the confirm dialog has closed after a deletion.
+  const refocus = useRef<'new-chat' | 'composer' | null>(null)
   const attach = usePhoto()
   const files = useChatFiles()
   const clearFiles = files.clear
@@ -108,6 +118,7 @@ export function Chat({ model }: { model?: string | null }) {
     try {
       const list = await listChatFiles(chatId)
       setKnown((all) => new Map([...all, ...list.map((f): [string, ChatFileInfo] => [f.id, f])]))
+      setLoaded((all) => new Set(all).add(chatId))
     } catch {
       // Try again the next time it is needed.
       listed.current.delete(chatId)
@@ -177,7 +188,7 @@ export function Chat({ model }: { model?: string | null }) {
 
   // Files a step brought in or made: look up their names when the thread has not seen them yet
   // (each unknown id is asked for once, so a file that is gone doesn't loop).
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!current) return
     const unknown = items
       .flatMap((it) => (it.kind === 'assistant' ? it.steps.flatMap((st) => st.files ?? []) : []))
@@ -185,6 +196,11 @@ export function Chat({ model }: { model?: string | null }) {
     if (!unknown.length) return
     for (const id of unknown) asked.current.add(id)
     listed.current.delete(current)
+    setLoaded((all) => {
+      const next = new Set(all)
+      next.delete(current)
+      return next
+    })
     void learnFiles(current)
   }, [items, current, known, learnFiles])
 
@@ -328,7 +344,13 @@ export function Chat({ model }: { model?: string | null }) {
         : `/api/files/${encodeURIComponent(target.id)}`
     const bound = target.kind === 'chat' ? `chat:${target.chat.id}` : `file:${target.id}`
     const token = await stepUp('delete', undefined, bound)
-    await api(path, { method: 'DELETE', body: JSON.stringify({ step_up_token: token }) })
+    try {
+      await api(path, { method: 'DELETE', body: JSON.stringify({ step_up_token: token }) })
+    } catch (error) {
+      // Already gone (another tab or device deleted it): that is what was asked for.
+      if (!isApiError(error, 'not_found')) throw error
+    }
+    refocus.current = target.kind === 'chat' ? 'new-chat' : 'composer'
     setDeleting(null)
     if (target.kind === 'chat') {
       const id = target.chat.id
@@ -338,7 +360,7 @@ export function Chat({ model }: { model?: string | null }) {
       if (shown.current === id || current === id) newChat()
     } else {
       const id = target.id
-      setDeletedFiles((all) => new Set(all).add(id))
+      setGone((all) => new Set(all).add(id))
       setKnown((all) => {
         const next = new Map(all)
         next.delete(id)
@@ -346,6 +368,24 @@ export function Chat({ model }: { model?: string | null }) {
       })
     }
   }
+
+  // After the dialog's own clean-up (which runs first): the deleted thing's button is gone.
+  useEffect(() => {
+    if (deleting || !refocus.current) return
+    const where = refocus.current
+    refocus.current = null
+    const candidates =
+      where === 'composer'
+        ? ['.composer textarea']
+        : ['.chat-sheet .new-chat', '.chat-side .new-chat', '.chat-bar button[aria-label="New chat"]']
+    for (const selector of candidates) {
+      const el = document.querySelector<HTMLElement>(selector)
+      el?.focus()
+      if (el && document.activeElement === el) return
+    }
+  }, [deleting])
+
+  const chipOf = (id: string) => chipFor(id, known, gone.has(id) || (current !== null && loaded.has(current)))
 
   function askDeleteFile(id: string) {
     setDeleting({ kind: 'file', id, name: known.get(id)?.name ?? UNNAMED_FILE })
@@ -395,8 +435,7 @@ export function Chat({ model }: { model?: string | null }) {
                 <UserBubble
                   key={item.key}
                   text={item.text}
-                  known={known}
-                  deleted={deletedFiles}
+                  chipOf={chipOf}
                   onDeleteFile={askDeleteFile}
                   n={index + 1}
                 />
@@ -404,8 +443,7 @@ export function Chat({ model }: { model?: string | null }) {
                 <AssistantTurn
                   key={item.key}
                   item={item}
-                  known={known}
-                  deleted={deletedFiles}
+                  chipOf={chipOf}
                   onDeleteFile={askDeleteFile}
                   n={index + 1}
                   onResolved={(id, status) => resolved(item.key, id, status)}
@@ -451,15 +489,14 @@ export function Chat({ model }: { model?: string | null }) {
 }
 
 type FileProps = {
-  known: ReadonlyMap<string, ChatFileInfo>
-  /** Files deleted here: left out. */
-  deleted: ReadonlySet<string>
+  /** The chip for a stored file's id. */
+  chipOf: (id: string) => FileChipItem
   /** Asks to delete a stored file (with a passkey). */
   onDeleteFile: (id: string) => void
 }
 
 /** The owner's message: any attached photos, then the words, without the attachment lines. */
-function UserBubble({ text, known, deleted, onDeleteFile, n }: FileProps & { text: string; n: number }) {
+function UserBubble({ text, chipOf, onDeleteFile, n }: FileProps & { text: string; n: number }) {
   const { photos, files: fileIds, text: words } = splitAttachments(text)
   return (
     <div className="me" data-photos={photos.length || undefined}>
@@ -469,7 +506,7 @@ function UserBubble({ text, known, deleted, onDeleteFile, n }: FileProps & { tex
       <FileChips
         className="me-files"
         label={`Files you sent in message ${n}`}
-        files={fileIds.filter((id) => !deleted.has(id)).map((id) => chipFor(id, known))}
+        files={fileIds.map(chipOf)}
         onDelete={onDeleteFile}
       />
       {words}
@@ -489,8 +526,7 @@ function EmptyChat() {
 
 function AssistantTurn({
   item,
-  known,
-  deleted,
+  chipOf,
   onDeleteFile,
   n,
   onResolved,
@@ -511,7 +547,7 @@ function AssistantTurn({
       )}
       <WorkedSteps steps={item.steps} workedMs={item.workedMs} running={streaming} />
       <StepImages steps={item.steps} />
-      <StepFiles steps={item.steps} known={known} deleted={deleted} onDeleteFile={onDeleteFile} n={n} />
+      <StepFiles steps={item.steps} chipOf={chipOf} onDeleteFile={onDeleteFile} n={n} />
       {item.approvals.map(({ request, status }) => (
         <ApprovalCard
           key={request.approval_id}
@@ -543,13 +579,13 @@ function AssistantTurn({
 }
 
 /** The files a turn's steps brought into the chat or made, under the steps. */
-function StepFiles({ steps, known, deleted, onDeleteFile, n }: FileProps & { steps: Step[]; n: number }) {
-  const ids = [...new Set(steps.flatMap((step) => step.files ?? []))].filter((id) => !deleted.has(id))
+function StepFiles({ steps, chipOf, onDeleteFile, n }: FileProps & { steps: Step[]; n: number }) {
+  const ids = [...new Set(steps.flatMap((step) => step.files ?? []))]
   if (!ids.length) return null
   return <FileChips
       className="turn-files"
       label={`Files from reply ${n}`}
-      files={ids.map((id) => chipFor(id, known))}
+      files={ids.map(chipOf)}
       onDelete={onDeleteFile}
     />
 }
