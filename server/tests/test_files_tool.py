@@ -3,10 +3,12 @@
 
 # ruff: noqa: F811  (fixtures are imported from test_agent_loop)
 
+import asyncio
 import codecs
 import json
 import os
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -22,7 +24,16 @@ from test_agent_loop import (  # noqa: F401  (fixtures)
     user,
 )
 from test_file_checks import make_xlsx
-from test_folders import junction, try_symlink, write
+from test_folders import (  # noqa: F401  (fake_attrs is a fixture)
+    CLOUD_TAG,
+    RECALL_ON_DATA,
+    RECALL_ON_OPEN,
+    REPARSE,
+    fake_attrs,
+    junction,
+    try_symlink,
+    write,
+)
 
 from hearthkeep import folders as folders_module
 from hearthkeep.config import Settings
@@ -313,3 +324,53 @@ async def test_file_attachment_event_for_this_chat_only(conn, approvals, tmp_pat
     events = await drain(loop, user("bring it"))
     attached = [e for e in events if e["type"] == "attachments"]
     assert [a["items"] for a in attached] == [[{"kind": "file", "id": mine.id}]]
+
+
+# ---- fix round 1 ---------------------------------------------------------------------------------
+
+
+async def test_online_only_files_are_counted_and_never_downloaded(env, fake_attrs):
+    write(env.docs / "here.csv", CSV)
+    fake_attrs(write(env.docs / "cloud1.csv", CSV), RECALL_ON_DATA)
+    fake_attrs(write(env.docs / "cloud2.csv", CSV), REPARSE | RECALL_ON_OPEN, CLOUD_TAG)
+    env.folders.add(str(env.docs))
+
+    listed = await env.run(action="search")
+    assert "docs/here.csv" in listed.content and "cloud" not in listed.content.split("\n")[0]
+    assert ("2 online-only files skipped; make them available offline in OneDrive to use "
+            "them") in listed.content.split("\n")  # fmt: skip
+    plain = await env.run(action="search", query="here")
+    assert "online-only" not in plain.content
+    for action in ("read", "bring"):
+        result = await env.run(action=action, folder="docs", path="cloud1.csv")
+        assert not result.ok and result.content == folders_module.ONLINE_ONLY, action
+        assert "available offline in OneDrive" in result.content
+    assert env.files.list(CHAT) == []
+
+
+async def test_cancelled_bring_waits_for_the_copy_and_discards_it(env, monkeypatch):
+    write(env.docs / "big.csv", CSV)
+    env.folders.add(str(env.docs))
+    started, release = threading.Event(), threading.Event()
+    real_copy = env.tool._copy
+    staged_paths: list[Path] = []
+
+    def slow_copy(target, chat_id):
+        result = real_copy(target, chat_id)
+        staged_paths.append(result[0].tmp)
+        started.set()
+        release.wait(10)
+        return result
+
+    monkeypatch.setattr(env.tool, "_copy", slow_copy)
+    task = asyncio.create_task(env.run(action="bring", folder="docs", path="big.csv"))
+    await asyncio.to_thread(started.wait, 10)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    assert not task.done()  # it waits for the worker, which still holds the staged file
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert staged_paths and not staged_paths[0].exists()
+    assert env.files.list(CHAT) == []
+    assert list(Path(env.files.files_dir(CHAT)).glob("*")) == []

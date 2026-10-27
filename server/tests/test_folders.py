@@ -6,6 +6,7 @@ import os
 import sys
 from datetime import date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,6 +23,7 @@ WINDOWS = sys.platform == "win32"
 windows_only = pytest.mark.skipif(not WINDOWS, reason="Windows path rules")
 REPO = Path(__file__).resolve().parents[2]
 HIDDEN, SYSTEM = 0x2, 0x4
+REAL_SYSTEM_PATHS = folders_module.system_paths
 
 
 @pytest.fixture(autouse=True)
@@ -500,3 +502,296 @@ def test_suggestions_lists_existing_unadded_home_folders(env, tmp_path, monkeypa
     ]
     store.add(str(home / "Downloads"))
     assert [s["label"] for s in store.suggestions()] == ["Documents", "OneDrive Desktop"]
+
+
+# ---- fix round 1: OneDrive placeholders ----------------------------------------------------------
+
+REPARSE, OFFLINE, RECALL_ON_OPEN, RECALL_ON_DATA = 0x400, 0x1000, 0x40000, 0x400000
+CLOUD_TAG, SYMLINK_TAG, MOUNT_POINT_TAG = 0x9000001A, 0xA000000C, 0xA0000003
+
+
+def with_stat(st, attrs: int = 0, tag: int | None = None, **fields) -> SimpleNamespace:
+    """A copy of a stat result with extra attributes, a reparse tag or other fields."""
+    values = {n: getattr(st, n) for n in dir(st) if n.startswith("st_")}
+    values["st_file_attributes"] = getattr(st, "st_file_attributes", 0) | attrs
+    if tag is not None:
+        values["st_reparse_tag"] = tag
+    values.update(fields)
+    return SimpleNamespace(**values)
+
+
+@pytest.fixture
+def fake_attrs(monkeypatch):
+    """`mark(path, attrs, tag)`: lstat, fstat and directory listings report those extra
+    attributes and that reparse tag for the path (as OneDrive's would)."""
+    table: dict[str, tuple[int, int]] = {}
+    real_lstat, real_fstat = folders_module._lstat, folders_module._fstat
+    real_entry_stat = folders_module._entry_stat
+
+    def key(path) -> str:
+        return os.path.normcase(str(path))
+
+    def lstat(path):
+        st = real_lstat(path)
+        extra = table.get(key(path))
+        return with_stat(st, *extra) if extra else st
+
+    def fstat(fd):
+        st = real_fstat(fd)
+        for path, extra in table.items():
+            try:
+                other = real_lstat(path)
+            except OSError:
+                continue
+            if (other.st_dev, other.st_ino) == (st.st_dev, st.st_ino):
+                return with_stat(st, *extra)
+        return st
+
+    def entry_stat(entry):
+        st = real_entry_stat(entry)
+        extra = table.get(key(entry.path))
+        return with_stat(st, *extra) if extra else st
+
+    monkeypatch.setattr(folders_module, "_lstat", lstat)
+    monkeypatch.setattr(folders_module, "_fstat", fstat)
+    monkeypatch.setattr(folders_module, "_entry_stat", entry_stat)
+
+    def mark(path, attrs: int, tag: int = 0) -> None:
+        table[key(path)] = (attrs, tag)
+
+    return mark
+
+
+def outcome_of(store, **filters):
+    args = {"query": None, "kinds": None, "modified_after": None, "modified_before": None,
+            **filters}  # fmt: skip
+    return store.search_in(store.list(), **args)
+
+
+def test_cloud_folder_can_be_added_and_searched(env, fake_attrs):
+    store, docs, _ = env
+    a = write(docs / "a.csv")
+    b = write(docs / "sub" / "b.csv")
+    fake_attrs(docs, REPARSE, CLOUD_TAG)
+    fake_attrs(docs / "sub", REPARSE, CLOUD_TAG | 0x1000)  # a cloud sub-tag: same provider
+    fake_attrs(a, REPARSE, CLOUD_TAG)
+    fake_attrs(b, REPARSE, CLOUD_TAG)
+    folder = store.add(str(docs))
+    assert sorted(found_paths(store)) == ["docs/a.csv", "docs/sub/b.csv"]
+    assert store.resolve_inside(folder, "sub/b.csv") == b.resolve()
+    handle, _ = store.open_checked(folder, "a.csv")
+    with handle:
+        assert handle.read() == b"a,b\n1,2\n"
+
+
+def test_online_only_files_skipped_and_counted(env, fake_attrs):
+    store, docs, _ = env
+    write(docs / "here.csv")
+    fake_attrs(write(docs / "cloud1.csv"), RECALL_ON_DATA)  # as OneDrive marks them
+    fake_attrs(write(docs / "sub" / "cloud2.csv"), REPARSE | RECALL_ON_OPEN, CLOUD_TAG)
+    fake_attrs(write(docs / "tape.csv"), OFFLINE)
+    fake_attrs(write(docs / "cloud.pdf", b"%PDF-"), RECALL_ON_DATA)
+    folder = store.add(str(docs))
+
+    everything = outcome_of(store)
+    assert [f.path for f in everything.found] == ["here.csv"]
+    assert everything.online_only == 4
+    assert outcome_of(store, kinds=["csv"]).online_only == 3  # only those that would match
+    assert outcome_of(store, query="nothing-like-this").online_only == 0
+    for rel in ("cloud1.csv", "sub/cloud2.csv", "tape.csv"):
+        refused(store.resolve_inside, folder, rel, message=folders_module.ONLINE_ONLY)
+        refused(store.open_checked, folder, rel, message=folders_module.ONLINE_ONLY)
+    assert folders_module.ONLINE_SKIPPED.format(n=4) == (
+        "4 online-only files skipped; make them available offline in OneDrive to use them"
+    )
+
+
+def test_online_only_folder_cannot_be_added(env, fake_attrs, tmp_path):
+    store, _, _ = env
+    remote = tmp_path / "remote"
+    remote.mkdir()
+    fake_attrs(remote, REPARSE | RECALL_ON_OPEN, CLOUD_TAG)
+    refused(store.add, str(remote), message=folders_module.ONLINE_ONLY_FOLDER)
+
+
+def test_symlink_and_mount_point_tags_still_refused(env, fake_attrs, tmp_path):
+    store, docs, _ = env
+    write(docs / "ok.csv")
+    fake_attrs(write(docs / "s" / "in-symlink.csv").parent, REPARSE, SYMLINK_TAG)
+    fake_attrs(write(docs / "m" / "in-mount.csv").parent, REPARSE, MOUNT_POINT_TAG)
+    fake_attrs(write(docs / "other.csv"), REPARSE, 0x80000017)  # any other tag
+    fake_attrs(write(docs / "cloudish.csv"), REPARSE, 0x9000001B)  # not the cloud tag
+    folder = store.add(str(docs))
+    assert found_paths(store) == ["docs/ok.csv"]
+    for rel in ("s/in-symlink.csv", "m/in-mount.csv", "other.csv", "cloudish.csv"):
+        refused(store.resolve_inside, folder, rel, message=folders_module.NO_FILE)
+    for tag in (SYMLINK_TAG, MOUNT_POINT_TAG):
+        linked = tmp_path / f"linked-{tag:x}"
+        linked.mkdir()
+        fake_attrs(linked, REPARSE, tag)
+        refused(store.add, str(linked), message=folders_module.NOT_REAL_PATH)
+
+
+def test_suggestions_include_work_onedrive(env, tmp_path, monkeypatch):
+    store, _, _ = env
+    home = tmp_path / "home"
+    (home / "OneDrive - Example Org" / "Documents").mkdir(parents=True)
+    (home / "OneDrive" / "Documents").mkdir(parents=True)
+    monkeypatch.setattr(folders_module, "_home", lambda: home)
+    assert [s["label"] for s in store.suggestions()] == [
+        "OneDrive Documents", "OneDrive - Example Org Documents",
+    ]  # fmt: skip
+
+
+# ---- fix round 1: the handle check fails closed --------------------------------------------------
+
+
+@windows_only
+@pytest.mark.parametrize("final", ["none", "elsewhere"])
+def test_handle_without_matching_final_path_is_refused(env, monkeypatch, tmp_path, final):
+    store, docs, _ = env
+    write(docs / "ok.csv")
+    folder = store.add(str(docs))
+    other = str(write(tmp_path / "elsewhere.csv")) if final == "elsewhere" else None
+    monkeypatch.setattr(folders_module, "_final_path", lambda handle: other)
+    refused(store.open_checked, folder, "ok.csv", message=folders_module.NO_FILE)
+
+
+def test_swap_between_check_and_open_is_refused(env, monkeypatch):
+    """The file is replaced (a new file at the same path) after the walk checked it and before
+    the open: a fresh lstat of the path would agree with the new file; the walk's own lstat
+    doesn't."""
+    store, docs, _ = env
+    target = write(docs / "ok.csv")
+    folder = store.add(str(docs))
+    real_checked = store._checked
+
+    def checked_then_swapped(f, rel):
+        result = real_checked(f, rel)
+        target.unlink()
+        write(target, b"swapped,1\n")
+        return result
+
+    monkeypatch.setattr(store, "_checked", checked_then_swapped)
+    refused(store.open_checked, folder, "ok.csv", message=folders_module.NO_FILE)
+
+
+def test_hard_link_made_after_the_check_is_refused(env, monkeypatch, tmp_path):
+    store, docs, _ = env
+    target = write(docs / "ok.csv")
+    folder = store.add(str(docs))
+    real_checked = store._checked
+
+    def checked_then_linked(f, rel):
+        result = real_checked(f, rel)
+        try:
+            os.link(target, tmp_path / "second-name.csv")
+        except OSError:
+            pytest.skip("hard links aren't available here")
+        return result
+
+    monkeypatch.setattr(store, "_checked", checked_then_linked)
+    refused(store.open_checked, folder, "ok.csv", message=folders_module.NO_FILE)
+
+
+# ---- fix round 1: strict search budgets ----------------------------------------------------------
+
+
+class EndlessListing:
+    """A directory listing that never ends (each entry carries a real file's stat)."""
+
+    def __init__(self, sample: Path) -> None:
+        self.sample = sample
+        self.handed_out = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def __iter__(self):
+        sample = self.sample
+        while True:
+            self.handed_out += 1
+            if self.handed_out > 1_000_000:
+                raise AssertionError("the search kept reading past its budget")
+            yield SimpleNamespace(
+                name=f"f{self.handed_out}.csv", path=str(sample),
+                is_symlink=lambda: False, is_junction=lambda: False,
+                stat=lambda follow_symlinks=False: os.lstat(sample),
+            )  # fmt: skip
+
+
+@pytest.mark.parametrize("budget", ["entries", "time"])
+def test_endless_listing_stops_at_the_budget(env, conn, monkeypatch, budget):
+    store, docs, data = env
+    sample = write(docs / "sample.csv")
+    store.add(str(docs))
+    endless = EndlessListing(sample)
+    monkeypatch.setattr(folders_module, "_scandir", lambda directory: endless)
+    if budget == "entries":
+        monkeypatch.setattr(folders_module, "MAX_ENTRIES", 500)
+        searcher, limit = store, 501
+    else:
+        ticks = iter(range(10**7))
+        searcher = FolderStore(conn, data, clock=lambda: next(ticks))
+        limit = folders_module.SEARCH_SECONDS + 1
+    outcome = outcome_of(searcher)
+    assert outcome.cut is True
+    assert endless.handed_out <= limit
+
+
+def test_listing_dropped_when_the_directory_changes_while_read(env, monkeypatch):
+    store, docs, _ = env
+    write(docs / "ok.csv")
+    write(docs / "sub" / "inside.csv")
+    store.add(str(docs))
+    real_lstat = folders_module._lstat
+    sub = os.path.normcase(str(docs / "sub"))
+    calls = {"n": 0}
+
+    def lstat(path):
+        st = real_lstat(path)
+        if os.path.normcase(str(path)) == sub:
+            calls["n"] += 1
+            if calls["n"] == 2:  # just after the listing: another directory stands there
+                return with_stat(st, st_ino=st.st_ino + 1)
+        return st
+
+    monkeypatch.setattr(folders_module, "_lstat", lstat)
+    assert found_paths(store) == ["docs/ok.csv"]
+    assert calls["n"] == 2
+
+
+# ---- fix round 1: more path forms ----------------------------------------------------------------
+
+
+def test_query_with_regex_and_glob_characters_is_literal(env):
+    store, docs, _ = env
+    write(docs / "rep[1] (x)+$^{2}.csv")
+    write(docs / "plain.csv")
+    store.add(str(docs))
+    assert found_paths(store, query="[1] (x)+$^{2}") == ["docs/rep[1] (x)+$^{2}.csv"]
+    for query in (".*", "[a-z]", "*", "?", "**/*.csv", "\\d+", "(x)|plain"):
+        assert found_paths(store, query=query) == [], query
+
+
+@windows_only
+def test_short_program_files_and_windows_refused(conn, tmp_path, monkeypatch):
+    monkeypatch.setattr(folders_module, "system_paths", REAL_SYSTEM_PATHS)
+    store = FolderStore(conn, tmp_path / "data")  # the real protected list
+    buffer = ctypes.create_unicode_buffer(1024)
+    program_files = os.environ.get("ProgramFiles", "C:" + os.sep + "Program Files")
+    ctypes.windll.kernel32.GetShortPathNameW(program_files, buffer, 1024)
+    drive = os.environ.get("SystemDrive", "C:")
+    for bad in {buffer.value or program_files, (drive + os.sep + "windows").lower()}:
+        refused(store.add, bad)
+    assert store.list() == []
+
+
+def test_trailing_dot_or_space_refused(env):
+    store, docs, _ = env
+    for bad in (str(docs) + ".", str(docs) + " ", str(docs) + ". ", str(docs / "x") + "."):
+        refused(store.add, bad, message=folders_module.BAD_PATH)
+    assert store.list() == []

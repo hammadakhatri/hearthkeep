@@ -28,6 +28,7 @@ from hearthkeep.folders import (
     FOLDER_MOVED,
     MAX_MATCHES,
     NO_FILE,
+    ONLINE_SKIPPED,
     UNKNOWN_FOLDER,
     AllowedFolder,
     FolderError,
@@ -224,6 +225,8 @@ class FilesTool:
             parts.append(NO_MATCHES)
         if outcome.cut:
             parts.append(CUT)
+        if outcome.online_only > 0:
+            parts.append(ONLINE_SKIPPED.format(n=outcome.online_only))
         for moved in outcome.moved:
             parts.append(f"{_shown(moved)}: {FOLDER_MOVED}")
         return ToolResult(ok=True, content="\n\n".join(parts))
@@ -281,10 +284,27 @@ class FilesTool:
             raise
         return staged, clean_file_name(path.name, check.ext), check
 
+    async def _discard_when_copied(self, copying: asyncio.Future) -> None:
+        """After a cancel: wait for the copy to finish (even through further cancels), then
+        remove what it staged, so nothing half-brought is left in the chat's folder."""
+        while not copying.done():
+            try:
+                await asyncio.shield(copying)
+            except asyncio.CancelledError:
+                continue
+            except BaseException:
+                break
+        if copying.done() and not copying.cancelled() and copying.exception() is None:
+            self._files.discard(copying.result()[0])
+
     async def _bring(self, target: _Target, ctx: ToolContext) -> ToolResult:
-        chat_id = ctx.chat_id
+        copying = asyncio.ensure_future(asyncio.to_thread(self._copy, target, ctx.chat_id))
         try:
-            staged, name, check = await asyncio.to_thread(self._copy, target, chat_id)
+            # Shielded: a worker thread can't be stopped part way.
+            staged, name, check = await asyncio.shield(copying)
+        except asyncio.CancelledError:
+            await self._discard_when_copied(copying)
+            raise
         except FileRefused as error:
             return ToolResult(ok=False, content=error.message)
         except ValueError:  # not a chat id

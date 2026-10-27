@@ -48,6 +48,13 @@ PROTECTED = (
 HIDDEN_FOLDER = "Hidden and system folders can't be shared."
 ALREADY_ADDED = "That folder is already shared."
 NO_FILE = "There's no file Hearthkeep can open at that path in that folder."
+ONLINE_ONLY = "That file is online-only; make it available offline in OneDrive to use it."
+ONLINE_ONLY_FOLDER = (
+    "That folder is online-only; make it available offline in OneDrive to share it."
+)
+ONLINE_SKIPPED = (
+    "{n} online-only files skipped; make them available offline in OneDrive to use them"
+)
 UNKNOWN_FOLDER = "There's no shared folder with that name."
 
 MAX_PATH_CHARS = 1024
@@ -63,8 +70,23 @@ _REPARSE_POINT = 0x400
 _OFFLINE = 0x1000
 _RECALL_ON_OPEN = 0x40000
 _RECALL_ON_DATA_ACCESS = 0x400000
-_LINKS = _REPARSE_POINT | _OFFLINE | _RECALL_ON_OPEN | _RECALL_ON_DATA_ACCESS
-_REFUSED_ATTRIBUTES = _LINKS | _HIDDEN | _SYSTEM
+# Data not on this PC: reading it would make OneDrive (or another provider) download it.
+_ONLINE_ONLY = _OFFLINE | _RECALL_ON_OPEN | _RECALL_ON_DATA_ACCESS
+# Reparse tags. A cloud-files tag (OneDrive) is a placeholder, not a link: its data is the
+# file's own. Every other tag (symlinks 0xA000000C, junctions and mount points 0xA0000003,
+# and anything unknown) is refused.
+_TAG_CLOUD_MASK = 0xFFFF0FFF
+_TAG_CLOUD = 0x9000001A
+
+# Hooks (tests fake attributes, reparse tags and endless folders through these).
+_lstat = os.lstat
+_fstat = os.fstat
+_scandir = os.scandir
+
+
+def _entry_stat(entry: os.DirEntry) -> os.stat_result:
+    return entry.stat(follow_symlinks=False)
+
 
 _WINDOWS = sys.platform == "win32"
 _DRIVE_PATH = re.compile(r"[A-Za-z]:\\")
@@ -115,6 +137,7 @@ class SearchOutcome:
     found: list[FoundFile]
     cut: bool = False  # stopped at the entry or time budget
     moved: list[str] = field(default_factory=list)  # labels of folders that moved
+    online_only: int = 0  # matching files skipped because their data isn't on this PC
 
 
 # ---- protected paths -----------------------------------------------------------------------------
@@ -196,16 +219,39 @@ def _attributes(st: os.stat_result) -> int:
     return getattr(st, "st_file_attributes", 0)
 
 
+def _cloud_tag(st: os.stat_result) -> bool:
+    tag = getattr(st, "st_reparse_tag", 0)
+    return bool(_attributes(st) & _REPARSE_POINT) and tag & _TAG_CLOUD_MASK == _TAG_CLOUD
+
+
+def _online_only(st: os.stat_result) -> bool:
+    return bool(_attributes(st) & _ONLINE_ONLY)
+
+
+def _is_cloud(st: os.stat_result) -> bool:
+    """A OneDrive (cloud files) placeholder whose data is on this PC."""
+    return _cloud_tag(st) and not _online_only(st)
+
+
 def _is_link(st: os.stat_result) -> bool:
-    return stat.S_ISLNK(st.st_mode) or bool(_attributes(st) & _LINKS)
-
-
-def _refused_entry(name: str, st: os.stat_result) -> bool:
-    """A link, junction or other reparse point, a hidden or system entry, or a dot or `~$`
-    name: never listed, never followed."""
-    if name.startswith((".", "~$")) or _reserved(name):
+    """A symlink, a junction or mount point, or any other reparse point except a cloud
+    placeholder."""
+    if stat.S_ISLNK(st.st_mode):
         return True
-    return _is_link(st) or bool(_attributes(st) & _REFUSED_ATTRIBUTES)
+    return bool(_attributes(st) & _REPARSE_POINT) and not _cloud_tag(st)
+
+
+def _skipped(name: str, st: os.stat_result) -> str | None:
+    """Why an entry is never listed or followed: "refused" (a link, junction or other
+    reparse point, a hidden or system entry, a dot or `~$` or reserved name), "online" (its
+    data isn't on this PC), or None."""
+    if name.startswith((".", "~$")) or _reserved(name):
+        return "refused"
+    if _attributes(st) & (_HIDDEN | _SYSTEM) or _is_link(st):
+        return "refused"
+    if _online_only(st):
+        return "online"
+    return None
 
 
 def _check_raw_folder(raw: str) -> None:
@@ -226,8 +272,12 @@ def _check_raw_folder(raw: str) -> None:
         if not raw.startswith("/"):
             raise FolderError(BAD_PATH)
         parts = raw[1:].split("/")
-    if any(_reserved(part) for part in parts if part):
-        raise FolderError(BAD_PATH)
+    for part in parts:
+        if not part:
+            continue  # a doubled or trailing separator
+        # Windows quietly drops a trailing dot or space: the path would name another folder.
+        if _reserved(part) or part != part.rstrip(" ."):
+            raise FolderError(BAD_PATH)
 
 
 def _real_folder(raw: str) -> Path:
@@ -247,7 +297,7 @@ def _real_folder(raw: str) -> Path:
         raise FolderError(IS_ROOT)
     _check_chain(real)
     try:
-        st = os.lstat(real)
+        st = _lstat(real)
     except OSError:
         raise FolderError(NO_FOLDER) from None
     if not stat.S_ISDIR(st.st_mode):
@@ -258,18 +308,21 @@ def _real_folder(raw: str) -> Path:
 
 
 def _check_chain(real: Path) -> None:
-    """No component from the drive down to `real` is a link, junction or reparse point (the
-    drive root itself is skipped: it is hidden and system on Windows)."""
+    """No component from the drive down to `real` is a link, junction or reparse point other
+    than a cloud placeholder, or online-only (the drive root itself is skipped: it is hidden
+    and system on Windows)."""
     anchor = Path(real.anchor)
     current = anchor
     for part in real.relative_to(anchor).parts:
         current = current / part
         try:
-            st = os.lstat(current)
+            st = _lstat(current)
         except OSError:
             raise FolderError(NO_FOLDER) from None
         if _is_link(st):
             raise FolderError(NOT_REAL_PATH)
+        if _online_only(st):
+            raise FolderError(ONLINE_ONLY_FOLDER)
 
 
 def _split_rel(rel: str) -> list[str]:
@@ -288,14 +341,20 @@ def _split_rel(rel: str) -> list[str]:
 
 
 def _verify_handle(fd: int, handle_path: str | None, expected: Path, st: os.stat_result) -> None:
-    """The open file is the regular file that was checked: not a link, same file id, and (on
-    Windows) the handle's own final path is the checked path."""
-    opened = os.fstat(fd)
+    """Fail closed unless the open file is the regular file the walk checked: not a link and
+    not online-only, the same file id as the walk's own lstat, one hard link only, and (on
+    Windows) a final path, read from the handle itself, that is the checked path.
+
+    The final-path check is Windows-only: on POSIX, O_NOFOLLOW guards the last component and
+    the file id comparison is what catches a swap anywhere along the path."""
+    opened = _fstat(fd)
     if not stat.S_ISREG(opened.st_mode) or _is_link(opened):
         raise FolderError(NO_FILE)
-    if (opened.st_dev, opened.st_ino) != (st.st_dev, st.st_ino):
+    if _online_only(opened):
+        raise FolderError(ONLINE_ONLY)
+    if (opened.st_dev, opened.st_ino) != (st.st_dev, st.st_ino) or opened.st_nlink != 1:
         raise FolderError(NO_FILE)
-    if handle_path is not None and _key(handle_path) != _key(expected):
+    if _WINDOWS and (handle_path is None or _key(handle_path) != _key(expected)):
         raise FolderError(NO_FILE)
 
 
@@ -434,6 +493,13 @@ class FolderStore:
             ("OneDrive Documents", home / "OneDrive" / "Documents"),
             ("OneDrive Desktop", home / "OneDrive" / "Desktop"),
         ]
+        # Work or school OneDrive: "OneDrive - <organisation>".
+        try:
+            business = sorted(p for p in home.glob("OneDrive - *") if p.is_dir())
+        except OSError:
+            business = []
+        for root in business:
+            candidates += [(f"{root.name} {n}", root / n) for n in ("Documents", "Desktop")]
         added = {_key(f.path) for f in added_folders}
         out = []
         for label, path in candidates:
@@ -468,10 +534,15 @@ class FolderStore:
         for part in parts:
             current = current / part
             try:
-                st = os.lstat(current)
+                st = _lstat(current)
             except OSError:
                 raise FolderError(NO_FILE) from None
-            if _refused_entry(part, st) or self._protected_inside(current):
+            if self._protected_inside(current):
+                raise FolderError(NO_FILE)
+            reason = _skipped(part, st)
+            if reason == "online":
+                raise FolderError(ONLINE_ONLY)  # never a download
+            if reason is not None:
                 raise FolderError(NO_FILE)
         assert st is not None
         if not stat.S_ISREG(st.st_mode) or st.st_nlink > 1:
@@ -493,11 +564,9 @@ class FolderStore:
     def open_checked(self, folder: AllowedFolder, rel: str) -> tuple[BinaryIO, Path]:
         """The file at `rel`, opened for reading after the final check without following a
         link, and verified through the open handle itself. Read from the handle only."""
-        path = self.resolve_inside(folder, rel)
-        try:
-            st = os.lstat(path)
-        except OSError:
-            raise FolderError(NO_FILE) from None
+        # The handle is compared with the walk's own lstat of the file: there is no second
+        # look at the path, which could be swapped in between.
+        path, st = self._checked(folder, rel)
         fd, handle_path = _open_no_follow(path)
         try:
             _verify_handle(fd, handle_path, path, st)
@@ -549,33 +618,53 @@ class FolderStore:
         terms = [t.casefold() for t in (query or "").split()]
         wanted = set(kinds) if kinds else None
         deadline = self._clock() + SEARCH_SECONDS
-        budget = {"entries": 0}
+        entries = 0
         matches: list[tuple[float, FoundFile]] = []
         outcome = SearchOutcome(found=[])
 
-        def keep(name: str, rel: str, label: str, full: Path, st: os.stat_result) -> None:
+        def wanted_file(name: str, rel: str, st: os.stat_result) -> tuple[str, datetime] | None:
             kind = KIND_BY_EXT.get(name.rpartition(".")[2].lower()) if "." in name else None
             if kind is None or (wanted is not None and kind not in wanted):
-                return
+                return None
             if terms and not all(t in rel.casefold() for t in terms):
-                return
+                return None
             try:
                 modified = datetime.fromtimestamp(st.st_mtime)
             except (OverflowError, OSError, ValueError):
-                return
+                return None
             if modified_after is not None and modified.date() < modified_after:
-                return
+                return None
             if modified_before is not None and modified.date() > modified_before:
-                return
+                return None
+            return kind, modified
+
+        def listing(directory: Path, is_root: bool) -> list[tuple[os.DirEntry, os.stat_result]]:
+            """The directory's entries, read within the entry and time budgets (checked as
+            each entry arrives); dropped if the directory changed while it was read."""
+            nonlocal entries
             try:
-                full_st = os.lstat(full)  # st_nlink: DirEntry.stat leaves it 0 on Windows
+                before = _lstat(directory)
+                if not is_root and (_is_link(before) or _online_only(before)):
+                    return []
+                got: list[tuple[os.DirEntry, os.stat_result]] = []
+                with _scandir(directory) as found:
+                    for entry in found:
+                        entries += 1
+                        if entries > MAX_ENTRIES or self._clock() > deadline:
+                            outcome.cut = True
+                            break
+                        try:
+                            if entry.is_symlink() or entry.is_junction():
+                                continue
+                            got.append((entry, _entry_stat(entry)))
+                        except OSError:
+                            continue
+                after = _lstat(directory)
             except OSError:
-                return
-            if full_st.st_nlink > 1 or _refused_entry(name, full_st):
-                return
-            found = FoundFile(label, rel, st.st_size, modified.isoformat(timespec="minutes"),
-                              kind)  # fmt: skip
-            matches.append((st.st_mtime, found))
+                return []
+            if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino) or _is_link(after):
+                return []  # swapped while it was read: none of it is trusted
+            return got
 
         for folder in folders:
             try:
@@ -586,36 +675,39 @@ class FolderStore:
             stack: list[tuple[Path, str, int]] = [(root, "", 0)]
             while stack and not outcome.cut:
                 directory, prefix, depth = stack.pop()
-                try:
-                    # Re-checked just before listing: it must still be a plain directory.
-                    if directory != root and _is_link(os.lstat(directory)):
+                got = listing(directory, directory == root)
+                # Sorted for a steady order: only what was read within the budget.
+                for entry, st in sorted(got, key=lambda item: item[0].name):
+                    reason = _skipped(entry.name, st)
+                    rel = f"{prefix}{entry.name}"
+                    if reason == "online":
+                        if stat.S_ISREG(st.st_mode) and wanted_file(entry.name, rel, st):
+                            outcome.online_only += 1
                         continue
-                    with os.scandir(directory) as entries:
-                        listed = list(entries)
-                except OSError:
-                    continue
-                for entry in sorted(listed, key=lambda e: e.name):
-                    budget["entries"] += 1
-                    if budget["entries"] > MAX_ENTRIES or self._clock() > deadline:
-                        outcome.cut = True
-                        break
-                    try:
-                        st = entry.stat(follow_symlinks=False)
-                        if entry.is_symlink() or entry.is_junction():
-                            continue
-                    except OSError:
-                        continue
-                    if _refused_entry(entry.name, st):
+                    if reason is not None:
                         continue
                     full = Path(entry.path)
                     if self._protected_inside(full):
                         continue
-                    rel = f"{prefix}{entry.name}"
                     if stat.S_ISDIR(st.st_mode):
                         if depth + 1 <= MAX_DEPTH:
                             stack.append((full, rel + "/", depth + 1))
-                    elif stat.S_ISREG(st.st_mode):
-                        keep(entry.name, rel, folder.label, full, st)
+                        continue
+                    if not stat.S_ISREG(st.st_mode):
+                        continue
+                    hit = wanted_file(entry.name, rel, st)
+                    if hit is None:
+                        continue
+                    try:
+                        full_st = _lstat(full)  # st_nlink: DirEntry.stat leaves it 0 on Windows
+                    except OSError:
+                        continue
+                    if full_st.st_nlink > 1 or _skipped(entry.name, full_st) is not None:
+                        continue
+                    kind, modified = hit
+                    found = FoundFile(folder.label, rel, st.st_size,
+                                      modified.isoformat(timespec="minutes"), kind)  # fmt: skip
+                    matches.append((st.st_mtime, found))
             if outcome.cut:
                 break
         matches.sort(key=lambda m: m[0], reverse=True)
