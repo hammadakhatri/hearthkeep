@@ -16,13 +16,14 @@ import sqlite3
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 import jsonschema
 
 from hearthkeep import audit, db
 from hearthkeep.approvals import ApprovalStore
 from hearthkeep.config import Settings, detect_docker
+from hearthkeep.numbercheck import reply_text
 from hearthkeep.permissions import (
     ActionClass,
     Decision,
@@ -70,6 +71,12 @@ _ATTACHMENT_ID = re.compile(r"[A-Za-z0-9_-]{1,32}")
 _ATTACHMENT_TABLES = {"image": "images", "run": "runs"}
 
 _log = logging.getLogger(__name__)
+
+
+class ReplyChecker(Protocol):
+    def check(
+        self, chat_id: str, turn_id: str, message_id: int, question: str, reply: str
+    ) -> dict | None: ...
 
 
 def redact(value: Any, secrets: list[str]) -> Any:
@@ -157,10 +164,11 @@ def record_turn_failure(conn: sqlite3.Connection, exc: BaseException) -> None:
         )
 
 
-def save_message(conn: sqlite3.Connection, chat_id: str, message: dict, secrets: list[str]) -> None:
+def save_message(conn: sqlite3.Connection, chat_id: str, message: dict, secrets: list[str]) -> int:
+    """Store a message (redacted) and return its row id."""
     message = redact(message, secrets)
     tool_calls = message.get("tool_calls")
-    conn.execute(
+    cursor = conn.execute(
         "INSERT INTO messages (chat_id, role, content, tool_calls, tool_call_id, created_at)"
         " VALUES (?, ?, ?, ?, ?, ?)",
         (
@@ -172,6 +180,7 @@ def save_message(conn: sqlite3.Connection, chat_id: str, message: dict, secrets:
             db.utcnow(),
         ),
     )
+    return int(cursor.lastrowid)
 
 
 def _error(message: str) -> str:
@@ -184,6 +193,9 @@ class _Turn:
     turn_id: str
     secrets: list[str] = field(default_factory=list)
     seq: int = 0
+    question: str = ""  # the owner's message this turn answers
+    reply_parts: list[str] = field(default_factory=list)  # saved assistant texts, in order
+    last_assistant_id: int | None = None
 
 
 @dataclass
@@ -211,8 +223,11 @@ class AgentLoop:
         secrets: SecretStore | None = None,
         context: Callable[[str], str] | None = None,
         docker: Callable[[], Awaitable[bool]] | None = None,
+        reply_checker: ReplyChecker | None = None,
     ) -> None:
         self._client = client
+        # Checks the numbers of each finished reply (chats with files); see numbercheck.
+        self._reply_checker = reply_checker
         # Per-chat text appended to the system prompt on every model round (the chat's files).
         self._context = context
         # Whether Docker is up, asked again every model round (it may start or stop meanwhile).
@@ -234,7 +249,7 @@ class AgentLoop:
         """Run one turn. Events are persisted to `turn_events` before being yielded; new
         assistant and tool messages are persisted to `messages`. Never raises for model,
         tool or argument failures: the turn ends with `turn_done` or `turn_error`."""
-        turn = _Turn(chat_id, turn_id)
+        turn = _Turn(chat_id, turn_id, question=_last_user_text(history))
         try:
             try:
                 turn.secrets = self.secret_values()
@@ -296,6 +311,8 @@ class AgentLoop:
             if not requests:
                 if text:
                     self._save(turn, {"role": "assistant", "content": text})
+                for event in self._number_check(turn):
+                    yield event
                 yield self._emit(turn, "turn_done")
                 return
 
@@ -356,6 +373,8 @@ class AgentLoop:
                 final = STEP_LIMIT_MESSAGE.format(limit=limit)
                 yield self._emit(turn, "text_delta", text=final)
                 self._save(turn, {"role": "assistant", "content": final})
+                for event in self._number_check(turn):
+                    yield event
                 yield self._emit(turn, "turn_done")
                 return
 
@@ -572,7 +591,40 @@ class AgentLoop:
         return {"type": type_, "seq": turn.seq, **data}
 
     def _save(self, turn: _Turn, message: dict) -> None:
-        save_message(self._conn, turn.chat_id, message, turn.secrets)
+        message_id = save_message(self._conn, turn.chat_id, message, turn.secrets)
+        if message["role"] == "assistant":
+            turn.last_assistant_id = message_id
+            content = redact(message.get("content") or "", turn.secrets)
+            if content.strip():
+                turn.reply_parts.append(content)
+
+    def _number_check(self, turn: _Turn) -> list[dict]:
+        """The `number_check` event for the finished reply, if any. Never raises: on any
+        failure only the exception type is logged and the turn ends without one."""
+        if self._reply_checker is None or turn.last_assistant_id is None:
+            return []
+        reply = reply_text(turn.reply_parts)
+        if not reply:
+            return []
+        try:
+            result = self._reply_checker.check(
+                turn.chat_id, turn.turn_id, turn.last_assistant_id, turn.question, reply
+            )
+            if result is None:
+                return []
+            text, marks = result["text"], result["marks"]
+        except Exception as exc:
+            _log.warning("number check failed (%s)", type(exc).__name__)
+            return []
+        return [self._emit(turn, "number_check", text=text, marks=marks)]
+
+
+def _last_user_text(history: list[dict]) -> str:
+    for message in reversed(history):
+        if message.get("role") == "user":
+            content = message.get("content")
+            return content if isinstance(content, str) else ""
+    return ""
 
 
 def _normalise(requests: list[ToolCallRequest]) -> list[_Call]:

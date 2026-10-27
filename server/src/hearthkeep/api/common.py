@@ -26,6 +26,7 @@ from hearthkeep.config import LOOPBACK_HOSTS, Settings
 from hearthkeep.files.store import ChatFileStore
 from hearthkeep.images import ImageStore
 from hearthkeep.models.cards import CardError, ModelCard
+from hearthkeep.numbercheck import NumberChecker
 from hearthkeep.runtime.gpu import GpuScheduler
 from hearthkeep.sandbox.handle import SandboxHandle
 from hearthkeep.sandbox.inspect import Inspector
@@ -135,6 +136,7 @@ class Services:
     sandbox: SandboxHandle | None = None  # the runner, now or once Docker is seen up
     runs: RunStore | None = None
     inspector: Inspector | None = None
+    checker: NumberChecker | None = None
     health_cache: tuple[float, bool] | None = None
     health_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 

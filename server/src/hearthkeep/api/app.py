@@ -50,6 +50,7 @@ from hearthkeep.auth.webauthn import ChallengeStore, Verifier
 from hearthkeep.config import LOOPBACK_HOSTS, Settings, detect_docker
 from hearthkeep.files.store import ChatFileStore
 from hearthkeep.images import ImageStore
+from hearthkeep.numbercheck import NumberChecker
 from hearthkeep.runtime.stack import ModelStack
 from hearthkeep.sandbox import image as sandbox_image
 from hearthkeep.sandbox.handle import SandboxHandle
@@ -294,6 +295,7 @@ def create_app(
             if registry.get(PythonTool.name) is None:
                 registry.register(PythonTool(handle, files, runs))
             chat = stack.chat_client(chat_client, gpu)
+            checker = NumberChecker(conn, runs, files)
             loop = AgentLoop(
                 chat,
                 registry,
@@ -303,6 +305,7 @@ def create_app(
                 secrets=secrets,
                 context=lambda chat_id: analysis_context(files, chat_id),
                 docker=handle.docker_available,
+                reply_checker=checker,
             )
             runner = TurnRunner(conn, loop)
             sessions = SessionStore(conn, settings.session_idle_days, clock=clock)
@@ -333,6 +336,7 @@ def create_app(
                 sandbox=handle,
                 runs=runs,
                 inspector=Inspector(handle, files),
+                checker=checker,
             )
             yield
         finally:

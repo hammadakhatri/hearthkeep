@@ -96,6 +96,12 @@ async def list_messages(chat_id: str, session: SessionDep, request: Request) -> 
     runs = hk.conn.execute(
         "SELECT id, created_at FROM runs WHERE chat_id = ? ORDER BY created_at, rowid", (chat_id,)
     ).fetchall()
+    checks = {
+        c["message_id"]: {"text": c["text"], "marks": json.loads(c["marks"])}
+        for c in hk.conn.execute(
+            "SELECT message_id, text, marks FROM number_checks WHERE chat_id = ?", (chat_id,)
+        )
+    }
     out = []
     previous_at = ""
     for r in rows:
@@ -115,6 +121,8 @@ async def list_messages(chat_id: str, session: SessionDep, request: Request) -> 
                 "created_at": r["created_at"],
                 "images": made,
                 "runs": ran,
+                # Only assistant messages carry one (the last of a checked turn); else null.
+                "number_check": checks.get(r["id"]) if r["role"] == "assistant" else None,
             }
         )
         previous_at = r["created_at"] or ""

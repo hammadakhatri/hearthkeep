@@ -1077,3 +1077,47 @@ def test_first_message_title_leaves_out_attached_photo_lines(harness):
     read_events(client, worded, turn_id)
     titles = {c["id"]: c["title"] for c in client.get("/api/chats").json()}
     assert titles == {photo_only: "Photo", worded: "Paint this"}
+
+
+# ---- number check --------------------------------------------------------------------------
+
+
+def test_messages_include_number_check_on_last_assistant_message(harness):
+    script = [
+        [TextDelta("Let me count."), ToolCallRequest("c1", "clock", "{}"),
+         StreamDone("tool_calls")],
+        [TextDelta("There are 5 rows."), StreamDone("stop")],
+    ]  # fmt: skip
+    client = signed_in(harness, script)
+    chat_id = new_chat(client)
+    conn = harness.conn()
+    try:
+        conn.execute(
+            "INSERT INTO chat_files (id, chat_id, name, kind, mime, size, status, source,"
+            " file_name, created_at) VALUES ('f1', ?, 'sales.csv', 'csv', 'text/csv', 1,"
+            " 'ready', 'upload', 'f1.csv', '2026-01-01')",
+            (chat_id,),
+        )
+        results = {"values": [{"name": "rows", "value": 5, "unit": None, "note": None,
+                               "is_date": False, "kind": "computed", "page": None}]}  # fmt: skip
+        conn.execute(
+            "INSERT INTO runs (id, chat_id, turn_id, purpose, status, results, created_at)"
+            " VALUES ('r1', ?, 't0', 'analysis', 'ok', ?, '2026-01-01')",
+            (chat_id, json.dumps(results)),
+        )
+    finally:
+        conn.close()
+    turn_id = say(client, chat_id, "how many rows?").json()["turn_id"]
+    frames = read_events(client, chat_id, turn_id)
+    assert [f["event"] for f in frames][-2:] == ["number_check", "turn_done"]
+
+    messages = client.get(f"/api/chats/{chat_id}/messages").json()
+    assert [m["role"] for m in messages] == ["user", "assistant", "tool", "assistant"]
+    expected = {
+        "text": "Let me count.\n\nThere are 5 rows.",
+        "marks": [{"start": 25, "end": 26, "text": "5", "kind": "computed", "page": None,
+                   "note": None}],
+    }  # fmt: skip
+    assert messages[-1]["number_check"] == expected
+    assert frames[-2]["data"] == expected
+    assert [m["number_check"] for m in messages[:-1]] == [None, None, None]

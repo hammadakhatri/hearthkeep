@@ -162,6 +162,17 @@ MIGRATIONS: dict[int, str] = {
     );
     CREATE INDEX IF NOT EXISTS outputs_run ON outputs(run_id);
     """,
+    5: """
+    CREATE TABLE IF NOT EXISTS number_checks (
+        message_id INTEGER PRIMARY KEY,
+        chat_id TEXT,
+        turn_id TEXT,
+        text TEXT,
+        marks TEXT,
+        created_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS number_checks_chat ON number_checks(chat_id);
+    """,
 }
 
 

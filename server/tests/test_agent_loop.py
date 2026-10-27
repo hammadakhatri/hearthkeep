@@ -820,3 +820,145 @@ async def test_docker_flag_refreshes_every_round(conn, approvals, tmp_path):
     assert types(events).count("approval_required") == 1
     finished = [e["ok"] for e in events if e["type"] == "step_finished"]
     assert finished == [False, True]
+
+
+# --- the number check ---------------------------------------------------------------------------
+
+FILE_CHAT = "e" * 32
+
+
+def _number_checker(conn, tmp_path, *, with_file=True, total=5):
+    from hearthkeep.files.store import ChatFileStore
+    from hearthkeep.numbercheck import NumberChecker
+    from hearthkeep.sandbox.runs import RunStore
+
+    if with_file:
+        conn.execute(
+            "INSERT INTO chat_files (id, chat_id, name, kind, mime, size, status, source,"
+            " file_name, created_at) VALUES ('f1', ?, 'sales.csv', 'csv', 'text/csv', 1,"
+            " 'ready', 'upload', 'f1.csv', '2026-01-01')",
+            (FILE_CHAT,),
+        )
+    results = {"values": [{"name": "total", "value": total, "unit": None, "note": None,
+                           "is_date": False, "kind": "computed", "page": None}]}  # fmt: skip
+    conn.execute(
+        "INSERT INTO runs (id, chat_id, turn_id, purpose, status, results, created_at)"
+        " VALUES ('r1', ?, 't0', 'analysis', 'ok', ?, '2026-01-01')",
+        (FILE_CHAT, json.dumps(results)),
+    )
+    return NumberChecker(conn, RunStore(conn, tmp_path), ChatFileStore(conn, tmp_path))
+
+
+async def drain_chat(loop, history, chat_id, turn_id="t1"):
+    return [e async for e in loop.run_turn(chat_id, turn_id, history, False)]
+
+
+def _assistant_ids(conn, chat_id):
+    rows = conn.execute(
+        "SELECT id FROM messages WHERE chat_id = ? AND role = 'assistant' ORDER BY id", (chat_id,)
+    )
+    return [r["id"] for r in rows]
+
+
+async def test_number_check_event_before_turn_done_and_persisted(
+    conn, settings, approvals, registry, tmp_path
+):
+    checker = _number_checker(conn, tmp_path)
+    client = FakeChatClient(
+        [
+            [TextDelta("Let me count."), call("clock", {}), StreamDone("tool_calls")],
+            [TextDelta("There are 5 rows and 9 columns."), StreamDone("stop")],
+        ]
+    )
+    loop = AgentLoop(client, registry, approvals, conn, settings, reply_checker=checker)
+    question = "Attached file: f1\nHow many rows in 2024?"
+    events = await drain_chat(loop, user(question), FILE_CHAT)
+
+    assert types(events)[-2:] == ["number_check", "turn_done"]
+    check = events[-2]
+    text = "Let me count.\n\nThere are 5 rows and 9 columns."
+    assert check["text"] == text
+    assert [(m["text"], m["kind"]) for m in check["marks"]] == [
+        ("5", "computed"),
+        ("9", "unverified"),
+    ]
+    for m in check["marks"]:
+        assert text[m["start"] : m["end"]] == m["text"]
+    stored = conn.execute("SELECT type, data FROM turn_events WHERE turn_id = 't1' ORDER BY seq")
+    stored = stored.fetchall()
+    assert stored[-2]["type"] == "number_check"
+    assert json.loads(stored[-2]["data"]) == {"text": check["text"], "marks": check["marks"]}
+    last_assistant = _assistant_ids(conn, FILE_CHAT)[-1]
+    row = conn.execute("SELECT * FROM number_checks").fetchone()
+    assert row["message_id"] == last_assistant
+    assert row["chat_id"] == FILE_CHAT and row["turn_id"] == "t1"
+    assert row["text"] == text
+
+
+async def test_number_check_covers_plain_followup_reply(
+    conn, settings, approvals, registry, tmp_path
+):
+    checker = _number_checker(conn, tmp_path)
+    client = FakeChatClient([[TextDelta("Still 5, and 2024."), StreamDone("stop")]])
+    loop = AgentLoop(client, registry, approvals, conn, settings, reply_checker=checker)
+    events = await drain_chat(loop, user("And in 2024?"), FILE_CHAT, turn_id="t2")
+    assert types(events)[-2:] == ["number_check", "turn_done"]
+    # The year from the question is exempt.
+    assert [(m["text"], m["kind"]) for m in events[-2]["marks"]] == [("5", "computed")]
+
+
+async def test_number_check_after_step_limit_message(conn, settings, approvals, registry, tmp_path):
+    checker = _number_checker(conn, tmp_path)
+    scripts = [[call("clock", {}, f"c{i}"), StreamDone("tool_calls")] for i in range(3)]
+    loop = AgentLoop(
+        FakeChatClient(scripts), registry, approvals, conn, replace(settings, max_agent_steps=1),
+        reply_checker=checker,
+    )  # fmt: skip
+    events = await drain_chat(loop, user("go"), FILE_CHAT)
+    assert types(events)[-2:] == ["number_check", "turn_done"]
+    assert "step limit" in events[-2]["text"]
+    # "1 tool steps": the limit is Hearthkeep's own number, not from a run.
+    assert [m["text"] for m in events[-2]["marks"]] == ["1"]
+    row = conn.execute("SELECT message_id FROM number_checks").fetchone()
+    assert row["message_id"] == _assistant_ids(conn, FILE_CHAT)[-1]
+
+
+async def test_no_number_check_without_files(conn, settings, approvals, registry, tmp_path):
+    checker = _number_checker(conn, tmp_path, with_file=False)
+    client = FakeChatClient([[TextDelta("5 rows."), StreamDone("stop")]])
+    loop = AgentLoop(client, registry, approvals, conn, settings, reply_checker=checker)
+    events = await drain_chat(loop, user("how many?"), FILE_CHAT)
+    assert types(events) == ["text_delta", "turn_done"]
+
+
+async def test_checker_failure_never_breaks_the_turn(conn, settings, approvals, registry, caplog):
+    class Broken:
+        def check(self, *args, **kwargs):
+            raise ValueError("private 1234")
+
+    client = FakeChatClient([[TextDelta("5 rows."), StreamDone("stop")]])
+    loop = AgentLoop(client, registry, approvals, conn, settings, reply_checker=Broken())
+    events = await drain_chat(loop, user("how many?"), FILE_CHAT)
+    assert types(events) == ["text_delta", "turn_done"]
+    assert "ValueError" in caplog.text
+    assert "private 1234" not in caplog.text
+    assert load_history(conn, FILE_CHAT)[-1] == {"role": "assistant", "content": "5 rows."}
+
+
+def test_save_message_returns_the_row_id(conn):
+    from hearthkeep.agent.loop import save_message
+
+    first = save_message(conn, CHAT, {"role": "user", "content": "a"}, [])
+    second = save_message(conn, CHAT, {"role": "assistant", "content": "b"}, [])
+    assert isinstance(first, int) and second == first + 1
+
+
+async def test_malformed_checker_result_never_breaks_the_turn(conn, settings, approvals, registry):
+    class Odd:
+        def check(self, *args, **kwargs):
+            return {"marks": []}  # no text
+
+    client = FakeChatClient([[TextDelta("5 rows."), StreamDone("stop")]])
+    loop = AgentLoop(client, registry, approvals, conn, settings, reply_checker=Odd())
+    events = await drain_chat(loop, user("how many?"), FILE_CHAT)
+    assert types(events) == ["text_delta", "turn_done"]
