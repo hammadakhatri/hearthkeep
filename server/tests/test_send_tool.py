@@ -86,6 +86,14 @@ async def test_a_device_named_all(env):
     assert "All" in env.tool.description and "every device" in env.tool.description
 
 
+async def test_no_device_means_every_device_even_with_one_named_all(env):
+    env.device("cred-3", "all")
+    every = await env.tool.run({"kind": "summary", "text": "x"}, env.ctx)
+    assert every.content == "Sent to 3 device(s)."
+    assert [len(env.sent.inbox(c)) for c in ("cred-1", "cred-2", "cred-3")] == [1, 1, 1]
+    assert env.tool.summarize({"kind": "summary"}) == "Send summary to all"
+
+
 async def test_at_most_five_sends_per_turn(env):
     for _ in range(5):
         ok = await env.tool.run({"kind": "summary", "text": "x"}, env.ctx)

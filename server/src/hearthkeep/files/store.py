@@ -89,14 +89,22 @@ class ChatFileStore:
         removed = 0
         if not self._chats.is_dir() or _is_link(self._chats):
             return 0
-        for chat in self._chats.iterdir():
+        try:
+            chats = list(self._chats.iterdir())
+        except OSError:  # e.g. PermissionError: startup goes on without the sweep
+            return 0
+        for chat in chats:
             files = chat / "files"
             # A chat or files folder that is a link or junction leads elsewhere: never swept.
             if not CHAT_ID.fullmatch(chat.name) or _is_link(chat) or not chat.is_dir():
                 continue
             if _is_link(files) or not files.is_dir():
                 continue
-            for tmp in files.glob("*.tmp"):
+            try:
+                leftovers = list(files.glob("*.tmp"))
+            except OSError:  # a folder that can't be listed is left for the next start
+                continue
+            for tmp in leftovers:
                 if not _is_link(tmp) and tmp.is_file():
                     _unlink(tmp)
                     removed += 1

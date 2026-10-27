@@ -65,7 +65,7 @@ from hearthkeep.sandbox.handle import SandboxHandle
 from hearthkeep.sandbox.inspect import Inspector
 from hearthkeep.sandbox.runner import SandboxRunner
 from hearthkeep.sandbox.runs import RunStore
-from hearthkeep.secrets import SecretStore, SecretStoreError
+from hearthkeep.secrets import SecretStore
 from hearthkeep.sent import SentStore
 from hearthkeep.tools.base import ToolRegistry
 from hearthkeep.tools.files import FilesTool
@@ -233,7 +233,7 @@ def _push_sender(store: SecretStore) -> PushSender | None:
     ever stops Hearthkeep from starting. Only the error type is logged, never the key."""
     try:
         return PushSender(VapidKeys.load_or_create(store))
-    except (SecretStoreError, ValueError, TypeError) as exc:
+    except Exception as exc:  # whatever goes wrong, push is off and Hearthkeep still starts
         _log.warning("push is off: the VAPID key can't be loaded (%s)", type(exc).__name__)
         return None
 

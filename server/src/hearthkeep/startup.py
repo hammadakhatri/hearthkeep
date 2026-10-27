@@ -44,6 +44,40 @@ class StartupStatus:
     enabled: bool
     data_dir: str | None
 
+    def serves(self, data_dir: Path | str) -> bool:
+        """Whether the task starts Hearthkeep with this data folder."""
+        if self.data_dir is None:
+            return False
+        return same_folder(self.data_dir, data_dir)
+
+
+def same_folder(a: Path | str, b: Path | str) -> bool:
+    return os.path.normcase(os.path.normpath(str(a))) == os.path.normcase(
+        os.path.normpath(str(b))
+    )
+
+
+def quote_arg(value: str) -> str:
+    """One Windows command-line argument in double quotes. Backslashes before the closing
+    quote are doubled, so a drive root (a data folder at the top of a drive) keeps its
+    quote."""
+    trailing = len(value) - len(value.rstrip("\\"))
+    return '"' + value + "\\" * trailing + '"'
+
+
+def _unquoted(value: str) -> str:
+    """The value quote_arg wrapped (its doubled trailing backslashes halved)."""
+    trailing = len(value) - len(value.rstrip("\\"))
+    return value[: len(value) - trailing // 2] if trailing else value
+
+
+def schtasks_exe() -> str:
+    """schtasks.exe from System32, never whatever PATH finds first."""
+    root = os.environ.get("SystemRoot") or os.environ.get("windir")
+    if not root:
+        raise StartupError("Windows' SystemRoot folder is not set, so schtasks can't be found.")
+    return str(Path(root) / "System32" / "schtasks.exe")
+
 
 def is_windows() -> bool:
     return sys.platform == "win32"
@@ -63,7 +97,10 @@ def task_xml(*, pythonw: Path, data_dir: Path, user: str) -> str:
     """The task definition: at the user's logon, no window, no time limit, restarted on
     failure. Every value is XML-escaped."""
     data = str(data_dir)
-    arguments = f'-m hearthkeep serve --data "{data}" --log-file "{log_path(data_dir)}"'
+    arguments = (
+        f"-m hearthkeep serve --data {quote_arg(data)} "
+        f"--log-file {quote_arg(str(log_path(data_dir)))}"
+    )
     return f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
@@ -113,13 +150,23 @@ def task_xml(*, pythonw: Path, data_dir: Path, user: str) -> str:
 
 def _schtasks(run: Run, *args: str) -> subprocess.CompletedProcess:
     return run(
-        ["schtasks", *args],
+        [schtasks_exe(), *args],
         stdin=subprocess.DEVNULL,
         capture_output=True,
         timeout=SCHTASKS_TIMEOUT_S,
         check=False,
         creationflags=_NO_WINDOW,
     )
+
+
+def _call(run: Run, *args: str) -> subprocess.CompletedProcess:
+    """schtasks for a change: no answer in time, or no schtasks at all, is a StartupError."""
+    try:
+        return _schtasks(run, *args)
+    except subprocess.TimeoutExpired:
+        raise StartupError(f"schtasks didn't answer within {SCHTASKS_TIMEOUT_S} seconds.") from None
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise StartupError(f"schtasks couldn't run ({type(exc).__name__}).") from None
 
 
 def _error_text(result: subprocess.CompletedProcess) -> str:
@@ -132,12 +179,17 @@ def enable(data_dir: Path, *, run: Run = subprocess.run, pythonw: Path | None = 
         raise StartupError(UNSUPPORTED)
     data = Path(data_dir).resolve()
     exe = pythonw or Path(sys.executable).with_name("pythonw.exe")
+    if not exe.is_file():
+        raise StartupError(
+            f"pythonw.exe was not found next to this Python ({exe}), so Hearthkeep can't "
+            "start without a window. Reinstall Python with its standard files."
+        )
     xml = task_xml(pythonw=exe, data_dir=data, user=_current_user())
     fd, name = tempfile.mkstemp(prefix="hearthkeep-task-", suffix=".xml")
     try:
         with os.fdopen(fd, "w", encoding="utf-16") as f:
             f.write(xml)
-        result = _schtasks(run, "/Create", "/TN", TASK_NAME, "/XML", name, "/F")
+        result = _call(run, "/Create", "/TN", TASK_NAME, "/XML", name, "/F")
     finally:
         with contextlib.suppress(OSError):
             os.unlink(name)
@@ -150,7 +202,7 @@ def disable(*, run: Run = subprocess.run) -> bool:
     """Delete the task; False if there was none."""
     if not is_windows():
         raise StartupError(UNSUPPORTED)
-    result = _schtasks(run, "/Delete", "/TN", TASK_NAME, "/F")
+    result = _call(run, "/Delete", "/TN", TASK_NAME, "/F")
     clear_cache()
     return result.returncode == 0
 
@@ -176,7 +228,9 @@ def _parse(xml: str) -> StartupStatus:
     enabled = (root.findtext("t:Settings/t:Enabled", "true", _NS) or "").strip() == "true"
     arguments = root.findtext("t:Actions/t:Exec/t:Arguments", "", _NS) or ""
     match = _DATA_ARG.search(arguments)
-    data = (match.group(1) or match.group(2)) if match else None
+    data = None
+    if match:
+        data = _unquoted(match.group(1)) if match.group(1) is not None else match.group(2)
     return StartupStatus(supported=True, enabled=enabled, data_dir=data)
 
 
@@ -186,7 +240,7 @@ def status(*, run: Run = subprocess.run) -> StartupStatus:
         return StartupStatus(supported=False, enabled=False, data_dir=None)
     try:
         result = _schtasks(run, "/Query", "/TN", TASK_NAME, "/XML")
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, StartupError):
         return StartupStatus(supported=True, enabled=False, data_dir=None)
     if result.returncode != 0:
         return StartupStatus(supported=True, enabled=False, data_dir=None)

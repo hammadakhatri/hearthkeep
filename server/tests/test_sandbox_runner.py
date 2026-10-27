@@ -536,6 +536,13 @@ async def test_docker_start_failure_is_sandbox_error(fake, monkeypatch, caplog, 
     assert raw.status == "sandbox_error"
     # Docker's own words never reach the run's error (which the model sees) ...
     assert raw.error == START_ERRORS[code]
+    if code not in (125, 126, 127):
+        # Not a Docker-level exit: the container's stderr may be the script's, so only its
+        # length is kept and logged, never its text.
+        assert raw.diagnostics == f"docker exited {code}; stderr {len(stderr) + 5000} bytes"
+        logged = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert logged and not any("Error response" in m or "zzz" in m for m in logged)
+        return
     # ... only the diagnostics, cut to 2 KB with the owner's folders replaced.
     assert "docker: Error response from daemon: mount <data>" in raw.diagnostics
     assert "<home>" in raw.diagnostics

@@ -503,3 +503,34 @@ def test_startup_sweep_does_not_follow_links(harness, tmp_path_factory):
     harness.start()
     assert (outside / "files" / "victim.tmp").exists()
     assert (outside / "victim.tmp").exists()
+
+
+def test_sweep_temp_skips_folders_it_cannot_list(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from hearthkeep.files.store import ChatFileStore
+
+    conn = connect(tmp_path / "hk.db")
+    chats = tmp_path / "workspace" / "chats"
+    locked, open_ = chats / ("a" * 32) / "files", chats / ("b" * 32) / "files"
+    for folder in (locked, open_):
+        folder.mkdir(parents=True)
+        (folder / "x.tmp").write_bytes(b"half")
+    real_glob = Path.glob
+
+    def glob(self, pattern):
+        if self == locked:
+            raise PermissionError("access denied")
+        return real_glob(self, pattern)
+
+    monkeypatch.setattr(Path, "glob", glob)
+    store = ChatFileStore(conn, tmp_path)
+    assert store.sweep_temp() == 1
+    assert not (open_ / "x.tmp").exists() and (locked / "x.tmp").exists()
+
+    def no_listing(self):
+        raise PermissionError("access denied")
+
+    monkeypatch.setattr(Path, "iterdir", no_listing)
+    assert store.sweep_temp() == 0
+    conn.close()

@@ -306,6 +306,33 @@ def test_cli_startup_commands(tmp_path, monkeypatch, capsys):
         )
 
 
+def test_cli_startup_other_folder_and_schtasks_failures(tmp_path, monkeypatch, capsys):
+    import subprocess
+
+    from hearthkeep import startup
+
+    data, other = tmp_path / "data", tmp_path / "other"
+    xml = startup.task_xml(pythonw=tmp_path / "pythonw.exe", data_dir=other, user="me")
+    answer = subprocess.CompletedProcess([], 0, xml.encode("utf-16"), b"")
+    monkeypatch.setattr(startup, "is_windows", lambda: True)
+    monkeypatch.setattr(cli, "startup_run", lambda argv, **kw: answer)
+    startup.clear_cache()
+    assert cli.main(["startup", "status", "--data", str(data)]) == 0
+    assert capsys.readouterr().out.strip() == (
+        f"Start at login: on, for another data folder ({other})"
+    )
+
+    def hangs(argv, **kw):
+        raise subprocess.TimeoutExpired(argv, 15)
+
+    monkeypatch.setattr(cli, "startup_run", hangs)
+    for command in ("enable", "disable"):
+        assert cli.main(["startup", command, "--data", str(data)]) == 1
+        assert capsys.readouterr().err.strip() == (
+            "error: schtasks didn't answer within 15 seconds."
+        )
+
+
 def test_serve_log_file_redirects_output(serve, monkeypatch):
     import sys
 

@@ -412,7 +412,11 @@ def cmd_startup_enable(args: argparse.Namespace) -> int:
 def cmd_startup_disable(args: argparse.Namespace) -> int:
     if not startup.is_windows():
         return _startup_unsupported()
-    removed = startup.disable(run=startup_run)
+    try:
+        removed = startup.disable(run=startup_run)
+    except startup.StartupError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     print("Start at login: off" + ("" if removed else " (it was not on)"))
     return 0
 
@@ -421,7 +425,10 @@ def cmd_startup_status(args: argparse.Namespace) -> int:
     if not startup.is_windows():
         return _startup_unsupported()
     state = startup.status(run=startup_run)
-    if state.enabled:
+    data = Path(_settings(Path(args.data)).data_dir).resolve()
+    if state.enabled and state.data_dir is not None and not state.serves(data):
+        print(f"Start at login: on, for another data folder ({state.data_dir})")
+    elif state.enabled:
         print(f"Start at login: on (data folder {state.data_dir})")
     else:
         print("Start at login: off")

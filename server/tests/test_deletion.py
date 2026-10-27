@@ -454,3 +454,34 @@ def test_commit_then_remove_planned(conn, data):
     assert a["image"].exists() and a["chat_dir"].exists()  # nothing on disk yet
     remove_planned(data, plan)
     assert not a["image"].exists() and not a["chat_dir"].exists() and not a["upload"].exists()
+
+
+def test_an_empty_log_after_a_file_delete(conn, data):
+    seed_chat(conn, data, A, "A")
+    delete_chat_file(conn, data, "fileA")
+    wal = data / "hearthkeep.db-wal"
+    assert not wal.exists() or wal.stat().st_size == 0
+
+
+def test_a_busy_checkpoint_is_logged_at_once_never_waited_for(conn, data, caplog):
+    import logging
+    import time
+
+    from hearthkeep.deletion import checkpoint
+
+    seed_chat(conn, data, A, "A")
+    reader = db.connect(data / "hearthkeep.db")
+    try:
+        reader.execute("BEGIN")
+        reader.execute("SELECT COUNT(*) FROM chats").fetchone()  # holds a read snapshot
+        conn.execute("UPDATE chats SET title = 'x'")
+        caplog.set_level(logging.WARNING)
+        started = time.monotonic()
+        assert checkpoint(conn) is False
+        assert time.monotonic() - started < 1.0  # not the 5 s busy timeout
+        assert "busy" in caplog.text
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == db.BUSY_TIMEOUT_MS
+    finally:
+        reader.execute("ROLLBACK")
+        reader.close()
+    assert checkpoint(conn) is True

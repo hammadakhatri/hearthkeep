@@ -104,8 +104,16 @@ async def startup_settings(session: SessionDep, request: Request) -> dict:
     PC changes it; the web app shows it."""
     hk = services(request)
     state = await asyncio.to_thread(startup.cached_status, hk.monotonic())
+    # On for another data folder: enabling here points it at this one.
+    other = state.enabled and state.data_dir is not None and not state.serves(hk.settings.data_dir)
     command = None
     if state.supported:
-        verb = "disable" if state.enabled else "enable"
-        command = f'hearthkeep startup {verb} --data "{hk.settings.data_dir}"'
-    return {"supported": state.supported, "enabled": state.enabled, "command": command}
+        verb = "disable" if state.enabled and not other else "enable"
+        data = startup.quote_arg(str(hk.settings.data_dir))
+        command = f"hearthkeep startup {verb} --data {data}"
+    return {
+        "supported": state.supported,
+        "enabled": state.enabled,
+        "other_data_folder": other,
+        "command": command,
+    }

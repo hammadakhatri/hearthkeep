@@ -90,6 +90,7 @@ ERROR_START = "The sandbox couldn't start the container."
 ERROR_ENTRY = "The sandbox couldn't run its entry program."
 ERROR_OUTPUT = "The sandbox returned output Hearthkeep couldn't read."
 ERROR_UNEXPECTED = "The sandbox stopped unexpectedly."
+DOCKER_LEVEL_EXITS = (125, 126, 127)  # Docker itself failed: its stderr is its own words
 DOCKER_KILLED_EXIT = 137  # the container was killed: by its memory limit, unless the host did
 SCRIPT_KILLED_EXIT = -9  # the entry's report for a script ended by SIGKILL (outside a timeout)
 
@@ -686,7 +687,12 @@ class SandboxRunner:
         tar_path: Path,
         timeout: float,
     ) -> RawRun:
-        diagnostics = self._diagnostics(stderr.decode("utf-8", "replace").strip())
+        if returncode in DOCKER_LEVEL_EXITS and outcome == "done" and not killed:
+            # Docker's own complaint (it couldn't start the container): worth logging.
+            diagnostics = self._diagnostics(stderr.decode("utf-8", "replace").strip())
+        else:
+            # Otherwise stderr may be the container's (the owner's data): its length only.
+            diagnostics = f"stderr {len(stderr)} bytes" if stderr else ""
 
         def fail(status: RunStatus, error: str, why: str | None = None) -> RawRun:
             note = "; ".join(x for x in (why, diagnostics) if x) or None
@@ -704,7 +710,7 @@ class SandboxRunner:
             )
         if killed:  # the host had to kill it although its time wasn't up
             return fail("sandbox_error", ERROR_UNEXPECTED, f"killed by the host ({returncode})")
-        if returncode in (125, 126, 127):
+        if returncode in DOCKER_LEVEL_EXITS:
             self._status = None  # Docker or the image may have gone: look again next time
             message = ERROR_START if returncode == 125 else ERROR_ENTRY
             return fail("sandbox_error", message, f"docker exited {returncode}")

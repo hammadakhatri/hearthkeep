@@ -1232,6 +1232,7 @@ def test_startup_settings_endpoint(harness, monkeypatch):
     assert first.json() == {
         "supported": True,
         "enabled": False,
+        "other_data_folder": False,
         "command": f'hearthkeep startup enable --data "{data}"',
     }
     answer[0] = startup.StartupStatus(True, True, data)
@@ -1242,6 +1243,7 @@ def test_startup_settings_endpoint(harness, monkeypatch):
     assert on == {
         "supported": True,
         "enabled": True,
+        "other_data_folder": False,
         "command": f'hearthkeep startup disable --data "{data}"',
     }
     assert len(calls) == 2
@@ -1251,7 +1253,25 @@ def test_startup_settings_endpoint(harness, monkeypatch):
     assert client.get("/api/settings/startup").json() == {
         "supported": False,
         "enabled": False,
+        "other_data_folder": False,
         "command": None,
     }
     assert harness.start().get("/api/settings/startup").status_code == 401
+    startup.clear_cache()
+
+
+def test_startup_settings_on_for_another_data_folder(harness, monkeypatch):
+    from hearthkeep import startup
+
+    other = str(harness.data.parent / "other-data")
+    on_elsewhere = startup.StartupStatus(True, True, other)
+    monkeypatch.setattr(startup, "status", lambda *, run=None: on_elsewhere)
+    startup.clear_cache()
+    client = signed_in(harness)
+    assert client.get("/api/settings/startup").json() == {
+        "supported": True,
+        "enabled": True,
+        "other_data_folder": True,
+        "command": f'hearthkeep startup enable --data "{harness.data}"',
+    }
     startup.clear_cache()

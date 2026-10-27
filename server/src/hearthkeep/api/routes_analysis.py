@@ -29,9 +29,11 @@ def _fixed(column: str) -> str:
 
 
 # A chat is listed when it has a shown file; it is as new as its newest shown file or run.
+# The page cursor is (updated_at, id): chats with the same time are ordered by id, so a page
+# edge between them skips none.
 _CHATS = f"""
 SELECT id, title, updated_at FROM (
-    SELECT c.id AS id, c.title AS title, c.rowid AS row,
+    SELECT c.id AS id, c.title AS title,
            MAX(f.at, COALESCE(r.at, f.at)) AS updated_at
     FROM chats c
     JOIN (SELECT chat_id, MAX({_fixed("created_at")}) AS at FROM chat_files
@@ -39,8 +41,8 @@ SELECT id, title, updated_at FROM (
     LEFT JOIN (SELECT chat_id, MAX({_fixed("created_at")}) AS at FROM runs
                GROUP BY chat_id) r ON r.chat_id = c.id
 )
-WHERE (? IS NULL OR updated_at < ?)
-ORDER BY updated_at DESC, row DESC
+WHERE (? IS NULL OR updated_at < ? OR (updated_at = ? AND ? IS NOT NULL AND id < ?))
+ORDER BY updated_at DESC, id DESC
 LIMIT ?
 """
 
@@ -63,15 +65,20 @@ async def analysis(
     session: SessionDep,
     request: Request,
     before: Annotated[str | None, Query(max_length=64)] = None,
+    before_id: Annotated[str | None, Query(pattern="^[0-9a-f]{32}$")] = None,
     limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = DEFAULT_LIMIT,
 ) -> dict:
     """A page of chats (newest first) with their files and chart titles: three bounded
     queries however many chats there are. A chart's spec is fetched on its own
-    (`/api/outputs/{id}`), so this stays small."""
+    (`/api/outputs/{id}`), so this stays small. The next page is `before` = the last chat's
+    `updated_at` and `before_id` = its `chat_id`."""
     conn = services(request).conn
     cursor = _before(before)
     # One more than asked for tells whether there is another page.
-    chats = conn.execute(_CHATS, (cursor, cursor, limit + 1)).fetchall()
+    after_id = before_id if cursor is not None else None
+    chats = conn.execute(
+        _CHATS, (cursor, cursor, cursor, after_id, after_id, limit + 1)
+    ).fetchall()
     more = len(chats) > limit
     chats = chats[:limit]
     if not chats:

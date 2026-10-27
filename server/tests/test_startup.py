@@ -84,9 +84,10 @@ def test_task_xml_has_logon_trigger_no_window_no_time_limit():
 
 def test_enable_disable_status_call_schtasks(windows, tmp_path):
     run = FakeSchtasks()
-    startup.enable(tmp_path, run=run, pythonw=PYTHONW)
+    startup.enable(tmp_path, run=run, pythonw=real_pythonw(tmp_path))
     argv, kw = run.calls[0]
-    assert argv[:5] == ["schtasks", "/Create", "/TN", "Hearthkeep", "/XML"]
+    schtasks = startup.schtasks_exe()
+    assert argv[:5] == [schtasks, "/Create", "/TN", "Hearthkeep", "/XML"]
     assert argv[6:] == ["/F"]
     assert not Path(argv[5]).exists()  # the temp XML is removed
     assert kw["creationflags"] == getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -94,10 +95,10 @@ def test_enable_disable_status_call_schtasks(windows, tmp_path):
 
     status = startup.status(run=run)
     assert status == startup.StartupStatus(True, True, str(tmp_path.resolve()))
-    assert run.calls[-1][0] == ["schtasks", "/Query", "/TN", "Hearthkeep", "/XML"]
+    assert run.calls[-1][0] == [schtasks, "/Query", "/TN", "Hearthkeep", "/XML"]
 
     assert startup.disable(run=run) is True
-    assert run.calls[-1][0] == ["schtasks", "/Delete", "/TN", "Hearthkeep", "/F"]
+    assert run.calls[-1][0] == [schtasks, "/Delete", "/TN", "Hearthkeep", "/F"]
     assert startup.status(run=run) == startup.StartupStatus(True, False, None)
     assert startup.disable(run=run) is False
 
@@ -115,8 +116,8 @@ def test_enable_failure_raises(windows, tmp_path):
     def failing(argv, **kw):
         return subprocess.CompletedProcess(argv, 1, b"", b"ERROR: Access is denied.")
 
-    with pytest.raises(startup.StartupError):
-        startup.enable(tmp_path, run=failing, pythonw=PYTHONW)
+    with pytest.raises(startup.StartupError, match="Access is denied"):
+        startup.enable(tmp_path, run=failing, pythonw=real_pythonw(tmp_path))
 
 
 def test_not_windows_is_unsupported(monkeypatch, tmp_path):
@@ -143,6 +144,56 @@ def test_cached_status_kept_30_seconds_and_busted_by_enable(windows, monkeypatch
     assert len(calls) == 1
     startup.cached_status(130.0)
     assert len(calls) == 2
-    startup.enable(tmp_path, run=FakeSchtasks(), pythonw=PYTHONW)
+    startup.enable(tmp_path, run=FakeSchtasks(), pythonw=real_pythonw(tmp_path))
     startup.cached_status(130.1)
     assert len(calls) == 3
+
+
+def test_schtasks_runs_from_system32_not_path(windows, monkeypatch, tmp_path):
+    monkeypatch.setenv("SystemRoot", str(tmp_path / "<windows>"))
+    run = FakeSchtasks()
+    startup.status(run=run)
+    assert run.calls[0][0][0] == str(tmp_path / "<windows>" / "System32" / "schtasks.exe")
+
+
+def test_enable_refuses_a_missing_pythonw(windows, tmp_path):
+    run = FakeSchtasks()
+    with pytest.raises(startup.StartupError, match="pythonw.exe"):
+        startup.enable(tmp_path, run=run, pythonw=tmp_path / "missing" / "pythonw.exe")
+    assert run.calls == []
+
+
+def test_drive_root_data_folder_is_quoted_so_the_quote_survives():
+    root = "Q:\\"
+    assert startup.quote_arg(root) == '"Q:\\\\"'
+    assert startup.quote_arg("Q:\\hk") == '"Q:\\hk"'
+    xml = startup.task_xml(pythonw=PYTHONW, data_dir=Path(root), user="PC\\me")
+    args = parse(xml).findtext("t:Actions/t:Exec/t:Arguments", namespaces=NS)
+    assert args.startswith('-m hearthkeep serve --data "Q:\\\\" --log-file ')
+    assert startup._parse(xml).data_dir == root
+
+
+@pytest.mark.parametrize("error", [subprocess.TimeoutExpired("schtasks", 15), OSError("gone")])
+def test_enable_and_disable_turn_schtasks_failures_into_errors(windows, tmp_path, error):
+    def broken(argv, **kw):
+        raise error
+
+    with pytest.raises(startup.StartupError, match="schtasks"):
+        startup.enable(tmp_path, run=broken, pythonw=real_pythonw(tmp_path))
+    with pytest.raises(startup.StartupError, match="schtasks"):
+        startup.disable(run=broken)
+
+
+def real_pythonw(tmp_path: Path) -> Path:
+    exe = tmp_path / "venv" / "pythonw.exe"
+    exe.parent.mkdir(exist_ok=True)
+    exe.write_bytes(b"")
+    return exe
+
+
+def test_status_knows_another_data_folder(windows, tmp_path):
+    run = FakeSchtasks()
+    startup.enable(tmp_path / "one", run=run, pythonw=real_pythonw(tmp_path))
+    state = startup.status(run=run)
+    assert state.serves(tmp_path / "one") is True
+    assert state.serves(tmp_path / "two") is False

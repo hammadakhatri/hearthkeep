@@ -164,13 +164,24 @@ def _photo_kept_by(conn: sqlite3.Connection, chat_id: str, upload_id: str) -> st
     return None
 
 
-def checkpoint(conn: sqlite3.Connection) -> None:
+def checkpoint(conn: sqlite3.Connection) -> bool:
     """Fold the write-ahead log back into the database and empty it, so deleted rows don't
-    linger there. A failure (another reader, say) is only logged by type."""
+    linger there. Never waits: with the busy timeout off for the call, another reader makes it
+    answer busy at once (logged; the next checkpoint folds the log). A failure is only logged
+    by type. True when the log was emptied."""
     try:
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+        conn.execute("PRAGMA busy_timeout = 0")
+        try:
+            row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        finally:
+            conn.execute(f"PRAGMA busy_timeout = {db.BUSY_TIMEOUT_MS}")
     except sqlite3.Error as exc:
         _log.warning("could not checkpoint the database: %s", type(exc).__name__)
+        return False
+    if row is not None and row[0]:
+        _log.warning("could not checkpoint the database: it is busy")
+        return False
+    return True
 
 
 def commit_chat_delete(
@@ -263,6 +274,7 @@ def delete_chat_file(conn: sqlite3.Connection, data_dir: Path, file_id: str) -> 
                 "UPDATE chats SET title = ? WHERE id = ? AND title = ?",
                 (FILE_TITLE_RESET, chat_id, from_name),
             )
+    checkpoint(conn)
     if isinstance(chat_id, str) and CHAT_ID.fullmatch(chat_id):
         _remove_file(_chats_root(data_dir) / chat_id / "files", file_name, data_dir, "chat file")
     return chat_id

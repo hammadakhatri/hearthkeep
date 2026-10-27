@@ -193,3 +193,18 @@ def test_push_off_but_hearthkeep_starts_with_a_corrupt_vapid_key(harness, caplog
     assert garbage not in caplog.text
     assert "ValueError" in caplog.text
     assert SecretStore(harness.data).get(VAPID_SECRET) == garbage  # never overwritten
+
+
+def test_push_off_but_hearthkeep_starts_whatever_loading_the_key_raises(
+    harness, monkeypatch, caplog
+):
+    from hearthkeep.api import app as app_module
+
+    def unexpected(store):
+        raise RuntimeError("something nobody planned for")
+
+    monkeypatch.setattr(app_module.VapidKeys, "load_or_create", staticmethod(unexpected))
+    caplog.set_level(logging.WARNING)
+    client = signed_in(harness)
+    assert client.get("/api/push").status_code == 503
+    assert "RuntimeError" in caplog.text and "nobody planned" not in caplog.text

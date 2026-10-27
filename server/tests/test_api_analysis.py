@@ -198,3 +198,29 @@ def test_output_includes_turn_headline(harness, tmp_path):
     assert chart["turn_id"] == turn_id
     assert chart["headline"] == {"text": "Total 42.5 in all", "marks": marks}
     assert chart["spec"] == SPEC
+
+
+def test_chats_with_the_same_time_page_by_id_without_skips(harness):
+    client = signed_in(harness)
+    at = "2026-05-01T10:00:00.000000+00:00"
+    ids = [f"{n:032x}" for n in range(1, 4)]
+    conn = harness.conn()
+    try:
+        for n, chat_id in enumerate(ids):
+            seed(conn, chat_id, f"Tie {n}", files=[(f"t{n}", "ready", at)])
+        conn.commit()
+    finally:
+        conn.close()
+    seen = []
+    page = client.get("/api/analysis", params={"limit": 1}).json()
+    while True:
+        seen += [c["chat_id"] for c in page["chats"]]
+        if not page["more"]:
+            break
+        last = page["chats"][-1]
+        page = client.get(
+            "/api/analysis",
+            params={"limit": 1, "before": last["updated_at"], "before_id": last["chat_id"]},
+        ).json()
+    assert seen == sorted(ids, reverse=True)  # every chat once, id order within the time
+    assert client.get("/api/analysis", params={"before_id": "x" * 33}).status_code == 422

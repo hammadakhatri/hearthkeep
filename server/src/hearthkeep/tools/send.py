@@ -112,10 +112,13 @@ class SendToDevicesTool:
         kind = args.get("kind")
         if kind not in KINDS:
             return ToolResult(ok=False, content=BAD_KIND)
-        device = args.get("device", ALL)
-        if not isinstance(device, str) or len(device) > DEVICE_MAX_CHARS:
+        device = args.get("device")
+        if device is None:  # omitted: every device (a device named "all" never captures it)
+            devices, shared_name = ALL, None
+        elif not isinstance(device, str) or len(device) > DEVICE_MAX_CHARS:
             return ToolResult(ok=False, content=BAD_DEVICE)
-        devices, shared_name = self._devices(device)
+        else:
+            devices, shared_name = self._devices(device)
         if isinstance(devices, str) and devices != ALL:
             return ToolResult(ok=False, content=devices)
         ref = args.get("id")
