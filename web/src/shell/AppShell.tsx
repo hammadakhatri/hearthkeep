@@ -33,7 +33,7 @@ function fromThisWorker(event: MessageEvent): boolean {
 
 export function AppShell({ initialView = DEFAULT_VIEW, onSignOut }: Props) {
   const [view, setView] = useState<ViewId>(initialView)
-  // A chat (and maybe a run's turn) another view asked Chat to open; `nonce` makes each ask new.
+  // A chat (and maybe a run's turn) another view asked Chat to open.
   const [target, setTarget] = useState<ChatTarget | null>(null)
   const health = useHealth()
   const scroller = useRef<HTMLDivElement>(null)
@@ -81,7 +81,7 @@ export function AppShell({ initialView = DEFAULT_VIEW, onSignOut }: Props) {
   }
 
   function openChat(chatId: string, runId?: string) {
-    setTarget((t) => ({ chatId, runId, nonce: (t?.nonce ?? 0) + 1 }))
+    setTarget({ chatId, runId })
     select('chat')
   }
 

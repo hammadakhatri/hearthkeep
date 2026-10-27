@@ -19,16 +19,25 @@ MAX_LIMIT = 50
 # A pending file is still being inspected: it joins the gallery once it is ready or unchecked.
 _SHOWN = "('ready', 'unchecked')"
 
+def _fixed(column: str) -> str:
+    """SQL: the stored time in fixed width (older rows have no fraction: `...:00+00:00`), so
+    string order is time order and agrees with the normalised cursor."""
+    return (
+        f"CASE WHEN instr({column}, '.') = 0"
+        f" THEN substr({column}, 1, 19) || '.000000' || substr({column}, 20) ELSE {column} END"
+    )
+
+
 # A chat is listed when it has a shown file; it is as new as its newest shown file or run.
 _CHATS = f"""
 SELECT id, title, updated_at FROM (
     SELECT c.id AS id, c.title AS title, c.rowid AS row,
            MAX(f.at, COALESCE(r.at, f.at)) AS updated_at
     FROM chats c
-    JOIN (SELECT chat_id, MAX(created_at) AS at FROM chat_files
+    JOIN (SELECT chat_id, MAX({_fixed("created_at")}) AS at FROM chat_files
           WHERE status IN {_SHOWN} GROUP BY chat_id) f ON f.chat_id = c.id
-    LEFT JOIN (SELECT chat_id, MAX(created_at) AS at FROM runs GROUP BY chat_id) r
-           ON r.chat_id = c.id
+    LEFT JOIN (SELECT chat_id, MAX({_fixed("created_at")}) AS at FROM runs
+               GROUP BY chat_id) r ON r.chat_id = c.id
 )
 WHERE (? IS NULL OR updated_at < ?)
 ORDER BY updated_at DESC, row DESC

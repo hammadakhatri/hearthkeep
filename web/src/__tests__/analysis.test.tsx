@@ -204,7 +204,7 @@ describe('Analysis', () => {
     const said = (text: string) => [
       { id: 1, role: 'user', content: text, tool_calls: null, tool_call_id: null, created_at: '2026-10-27T09:00:00Z' },
     ]
-    routes({
+    const { calls } = routes({
       'GET /api/chats': { body: [summary(CHAT_B, 'Bank statement'), summary(CHAT_A, 'Shop sales')] },
       [`GET /api/chats/${CHAT_A}/messages`]: { body: said('From the shop chat') },
       [`GET /api/chats/${CHAT_B}/messages`]: { body: said('From the bank chat') },
@@ -220,6 +220,8 @@ describe('Analysis', () => {
     fireEvent.click(within(sidebar).getByRole('button', { name: 'Chat' }))
     expect(await screen.findByText('From the bank chat', { selector: '.me' })).toBeInTheDocument()
     expect(screen.queryByText('From the shop chat', { selector: '.me' })).toBeNull()
+    // One chat list per visit to Chat: the ask is not handled by a second load.
+    expect(calls.filter((c) => c.path === '/api/chats')).toHaveLength(2)
   })
 
   it('open in chat opens the chat at the bottom when the turn is not there', async () => {
@@ -239,6 +241,38 @@ describe('Analysis', () => {
     expect(await screen.findByText('Hi there.')).toBeInTheDocument()
     expect(scroll).not.toHaveBeenCalled()
     expect(screen.getByRole('heading', { level: 1, name: 'Chat' })).toBeInTheDocument()
+  })
+
+  it('a turn that is not found is looked for once more, then the chat settles at the bottom', async () => {
+    const messages = [
+      { id: 1, role: 'user', content: 'Hello', tool_calls: null, tool_call_id: null, created_at: '2026-10-27T09:00:00Z' },
+      { id: 2, role: 'assistant', content: 'Hi there.', tool_calls: null, tool_call_id: null, created_at: '2026-10-27T09:00:01Z' },
+    ]
+    const scroll = vi.fn()
+    Element.prototype.scrollIntoView = scroll
+    routes({
+      'GET /api/chats': { body: [{ id: CHAT_A, title: 'Shop sales', think: false, created_at: '2026-10-26T10:00:00Z', active_turn: null }] },
+      [`GET /api/chats/${CHAT_A}/messages`]: { body: messages },
+    })
+    render(<AppShell initialView="analysis" onSignOut={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Sales by week full size' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Open in chat' }))
+    await screen.findByText('Hi there.')
+
+    // A scroll position we can read; jsdom has no layout.
+    const scroller = document.querySelector('.chat-scroll') as HTMLElement
+    let top = 0
+    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: 500 })
+    Object.defineProperty(scroller, 'scrollTop', { configurable: true, get: () => top, set: (v: number) => (top = v) })
+    // Still waiting for the second look...
+    expect(top).toBe(0)
+    // ...which comes up empty, so the chat settles at the bottom.
+    await waitFor(() => expect(top).toBe(500), { timeout: 2000 })
+    expect(scroll).not.toHaveBeenCalled()
+    // And the ask is cleared: nothing pulls the chat down again.
+    top = 0
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(top).toBe(0)
   })
 
   it('deleting a file from the gallery asks for a passkey', async () => {

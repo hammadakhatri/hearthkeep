@@ -126,6 +126,38 @@ def test_default_limit_is_twenty_and_more_says_so(harness):
     assert [c["title"] for c in rest["chats"]] == ["Chat 0"] and rest["more"] is False
 
 
+def legacy(harness):
+    """Two chats; the newer one's only file has an older-style stamp with no fraction."""
+    client = signed_in(harness)
+    conn = harness.conn()
+    try:
+        seed(conn, A, "Older", files=[("fa", "ready", "2026-03-01T10:00:00.500000+00:00")])
+        seed(conn, B, "Legacy", files=[("fb", "ready", "2026-03-03T10:00:00+00:00")])
+        conn.commit()
+    finally:
+        conn.close()
+    return client
+
+
+def test_legacy_timestamps_page_forward_without_repeats(harness):
+    client = legacy(harness)
+    first = client.get("/api/analysis", params={"limit": 1}).json()
+    assert [c["chat_id"] for c in first["chats"]] == [B] and first["more"] is True
+    # Returned in the fixed-width form, so the cursor round-trips exactly.
+    cursor = first["chats"][0]["updated_at"]
+    assert cursor == "2026-03-03T10:00:00.000000+00:00"
+    second = client.get("/api/analysis", params={"limit": 1, "before": cursor}).json()
+    assert [c["chat_id"] for c in second["chats"]] == [A] and second["more"] is False
+
+
+def test_cursor_without_microseconds_works(harness):
+    client = legacy(harness)
+    page = client.get(
+        "/api/analysis", params={"limit": 5, "before": "2026-03-03T10:00:00+00:00"}
+    ).json()
+    assert [c["chat_id"] for c in page["chats"]] == [A]
+
+
 def test_analysis_requires_session(harness):
     client = harness.start()
     assert client.get("/api/analysis").status_code == 401

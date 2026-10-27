@@ -44,7 +44,7 @@ export const LOST_STREAM = 'Lost connection to this reply. Reload to see the lat
 type Live = { chatId: string; turnId: string }
 
 /** Another view asks Chat to open a chat and, with `runId`, the turn that made that run. */
-export type ChatTarget = { chatId: string; runId?: string; nonce: number }
+export type ChatTarget = { chatId: string; runId?: string }
 
 function sendError(error: unknown): string {
   if (isApiError(error, 'turn_in_progress')) {
