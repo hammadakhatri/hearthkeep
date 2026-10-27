@@ -96,10 +96,17 @@ def prepare_upload(
 async def inspect_recorded(
     inspector: Inspector | None, store: ChatFileStore, saved: ChatFile
 ) -> ChatFile:
-    """Inspect a file just recorded. One the sandbox finds password-protected or unreadable is
-    removed (row and bytes) and refused; one it couldn't check stays "unchecked"."""
+    """Inspect a file just recorded as "pending" (while pending, no turn lists or mounts it).
+
+    - Checked: "ready", with its summary.
+    - Couldn't be checked (no Docker, a timeout, a sandbox error): "unchecked", still attached.
+    - Password-protected or unreadable: removed (row and bytes) and refused.
+    - Cancelled part way (the request or the server stopping): removed too, so nothing is
+      left half-checked; the owner never got its id and attaches it again.
+    """
     if inspector is None:
-        return saved
+        store.set_status(saved.id, "unchecked", None)
+        return store.get(saved.id) or saved
     try:
         await inspector.inspect(saved)
     except FileRefused as error:
@@ -126,7 +133,7 @@ async def attach_file(chat_id: str, session: SessionDep, request: Request) -> JS
     except FileRefused as error:
         raise _refusal(error) from None
     # The row is added here: the SQLite connection belongs to the event loop's thread.
-    saved = hk.files.record(staged, name=name, check=check, source="upload")
+    saved = hk.files.record(staged, name=name, check=check, source="upload", status="pending")
     saved = await inspect_recorded(hk.inspector, hk.files, saved)
     # Never the name: audit records the id, type and size only.
     record(hk, actor(session), "file.attached",

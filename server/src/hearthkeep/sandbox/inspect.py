@@ -11,14 +11,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import unicodedata
 from pathlib import Path
 from typing import Literal
 
 from hearthkeep.files.checks import FileRefused
 from hearthkeep.files.store import ChatFile, ChatFileStore
+from hearthkeep.sandbox.handle import SandboxHandle
+from hearthkeep.sandbox.manifest import file_manifest
 from hearthkeep.sandbox.runner import RawRun, SandboxRunner
 from hearthkeep.sandbox.runs import RunStore
-from hearthkeep.tools.python import chat_manifest
 
 INSPECT_TIMEOUT_S = 30
 INSPECT_MAX_BYTES = 64 * 1024
@@ -56,7 +58,12 @@ def _count(value: object) -> int | None:
 
 
 def _short(value: object, limit: int = MAX_TEXT) -> str | None:
-    return value[:limit] if isinstance(value, str) else None
+    """Text cut to `limit`, with control characters and line or paragraph separators as
+    spaces (the names reach the model's prompt); None for anything but text."""
+    if not isinstance(value, str):
+        return None
+    cats = ("Cc", "Zl", "Zp")
+    return "".join(" " if unicodedata.category(ch) in cats else ch for ch in value[:limit])
 
 
 def summary_of(report: dict, kind: str) -> dict:
@@ -86,24 +93,30 @@ def summary_of(report: dict, kind: str) -> dict:
 
 
 class Inspector:
-    def __init__(self, sandbox: SandboxRunner | None, files: ChatFileStore) -> None:
-        self._sandbox = sandbox
+    def __init__(
+        self, sandbox: SandboxHandle | SandboxRunner | None, files: ChatFileStore
+    ) -> None:
+        self._sandbox = SandboxHandle.of(sandbox)
         self._files = files
 
     async def inspect(self, file: ChatFile) -> Literal["ready", "unchecked"]:
         """Inspect one recorded file and store its summary. Raises FileRefused when the file
-        needs a password or can't be read; otherwise "ready", or "unchecked" when it couldn't
-        be checked."""
-        if self._sandbox is None:
-            return "unchecked"
+        needs a password or can't be read (the caller removes it); otherwise the file's new
+        status, "ready", or "unchecked" when it couldn't be checked."""
+        status = await self._inspect(file)
+        if status == "unchecked":
+            self._files.set_status(file.id, "unchecked", None)
+        return status
+
+    async def _inspect(self, file: ChatFile) -> Literal["ready", "unchecked"]:
         try:
-            folder, manifest = await chat_manifest(
-                self._files, file.chat_id, args={"file": file.id}
-            )
-            manifest["files"] = [e for e in manifest["files"] if e["id"] == file.id]
+            runner = await self._sandbox.get()
+            if runner is None:
+                return "unchecked"
+            folder, manifest = await file_manifest(self._files, file, {"file": file.id})
             if not manifest["files"]:
                 return "unchecked"
-            raw = await self._sandbox.run(
+            raw = await runner.run(
                 RunStore.new_id(),
                 mode="inspect",
                 files_dir=folder,

@@ -792,3 +792,31 @@ async def test_system_prompt_lists_chat_files_only_when_present(
     # On every model round of the turn, not just the first.
     assert [c["messages"][0] for c in client.calls] == [expected, expected]
     assert seen == [CHAT, CHAT, CHAT]
+
+
+async def test_docker_flag_refreshes_every_round(conn, approvals, tmp_path):
+    settings = Settings(data_dir=tmp_path, docker_available=False, max_agent_steps=8)
+    states = [False, True]
+
+    async def docker():
+        return states.pop(0) if len(states) > 1 else states[0]
+
+    registry = ToolRegistry()
+    registry.register(RunReporterTool([]))
+    client = FakeChatClient(
+        [
+            [call("python", {}, "c1"), StreamDone("tool_calls")],
+            [call("python", {}, "c2"), StreamDone("tool_calls")],
+            [TextDelta("Done."), StreamDone("stop")],
+        ]
+    )
+    loop = AgentLoop(client, registry, approvals, conn, settings, docker=docker)
+
+    def decline(event):
+        approvals.resolve(event["approval_id"], "s1", False, False)
+
+    events = await drain(loop, user("sum it"), on_approval=decline)
+    # Docker was down for the first call (asked, declined) and up for the second (ran).
+    assert types(events).count("approval_required") == 1
+    finished = [e["ok"] for e in events if e["type"] == "step_finished"]
+    assert finished == [False, True]

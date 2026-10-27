@@ -14,7 +14,7 @@ import logging
 import re
 import sqlite3
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -210,10 +210,13 @@ class AgentLoop:
         settings: Settings,
         secrets: SecretStore | None = None,
         context: Callable[[str], str] | None = None,
+        docker: Callable[[], Awaitable[bool]] | None = None,
     ) -> None:
         self._client = client
         # Per-chat text appended to the system prompt on every model round (the chat's files).
         self._context = context
+        # Whether Docker is up, asked again every model round (it may start or stop meanwhile).
+        self._docker_now = docker
         self._registry = registry
         self._approvals = approvals
         self._conn = conn
@@ -264,6 +267,8 @@ class AgentLoop:
         steps = 0
         while True:
             messages[0] = {"role": "system", "content": self._system_prompt(turn)}
+            if self._docker_now is not None:
+                self._docker = bool(await self._docker_now())
             tools = self._registry.available(self._conn, self._docker)
             text_parts: list[str] = []
             requests: list[ToolCallRequest] = []

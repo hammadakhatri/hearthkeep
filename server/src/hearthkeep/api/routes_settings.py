@@ -47,13 +47,13 @@ def _resolve_key(hk: Services, name: str) -> str:
     raise ApiError(404, "not_found")
 
 
-def _item(hk: Services, key: str) -> dict:
+def _item(hk: Services, key: str, docker: bool) -> dict:
     tools = [t for t in hk.registry.all() if t.level_key == key]
     level = get_level(hk.conn, key)
     return {
         "tool": key,
         "level": level.value,
-        "effective_level": effective_level(key, level, hk.docker_available).value,
+        "effective_level": effective_level(key, level, docker).value,
         "description": " ".join(t.description for t in tools),
         "tools": [t.name for t in tools],
     }
@@ -62,7 +62,8 @@ def _item(hk: Services, key: str) -> dict:
 @router.get("/settings/tools")
 async def list_tool_levels(session: SessionDep, request: Request) -> list[dict]:
     hk = services(request)
-    return [_item(hk, key) for key in _level_keys(hk)]
+    docker = await hk.docker_available()
+    return [_item(hk, key, docker) for key in _level_keys(hk)]
 
 
 @router.put("/settings/tools/{tool}")
@@ -93,4 +94,4 @@ async def set_tool_level(tool: str, body: LevelBody, session: SessionDep, reques
             "settings.tool_level_changed",
             {"tool": key, "from": old.value, "to": new.value, "step_up": widening},
         )
-    return _item(hk, key)
+    return _item(hk, key, await hk.docker_available())

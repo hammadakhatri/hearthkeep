@@ -52,6 +52,7 @@ from hearthkeep.files.store import ChatFileStore
 from hearthkeep.images import ImageStore
 from hearthkeep.runtime.stack import ModelStack
 from hearthkeep.sandbox import image as sandbox_image
+from hearthkeep.sandbox.handle import SandboxHandle
 from hearthkeep.sandbox.inspect import Inspector
 from hearthkeep.sandbox.runner import SandboxRunner
 from hearthkeep.sandbox.runs import RunStore
@@ -213,17 +214,32 @@ def _install_static(app: FastAPI, web_dist: Path) -> None:
         return error_response(404, "not_found")
 
 
-async def _start_sandbox(settings: Settings) -> SandboxRunner | None:
-    """The sandbox runner when Docker is available; containers a stopped Hearthkeep left
-    behind are removed first (none of this run's can exist yet)."""
-    if not settings.docker_available:
-        return None
+async def _make_sandbox(settings: Settings) -> SandboxRunner:
+    """A sandbox runner; containers a stopped Hearthkeep left behind are removed first (none of
+    this runner's can exist yet)."""
     sandbox = SandboxRunner(Path(settings.data_dir), image_tag=sandbox_image.image_tag())
     try:
         await sandbox.sweep()
     except Exception as exc:
         _log.warning("could not sweep sandbox containers: %s", type(exc).__name__)
     return sandbox
+
+
+async def _sandbox_handle(
+    settings: Settings, given: SandboxRunner | None, detected: bool
+) -> SandboxHandle:
+    """The runner given (tests); else one made now when Docker is running; else, when Docker
+    was looked for and missing, one made the first time it is seen up. Docker configured off
+    (docker_available = false) never gets one."""
+    if given is not None:
+        return SandboxHandle(given)
+    if settings.docker_available:
+        return SandboxHandle(await _make_sandbox(settings))
+    if detected:
+        return SandboxHandle(
+            factory=lambda: _make_sandbox(settings), docker_check=sandbox_image.docker_ok
+        )
+    return SandboxHandle()
 
 
 def create_app(
@@ -246,7 +262,8 @@ def create_app(
     """`sandbox`, when given (tests), is used as is; otherwise one is made when Docker is
     available. Without one the `python` tool is still offered and answers that Docker is
     needed: nothing ever runs on the host."""
-    if settings.docker_available is None:
+    detected = settings.docker_available is None
+    if detected:
         settings = dataclasses.replace(settings, docker_available=detect_docker())
     check = health_check or chat_model_health_check(settings)
     stack = models or ModelStack()
@@ -267,13 +284,15 @@ def create_app(
             files = ChatFileStore(conn, settings.data_dir)
             # Uploads cut off by a stop leave temporary files behind; none can be live yet.
             files.sweep_temp()
-            runner_sandbox = sandbox if sandbox is not None else await _start_sandbox(settings)
+            # Inspections a stop cut short: those files couldn't be checked.
+            files.settle_pending()
+            handle = await _sandbox_handle(settings, sandbox, detected)
             runs = RunStore(conn, settings.data_dir)
             image_tool = stack.image_tool(gpu, images)
             if image_tool is not None and registry.get(image_tool.name) is None:
                 registry.register(image_tool)
             if registry.get(PythonTool.name) is None:
-                registry.register(PythonTool(runner_sandbox, files, runs))
+                registry.register(PythonTool(handle, files, runs))
             chat = stack.chat_client(chat_client, gpu)
             loop = AgentLoop(
                 chat,
@@ -283,6 +302,7 @@ def create_app(
                 settings,
                 secrets=secrets,
                 context=lambda chat_id: analysis_context(files, chat_id),
+                docker=handle.docker_available,
             )
             runner = TurnRunner(conn, loop)
             sessions = SessionStore(conn, settings.session_idle_days, clock=clock)
@@ -310,9 +330,9 @@ def create_app(
                 managed=stack.managed,
                 chat_model_id=stack.chat_model_id,
                 monotonic=monotonic,
-                sandbox=runner_sandbox,
+                sandbox=handle,
                 runs=runs,
-                inspector=Inspector(runner_sandbox, files),
+                inspector=Inspector(handle, files),
             )
             yield
         finally:

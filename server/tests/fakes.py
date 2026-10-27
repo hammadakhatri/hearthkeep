@@ -196,6 +196,7 @@ class FakeSandbox:
         self.docker, self.image = docker, image
         self.queue: list = []
         self.calls: list[dict] = []
+        self.on_run = None  # called with the call's details as each run starts
 
     def queue_run(self, outputs: dict[str, bytes] | None = None, /, **fields) -> None:
         """`outputs` are the members the run returns (status.json is added); `fields` override
@@ -222,6 +223,8 @@ class FakeSandbox:
             {"run_id": run_id, "mode": mode, "files_dir": files_dir, "manifest": manifest,
              "script": script, "timeout_s": timeout_s}
         )  # fmt: skip
+        if self.on_run is not None:
+            self.on_run(self.calls[-1])
         if not self.docker:
             raise SandboxUnavailable(NO_DOCKER_MESSAGE)
         if not self.image:

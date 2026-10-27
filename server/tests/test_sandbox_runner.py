@@ -912,9 +912,9 @@ def test_lifespan_sweeps_once_when_docker_is_available(tmp_path, monkeypatch, do
         web_dist=None,
     )
     with TestClient(app, base_url="http://localhost:8765"):
-        sandbox = app.state.hk.sandbox
+        runner = app.state.hk.sandbox.runner  # configured off: never made, never checked
     assert swept == ([tmp_path] if docker else [])
-    assert (sandbox is not None) is docker
+    assert (runner is not None) is docker
 
 
 async def test_docker_cli_gets_no_window_and_no_stdin(fake, monkeypatch):

@@ -20,7 +20,7 @@ from hearthkeep.images import UPLOAD_ID, inside
 CHAT_ID = re.compile(r"[0-9a-f]{32}")
 FILE_ID = UPLOAD_ID
 ATTACHED_FILE_LINE = re.compile(r"Attached file: ([A-Za-z0-9_-]{1,32})")
-STATUSES = ("ready", "unchecked")
+STATUSES = ("ready", "unchecked", "pending")  # pending: being inspected
 SOURCES = ("upload", "folder")
 _COPY_CHUNK = 1024 * 1024
 _COLUMNS = "id, chat_id, name, kind, mime, size, status, summary, source, created_at"
@@ -34,7 +34,7 @@ class ChatFile:
     kind: str
     mime: str
     size: int
-    status: Literal["ready", "unchecked"]
+    status: Literal["ready", "unchecked", "pending"]
     summary: dict | None
     source: Literal["upload", "folder"]
     created_at: str
@@ -147,7 +147,7 @@ class ChatFileStore:
         name: str,
         check: FileCheck,
         source: Literal["upload", "folder"],
-        status: Literal["ready", "unchecked"] = "unchecked",
+        status: Literal["ready", "unchecked", "pending"] = "unchecked",
     ) -> ChatFile:
         """Step 2: the row, and the file moved into place, together; the temporary file is
         removed if either fails."""
@@ -191,7 +191,7 @@ class ChatFileStore:
         return saved
 
     def set_status(
-        self, file_id: str, status: Literal["ready", "unchecked"], summary: dict | None
+        self, file_id: str, status: Literal["ready", "unchecked", "pending"], summary: dict | None
     ) -> None:
         if status not in STATUSES:
             raise ValueError("bad status")
@@ -199,6 +199,13 @@ class ChatFileStore:
             "UPDATE chat_files SET status = ?, summary = ? WHERE id = ?",
             (status, json.dumps(summary) if summary is not None else None, file_id),
         )
+
+    def settle_pending(self) -> int:
+        """Files a stopped server was still inspecting become "unchecked" (run at startup)."""
+        cursor = self._conn.execute(
+            "UPDATE chat_files SET status = 'unchecked' WHERE status = 'pending'"
+        )
+        return cursor.rowcount
 
     def list(self, chat_id: str) -> list[ChatFile]:
         rows = self._conn.execute(

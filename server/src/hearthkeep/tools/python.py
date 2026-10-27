@@ -13,14 +13,18 @@ import contextlib
 import csv
 import io
 import json
+import logging
+import unicodedata
 from pathlib import Path
 
 from hearthkeep.files.store import ChatFile, ChatFileStore
-from hearthkeep.images import inside
 from hearthkeep.permissions import ActionClass
 from hearthkeep.sandbox import results as results_format
+from hearthkeep.sandbox.handle import SandboxHandle
+from hearthkeep.sandbox.manifest import chat_manifest
 from hearthkeep.sandbox.results import ParsedResults, parse_results
 from hearthkeep.sandbox.runner import (
+    ERROR_OUTPUT,
     NO_DOCKER_MESSAGE,
     NO_IMAGE_MESSAGE,
     RawRun,
@@ -35,6 +39,7 @@ SCRIPT_MAX_CHARS = 20000
 PURPOSE_MAX_CHARS = 120
 PRINTED_CHARS = 8000
 TABLE_ROWS_SHOWN = 20
+TABLE_CHARS = 4000  # a wide table shows fewer rows (its line still gives the total)
 
 NO_DOCKER = "Python analysis needs Docker Desktop. Start Docker on the PC and ask again."
 NO_IMAGE = (
@@ -42,7 +47,13 @@ NO_IMAGE = (
 )
 TIMEOUT = "The script ran for over 120 seconds and was stopped."
 RESULTS_UNREADABLE = "results.jsonl could not be read"
+RESULTS_FAILED = "Hearthkeep couldn't read the results."
 PRINTED_CUT = "(printed output cut)"
+# What the model is told about one run is bounded: items per section, and characters overall.
+CONTENT_BUDGET = 20000
+CAPS = {"values": 50, "tables": 5, "charts": 20, "files": 20, "cleaning": 20, "problems": 20}
+MORE = "… {n} more (see the run)."
+_MORE_ROOM = len(MORE.format(n=10**9)) + 1
 
 ANALYSIS_PROMPT = (
     "This chat has files the owner attached:\n{files}\n\nTo answer questions about them, use "
@@ -78,7 +89,19 @@ DESCRIPTION = (
 )
 
 
-# ---- the chat's files, for the sandbox and for the model ----------------------------------------
+# ---- the chat's files, for the model ------------------------------------------------------------
+
+_log = logging.getLogger(__name__)
+
+
+def one_line(text: str) -> str:
+    """Control characters (line breaks included) and line/paragraph separators as spaces."""
+    return "".join(" " if unicodedata.category(ch) in ("Cc", "Zl", "Zp") else ch for ch in text)
+
+
+def _quoted(text: object) -> str:
+    """A JSON string: one token, on one line, whatever the text holds."""
+    return json.dumps(str(text), ensure_ascii=False)
 
 
 def size_text(size: int) -> str:
@@ -95,7 +118,9 @@ def _details(found: ChatFile) -> str:
     summary = found.summary
     sheets = summary.get("sheets") or []
     if found.kind in ("xlsx", "xls") and sheets:
-        parts = [f"{s['name']} {s['rows']} rows × {s['columns']} columns" for s in sheets]
+        parts = [
+            f"{_quoted(s['name'])} {s['rows']} rows × {s['columns']} columns" for s in sheets
+        ]
         return ", sheets: " + "; ".join(parts)
     if found.kind == "pdf" and summary.get("pages") is not None:
         text = f", {summary['pages']} pages"
@@ -107,43 +132,17 @@ def _details(found: ChatFile) -> str:
 
 
 def analysis_context(files: ChatFileStore, chat_id: str) -> str:
-    """The analysis prompt listing the chat's files, or "" for a chat without files."""
-    found = files.list(chat_id)
+    """The analysis prompt listing the chat's files, or "" for a chat without files. A file
+    still being inspected is left out until it is settled."""
+    found = [f for f in files.list(chat_id) if f.status != "pending"]
     if not found:
         return ""
     lines = [
-        f"- {f.id}: {json.dumps(f.name, ensure_ascii=False)} "
+        f"- {f.id}: {_quoted(f.name)} "
         f"({KIND_LABELS.get(f.kind, f.kind)}, {size_text(f.size)}){_details(f)}"
         for f in found
     ]
     return ANALYSIS_PROMPT.format(files="\n".join(lines))
-
-
-def _manifest_entries(files: ChatFileStore, chat_id: str) -> list[tuple[dict, str]]:
-    """(entry, stored name) for each of the chat's files; the names are checked on disk later."""
-    entries = []
-    for found in files.list(chat_id):
-        name = files.stored_name(found.id)
-        if name is None:
-            continue
-        entry = {"id": found.id, "name": found.name, "kind": found.kind, "path": f"/data/{name}"}
-        entries.append((entry, name))
-    return entries
-
-
-def _prepare_folder(folder: Path, entries: list[tuple[dict, str]]) -> list[dict]:
-    """Create the chat's files folder; keep only the files that are really in it."""
-    folder.mkdir(parents=True, exist_ok=True)
-    return [entry for entry, name in entries if inside(folder, name) is not None]
-
-
-async def chat_manifest(files: ChatFileStore, chat_id: str, args: dict | None = None):
-    """(the chat's files folder, a sandbox manifest of its files). File checks run off the
-    event loop."""
-    folder = files.files_dir(chat_id)
-    entries = _manifest_entries(files, chat_id)
-    kept = await asyncio.to_thread(_prepare_folder, folder, entries)
-    return folder, {"files": kept, "args": dict(args or {})}
 
 
 # ---- reading a run's results --------------------------------------------------------------------
@@ -175,68 +174,121 @@ def _settled(work: asyncio.Future) -> ParsedResults:
 
 
 def _value_text(value: object) -> str:
-    return "no value" if value is None else str(value)
+    return "no value" if value is None else one_line(str(value))
+
+
+def _fenced(text: str) -> str:
+    """`text` in a backtick fence longer than any run of backticks inside it, so nothing the
+    script printed can close the block."""
+    longest = run = 0
+    for ch in text:
+        run = run + 1 if ch == "`" else 0
+        longest = max(longest, run)
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}\n{text}\n{fence}"
+
+
+def _csv_line(cells: list) -> str:
+    out = io.StringIO()
+    csv.writer(out, lineterminator="").writerow(
+        ["" if c is None else one_line(c) if isinstance(c, str) else c for c in cells]
+    )
+    return out.getvalue()
 
 
 def _csv_rows(columns: list, rows: list, numbers: list) -> str:
-    out = io.StringIO()
-    writer = csv.writer(out, lineterminator="\n")
-    writer.writerow((["row"] if numbers else []) + [str(c) for c in columns])
-    for index, row in enumerate(rows):
-        cells = ["" if cell is None else cell for cell in row]
-        writer.writerow(([numbers[index]] if numbers else []) + cells)
-    return out.getvalue().rstrip("\n")
+    """The header and rows as CSV, whole lines only, stopping at TABLE_CHARS."""
+    lines: list[str] = []
+    size = 0
+    header = (["row"] if numbers else []) + [str(c) for c in columns]
+    for index, row in enumerate([header, *rows]):
+        if index > 0 and numbers:
+            row = [numbers[index - 1], *row]
+        line = _csv_line(row)
+        if size + len(line) + 1 > TABLE_CHARS:
+            break
+        lines.append(line)
+        size += len(line) + 1
+    return "\n".join(lines)
+
+
+def _value_line(v) -> str:
+    line = f"- {one_line(v.name)} = {_value_text(v.value)}"
+    if v.unit:
+        line += f" {one_line(v.unit)}"
+    if v.kind == "document":
+        line += f" (read from page {v.page})"
+    if v.note:
+        line += f" ({one_line(v.note)})"
+    return line
+
+
+def _table_block(o: OutputRecord) -> str:
+    data = o.data or {}
+    rows = list(data.get("rows") or [])[:TABLE_ROWS_SHOWN]
+    numbers = list(data.get("row_numbers") or [])[: len(rows)]
+    if len(numbers) != len(rows):
+        numbers = []
+    head = f"- table {o.id}: {one_line(o.name)}, {data.get('total_rows', len(rows))} rows"
+    body = _csv_rows(data.get("columns") or [], rows, numbers)
+    return f"{head}\n{body}" if body else head
+
+
+def _section(header: str, items: list[str], cap: int) -> tuple[str, list[str], int]:
+    """(header, the items shown at most, how many more there are)."""
+    return header, items[:cap], max(len(items) - cap, 0)
+
+
+def _assemble(head: str, sections: list[tuple[str, list[str], int]], budget: int) -> str:
+    """The sections after `head`, within `budget` characters. A section cut short (by its cap
+    or by the budget) ends with a "more" line; once the budget is hit, nothing more is added."""
+    text = head
+    for header, items, hidden in sections:
+        if not items:
+            continue
+        start = f"\n\n{header}:"
+        if len(text) + len(start) + 1 + _MORE_ROOM > budget:
+            break
+        size = len(text) + len(start)
+        kept: list[str] = []
+        for item in items:
+            if size + 1 + len(item) + 1 + _MORE_ROOM > budget:
+                break
+            kept.append(item)
+            size += 1 + len(item)
+        more = hidden + len(items) - len(kept)
+        lines = kept + ([MORE.format(n=more)] if more else [])
+        text += start + "\n" + "\n".join(lines)
+        if len(kept) < len(items):
+            break
+    return text
 
 
 def format_run_for_model(rec: RunRecord, outputs: list[OutputRecord]) -> str:
-    sections = [f"Run {rec.status} in {rec.duration_ms / 1000:.1f} s."]
-
+    """What the model is told about a run: at most CONTENT_BUDGET characters, each section
+    capped, and nothing a script wrote can pass for the prompt's own text."""
+    head = f"Run {rec.status} in {rec.duration_ms / 1000:.1f} s."
+    sections: list[tuple[str, list[str], int]] = []
     if rec.stdout:
-        printed = rec.stdout[:PRINTED_CHARS]
+        printed = _fenced(rec.stdout[:PRINTED_CHARS].rstrip("\n"))
         if len(rec.stdout) > PRINTED_CHARS or rec.stdout_truncated:
-            printed = printed.rstrip("\n") + "\n" + PRINTED_CUT
-        sections.append("Printed output:\n" + printed.rstrip("\n"))
-
-    if rec.values:
-        lines = []
-        for v in rec.values:
-            line = f"- {v.name} = {_value_text(v.value)}"
-            if v.unit:
-                line += f" {v.unit}"
-            if v.kind == "document":
-                line += f" (read from page {v.page})"
-            if v.note:
-                line += f" ({v.note})"
-            lines.append(line)
-        sections.append("Results:\n" + "\n".join(lines))
-
-    charts = [o for o in outputs if o.kind == "chart"]
-    if charts:
-        sections.append("Charts:\n" + "\n".join(f"- chart {o.id}: {o.name}" for o in charts))
-
+            printed += "\n" + PRINTED_CUT
+        sections.append(("Printed output", [printed], 0))
+    sections.append(_section("Results", [_value_line(v) for v in rec.values], CAPS["values"]))
+    charts = [f"- chart {o.id}: {one_line(o.name)}" for o in outputs if o.kind == "chart"]
+    sections.append(_section("Charts", charts, CAPS["charts"]))
     tables = [o for o in outputs if o.kind == "table" and isinstance(o.data, dict)]
-    if tables:
-        blocks = []
-        for o in tables:
-            data = o.data or {}
-            rows = list(data.get("rows") or [])[:TABLE_ROWS_SHOWN]
-            numbers = list(data.get("row_numbers") or [])[: len(rows)]
-            if len(numbers) != len(rows):
-                numbers = []
-            head = f"- table {o.id}: {o.name}, {data.get('total_rows', len(rows))} rows"
-            blocks.append(head + "\n" + _csv_rows(data.get("columns") or [], rows, numbers))
-        sections.append("Tables:\n" + "\n".join(blocks))
-
-    files = [o for o in outputs if o.kind == "file"]
-    if files:
-        sections.append("Files:\n" + "\n".join(f"- file {o.id}: {o.name}" for o in files))
-    if rec.cleaning:
-        sections.append("Cleaning notes:\n" + "\n".join(f"- {n}" for n in rec.cleaning))
-    if rec.problems:
-        sections.append("Problems:\n" + "\n".join(f"- {p}" for p in rec.problems))
-    if rec.error:
-        sections.append("Error:\n" + rec.error)
-    return "\n\n".join(sections)
+    shown = tables[: CAPS["tables"]]
+    sections.append(("Tables", [_table_block(o) for o in shown], len(tables) - len(shown)))
+    files = [f"- file {o.id}: {one_line(o.name)}" for o in outputs if o.kind == "file"]
+    sections.append(_section("Files", files, CAPS["files"]))
+    cleaning = [f"- {one_line(n)}" for n in rec.cleaning]
+    sections.append(_section("Cleaning notes", cleaning, CAPS["cleaning"]))
+    problems = [f"- {one_line(p)}" for p in rec.problems]
+    sections.append(_section("Problems", problems, CAPS["problems"]))
+    # The error is a fixed, short message: room is kept for it whatever else is cut.
+    tail = f"\n\nError:\n{one_line(rec.error)}" if rec.error else ""
+    return _assemble(head, sections, CONTENT_BUDGET - len(tail)) + tail
 
 
 def unavailable_message(exc: SandboxUnavailable) -> str:
@@ -276,9 +328,12 @@ class PythonTool:
     }
 
     def __init__(
-        self, sandbox: SandboxRunner | None, files: ChatFileStore, runs: RunStore
+        self,
+        sandbox: SandboxHandle | SandboxRunner | None,
+        files: ChatFileStore,
+        runs: RunStore,
     ) -> None:
-        self._sandbox = sandbox
+        self._sandbox = SandboxHandle.of(sandbox)
         self._files = files
         self._runs = runs
 
@@ -290,9 +345,10 @@ class PythonTool:
 
     async def run(self, args: dict, ctx: ToolContext) -> ToolResult:
         # Without Docker nothing runs at all: there is no fallback to the host.
-        if self._sandbox is None:
+        runner = await self._sandbox.get()
+        if runner is None:
             return ToolResult(ok=False, content=NO_DOCKER)
-        state = await self._sandbox.status()
+        state = await runner.status()
         if not state.docker:
             return ToolResult(ok=False, content=NO_DOCKER)
         if not state.image:
@@ -301,7 +357,7 @@ class PythonTool:
         folder, manifest = await chat_manifest(self._files, ctx.chat_id)
         run_id = self._runs.new_id()
         try:
-            raw = await self._sandbox.run(
+            raw = await runner.run(
                 run_id, mode="script", files_dir=folder, manifest=manifest, script=script
             )
         except SandboxUnavailable as exc:
@@ -343,6 +399,14 @@ class PythonTool:
         except asyncio.CancelledError:
             with contextlib.suppress(BaseException):
                 await work  # let the reader finish with the job folder before it goes
-            save(_settled(work))
+            try:
+                save(_settled(work))
+            except Exception as exc:  # the cancellation matters more; only the type is logged
+                _log.error("could not save a cancelled run: %s", type(exc).__name__)
             raise
+        except Exception as exc:
+            # Parsing never raises by design; if it does, the run is saved as a sandbox error.
+            _log.error("could not read a run's results: %s", type(exc).__name__)
+            raw.status, raw.error = "sandbox_error", ERROR_OUTPUT
+            parsed = ParsedResults(problems=[RESULTS_FAILED])
         return save(parsed)

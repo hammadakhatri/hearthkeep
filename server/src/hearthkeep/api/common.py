@@ -27,8 +27,8 @@ from hearthkeep.files.store import ChatFileStore
 from hearthkeep.images import ImageStore
 from hearthkeep.models.cards import CardError, ModelCard
 from hearthkeep.runtime.gpu import GpuScheduler
+from hearthkeep.sandbox.handle import SandboxHandle
 from hearthkeep.sandbox.inspect import Inspector
-from hearthkeep.sandbox.runner import SandboxRunner
 from hearthkeep.sandbox.runs import RunStore
 from hearthkeep.tools.base import ToolRegistry
 
@@ -132,7 +132,7 @@ class Services:
     managed: frozenset[str] = frozenset()  # card ids the GPU scheduler runs
     chat_model_id: str | None = None  # set when Hearthkeep runs the chat model itself
     monotonic: Callable[[], float] = time.monotonic
-    sandbox: SandboxRunner | None = None  # only when Docker is available
+    sandbox: SandboxHandle | None = None  # the runner, now or once Docker is seen up
     runs: RunStore | None = None
     inspector: Inspector | None = None
     health_cache: tuple[float, bool] | None = None
@@ -169,9 +169,11 @@ class Services:
             "chat_model_state": "ready" if reachable else "offline",
         }
 
-    @property
-    def docker_available(self) -> bool:
-        return bool(self.settings.docker_available)
+    async def docker_available(self) -> bool:
+        """Whether Docker is running now (re-checked at most every 30 s)."""
+        if self.sandbox is None:
+            return bool(self.settings.docker_available)
+        return await self.sandbox.docker_available()
 
     @property
     def cookie_secure(self) -> bool:
