@@ -33,7 +33,10 @@ With --analysis (Docker running and the sandbox image built: `hearthkeep sandbox
      March?" is sent with its `Attached file:` line. An `attachments` event of kind `run`
      arrives and GET /api/runs/{id} reports status `ok` with at least one table or value
                                                                     (prints `OK analysis`)
-  7. a `number_check` event arrives for the reply
+  7. the answer is right, not just present: a `number_check` event arrives; at least one
+     number is marked computed; the final reply's computed numbers include 12 and 24 (the
+     North gap) or the turn's runs reported the dates 2025-03-12 and 2025-03-24; and the reply
+     has no `hk.` text (hk.result belongs in the script, never in the reply)
                                       (prints `OK number check (computed N, unverified M)`)
 
 Each check prints OK; any failure prints FAIL and exits non-zero. It only talks HTTP.
@@ -54,6 +57,8 @@ import time
 import httpx
 
 TIME_RE = re.compile(r"\b\d{1,2}[:.]\d{2}\b")
+GAP_NUMBERS = ("12", "24")  # North has no rows from 12 to 24 March
+GAP_DATES = ("2025-03-12", "2025-03-24")
 TIMEOUT = httpx.Timeout(600.0, connect=5.0)
 IMAGE_STEP_SECONDS = 300.0  # a whole image step, model swaps included
 ANALYSIS_STEP_SECONDS = 600.0  # a whole analysis turn: reading, running Python, explaining
@@ -305,6 +310,7 @@ def run_analysis_turn(client: Client, state: dict) -> None:
             raise SmokeError(f"turn failed: {data.get('message')}")
     state["run_ids"] = run_ids
     state["number_checks"] = checks
+    state["run_values"] = []
 
 
 def check_analysis(client: Client, state: dict) -> None:
@@ -312,26 +318,53 @@ def check_analysis(client: Client, state: dict) -> None:
     run_ids = state["run_ids"]
     check(bool(run_ids), "no analysis run attachment arrived (is Docker running?)")
     problems = []
+    found = False
     for run_id in run_ids:
         response = client.get(f"/api/runs/{run_id}")
         check(response.status_code == 200, f"run failed to load: HTTP {response.status_code}")
         run = response.json()
+        state["run_values"] += [v for v in run.get("values") or [] if isinstance(v, dict)]
         if run.get("status") != "ok":
             problems.append(f"status {run.get('status')!r}")
         elif not (run.get("tables") or run.get("values")):
             problems.append("ok but no table or value")
         else:
-            return
-    raise SmokeError("no run finished ok with a result: " + ", ".join(problems))
+            found = True
+    if not found:
+        raise SmokeError("no run finished ok with a result: " + ", ".join(problems))
 
 
-def check_number_check(client: Client, state: dict) -> str:
-    checks = state.get("number_checks") or []
+def judge_analysis(checks: list[dict], run_values: list[dict]) -> str:
+    """Whether the analysis answer is right, from the turn's number checks (the last is the
+    final reply) and its runs' values. Raises SmokeError saying what is wrong."""
     check(bool(checks), "no number_check event arrived")
     marks = [m for c in checks for m in c.get("marks", [])]
     computed = sum(1 for m in marks if m.get("kind") == "computed")
     unverified = sum(1 for m in marks if m.get("kind") == "unverified")
+    check(computed >= 1, f"no computed numbers (unverified {unverified})")
+    final = checks[-1]
+    reply = str(final.get("text") or "")
+    check("hk." not in reply, "the reply quotes hk. code instead of the values")
+    final_computed = [
+        str(m.get("text", "")) for m in final.get("marks", []) if m.get("kind") == "computed"
+    ]
+    numbers_ok = all(
+        any(re.search(rf"(?<!\d){n}(?!\d)", text) for text in final_computed)
+        for n in GAP_NUMBERS
+    )
+    dates_ok = all(
+        any(str(v.get("value", "")).startswith(day) for v in run_values) for day in GAP_DATES
+    )
+    check(
+        numbers_ok or dates_ok,
+        "the answer misses the North gap (12 to 24 March): neither computed in the reply nor "
+        "reported by a run",
+    )
     return f"(computed {computed}, unverified {unverified})"
+
+
+def check_number_check(client: Client, state: dict) -> str:
+    return judge_analysis(state.get("number_checks") or [], state.get("run_values") or [])
 
 
 def main(argv: list[str] | None = None) -> int:

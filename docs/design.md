@@ -193,7 +193,7 @@ Version 1 defaults: budgeting, News & search, Files, Python, Images = **Allowed*
 - **Without Docker:** Python is forced to *Ask*, and Hearthkeep still never runs code on the host: an approved call without Docker returns a plain "needs Docker" message.
 - The image is built once, by command (`hearthkeep sandbox build`), never silently at runtime. Installing packages and network access from Python are not available in this phase.
 - Every run's card shows the sandbox facts: `ran in a sandbox · no internet · read-only files`.
-- **Number check:** every reply in a chat with files is checked. Each number is marked *computed* (it matches a value a run of this chat reported), *read from the document* (it matches only a value in the document, labelled `read from page N, not computed`) or *unverified* (it matches nothing, so it is marked with a note).
+- **Number check:** every reply in a chat with files is checked. Each number is marked *computed* (it matches a value the analysis reported with hk.result in a run during this reply; a number repeated from an earlier reply without a new run shows as unverified), *read from the document* (it matches only a value in the document, labelled `read from page N, not computed`) or *unverified* (it matches nothing, so it is marked with a note).
 - Budgeting data is provided to Python by Hearthkeep as files/structured input, not by giving Python network access.
 
 **Image generation**
@@ -253,7 +253,7 @@ Key rules:
 - **Typography-led, spacious, one main thing per screen.** Large numbers for money; big images in the image view.
 - **Instant and calm motion:** views appear immediately and settle with short, smooth transitions; replies stream word by word; long tasks show quiet progress, never blocking spinners. Respect reduced-motion settings.
 - **Layout (desktop/laptop):** left sidebar (Today, Chat, Images, Analysis, Repos, Files; Tools & permissions at the bottom), a slim top bar with view title and a model/GPU status pill, a floating composer at the bottom with Think toggle and model picker.
-- **Phone:** bottom tabs (Today, Chat, Images, Files, More), large approval cards, biometric prompt on approve.
+- **Phone:** bottom tabs (Today, Chat, Images, Analysis, More), large approval cards, biometric prompt on approve.
 - **Views:** Today; Chat (folded tool steps, approval cards with diff, file cards); Images (model choice with the reason, hero image, variants, editable prompt with specs); Analysis (a gallery of runs: the answer at a glance, charts, tables, the Python script with sandbox facts, and download rows); Repos (list with status and pending changes); Files (search, recent, allowed folders); Settings (Devices, allowed folders, notifications, and start at login); Tools & permissions (per-tool Allowed / Ask / Off).
 - **Customisable:** order and visibility of briefing cards and sidebar items, keyboard shortcuts, command palette (Ctrl/Cmd+K). Theme stays dark.
 

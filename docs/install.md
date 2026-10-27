@@ -468,6 +468,8 @@ Hearthkeep can read the files you attach to a chat and analyse them with Python.
 
 Docker Desktop has to be running whenever you want to analyse a file. After an update that changes the sandbox, `sandbox status` shows the image as missing; run `sandbox build` again.
 
+**Run `hearthkeep sandbox build` again after updating.** The image's tag is a hash of its files, so an update that changes the sandbox (the next one does: it reads dates written day/month/year and finds gaps in dated data) needs a new image. Until you build it, Python answers that the sandbox isn't built yet.
+
 ## 12. Notifications on your phone
 
 When the assistant sends you a file or a summary, it appears in the tray in the app. You can also get a notification that says "A file is ready in Hearthkeep". It carries no content, only that nudge.
@@ -503,7 +505,13 @@ Notifications are opt-in per device and can be turned off in the same place. You
    uv sync
    ```
 
-5. Start Hearthkeep again. Read the start-up output: it lists any card or config problems.
+5. If you analyse files with Python, run `hearthkeep sandbox build` again after updating (the sandbox image changes with the code):
+
+   ```
+   uv run hearthkeep sandbox build --data <data>
+   ```
+
+6. Start Hearthkeep again. Read the start-up output: it lists any card or config problems.
 
 Your data folder is not touched by an update. Compare `<repo>\config.example.toml` and `<repo>\models.example.toml` with your own copies for new settings.
 

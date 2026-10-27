@@ -76,6 +76,7 @@ When a call needs your say-so, Hearthkeep creates an approval and the assistant 
 - Files live under `<data>/workspace/chats/<chat-id>/files/`, stored as `<file-id>.<ext>`. The server picks the ids and builds every path; only ids of the exact shape it hands out are accepted.
 - The original file name is stored in the database and returned only to a signed-in session. It never appears in the audit log or the server logs: the audit log records the id, the type and the size. The local model sees names in the chat's file list.
 - Deleting a chat or a single file needs a passkey step-up bound to that target. Deleting a chat removes its messages, events, approvals, grants, files, runs and their outputs, number checks, images, and the uploads and sent items that belong to it, and then its folders on disk. A file that cannot be removed straight away (locked, say) is removed by the sweep at the next start. Links and junctions met on the way are removed themselves, never followed. The audit log is not touched.
+- Deleting a file keeps the tables and charts of runs that already used it; delete the chat to remove those too.
 
 ## The Python sandbox
 
@@ -101,7 +102,7 @@ What it never gets: a GPU, the Docker socket, the data folder, the secret store,
 
 Without Docker, the `python` level is forced to Ask, and Hearthkeep still never runs code on the host: an approved call without Docker returns a plain message that it needs Docker.
 
-Every run is saved: the script, the printed output, the results, any files it made, its status and how long it took. Charts are Vega-Lite JSON that the sandbox emits and the server validates before storing (size and depth limits, inline data only, no URLs, no external references, no images). They are drawn offline from the app's own bundle, with a loader that refuses every load, so a chart cannot fetch anything.
+Every run is saved (the attach-time check of a file is not a run): the script, the printed output, the results, any files it made, its status and how long it took. Charts are Vega-Lite JSON that the sandbox emits and the server validates before storing (size and depth limits, inline data only, no URLs, no external references, no images). They are drawn offline from the app's own bundle, with a loader that refuses every load, so a chart cannot fetch anything.
 
 Job folders are under `<data>/runtime/sandbox/jobs/<run-id>/` and are removed after each run.
 
@@ -109,7 +110,7 @@ Job folders are under `<data>/runtime/sandbox/jobs/<run-id>/` and are removed af
 
 In a chat with files, every assistant reply is checked. Each number (dates and counts included) is marked:
 
-- **computed**: it matches a value reported by a run of this chat;
+- **computed**: it matches a value the analysis reported with hk.result in a run during this reply; a number repeated from an earlier reply without a new run shows as unverified;
 - **read from the document**: it matches only a value in the document, and is labelled `read from page N, not computed`;
 - **unverified**: it matches nothing, and is marked with a note.
 
@@ -118,7 +119,7 @@ Numbers in your own question and in the chat's file names are not marked. This i
 ## Allowed folders
 
 - A folder is added from Settings and needs a passkey step-up (`add_folder`). Hearthkeep stores its real path and checks it again on every use; a folder that has moved or changed is refused until you remove it and add it again.
-- Links are never followed: symlinks, junctions and other reparse points (OneDrive placeholders among them) are refused at every depth. Hidden and system files, names starting with `.` or `~$`, and files with more than one hard link are skipped.
+- Links are never followed: symlinks, junctions, mount points and other reparse points are refused at every depth. OneDrive files that are on this PC are read like ordinary files; online-only files are skipped (the assistant is told how many) and never downloaded. Hidden and system files, names starting with `.` or `~$`, and files with more than one hard link are skipped.
 - Hearthkeep's own data folder, its repository, AppData, Windows, Program Files and ProgramData are never listed or read, even when an allowed folder contains them. Network and device paths, alternate data streams, reserved device names and 8.3 short names are refused.
 - Files are opened without following links, and the open handle's final path is compared with the path that was checked, so a swap between the check and the open is caught.
 - Hearthkeep never writes to, moves or deletes anything in an allowed folder. To work on a file, the assistant copies it into the chat's `files/` folder.
