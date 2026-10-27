@@ -24,6 +24,7 @@ from hearthkeep.files.checks import (
     clean_file_name,
 )
 from hearthkeep.files.store import CHAT_ID, ChatFile, ChatFileStore, StagedFile
+from hearthkeep.sandbox.inspect import Inspector
 
 router = APIRouter(prefix="/api")
 
@@ -92,6 +93,24 @@ def prepare_upload(
     return staged, check, clean_file_name(part.filename, check.ext)
 
 
+async def inspect_recorded(
+    inspector: Inspector | None, store: ChatFileStore, saved: ChatFile
+) -> ChatFile:
+    """Inspect a file just recorded. One the sandbox finds password-protected or unreadable is
+    removed (row and bytes) and refused; one it couldn't check stays "unchecked"."""
+    if inspector is None:
+        return saved
+    try:
+        await inspector.inspect(saved)
+    except FileRefused as error:
+        store.remove(saved.id)
+        raise _refusal(error) from None
+    except BaseException:
+        store.remove(saved.id)  # cancelled part way: keep nothing half-checked
+        raise
+    return store.get(saved.id) or saved
+
+
 @router.post("/chats/{chat_id}/files", status_code=201)
 async def attach_file(chat_id: str, session: SessionDep, request: Request) -> JSONResponse:
     _require_chat(request, chat_id)
@@ -108,6 +127,7 @@ async def attach_file(chat_id: str, session: SessionDep, request: Request) -> JS
         raise _refusal(error) from None
     # The row is added here: the SQLite connection belongs to the event loop's thread.
     saved = hk.files.record(staged, name=name, check=check, source="upload")
+    saved = await inspect_recorded(hk.inspector, hk.files, saved)
     # Never the name: audit records the id, type and size only.
     record(hk, actor(session), "file.attached",
            {"id": saved.id, "type": saved.mime, "bytes": saved.size})  # fmt: skip

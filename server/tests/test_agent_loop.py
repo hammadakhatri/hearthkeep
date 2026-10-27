@@ -712,3 +712,83 @@ async def test_provider_stream_closed_after_each_round(conn, settings, approvals
     events = await drain(loop, user("time?"))
     assert events[-1]["type"] == "turn_done"
     assert [s.closed for s in client.streams] == [True, True]
+
+
+# --- runs and the per-chat context --------------------------------------------------------------
+
+
+class RunReporterTool:
+    """Returns run attachment items as given (the runs rows are made by the test)."""
+
+    name = "python"
+    level_key = "python"
+    description = "Runs Python."
+    parameters = {"type": "object", "properties": {}}
+
+    def __init__(self, items):
+        self.items = items
+
+    def classify(self, args):
+        return ActionClass.LOOK
+
+    def summarize(self, args):
+        return "Run Python"
+
+    async def run(self, args, ctx):
+        return ToolResult(ok=True, content="Run ok in 1.0 s.", data={"attachments": self.items})
+
+
+def _add_run(conn, run_id, chat_id):
+    conn.execute(
+        "INSERT INTO runs (id, chat_id, turn_id, purpose, status, created_at) "
+        "VALUES (?, ?, 't0', 'analysis', 'ok', '2026-01-01')",
+        (run_id, chat_id),
+    )
+
+
+async def test_run_attachment_event_for_this_chats_run_only(conn, approvals, tmp_path):
+    settings = Settings(data_dir=tmp_path, docker_available=True, max_agent_steps=8)
+    _add_run(conn, "mine", CHAT)
+    _add_run(conn, "theirs", "other-chat")
+    items = [
+        {"kind": "run", "id": "mine"},
+        {"kind": "run", "id": "mine"},  # once only
+        {"kind": "run", "id": "theirs"},
+        {"kind": "run", "id": "missing"},
+        {"kind": "run", "id": "../x"},
+        {"kind": "run"},
+        {"kind": "image", "id": "mine"},  # not an image
+    ]
+    registry = ToolRegistry()
+    registry.register(RunReporterTool(items))
+    loop = make_loop(image_turn("python"), registry, approvals, conn, settings)
+    events = await drain(loop, user("sum it"))
+    attached = [e for e in events if e["type"] == "attachments"]
+    assert [a["items"] for a in attached] == [[{"kind": "run", "id": "mine"}]]
+
+
+async def test_system_prompt_lists_chat_files_only_when_present(
+    conn, approvals, registry, settings
+):
+    contexts = {CHAT: ""}
+    seen: list[str] = []
+
+    def context(chat_id):
+        seen.append(chat_id)
+        return contexts[chat_id]
+
+    client = FakeChatClient([[TextDelta("Hi."), StreamDone("stop")]])
+    loop = AgentLoop(client, registry, approvals, conn, settings, context=context)
+    await drain(loop, user("hi"))
+    assert client.calls[0]["messages"][0] == {"role": "system", "content": SYSTEM_PROMPT}
+
+    contexts[CHAT] = "This chat has files the owner attached:\n- f1: \"a.csv\""
+    client = FakeChatClient(
+        [[call("clock", {}), StreamDone("tool_calls")], [TextDelta("Done."), StreamDone("stop")]]
+    )
+    loop = AgentLoop(client, registry, approvals, conn, settings, context=context)
+    await drain(loop, user("hi"), turn_id="t2")
+    expected = {"role": "system", "content": SYSTEM_PROMPT + "\n\n" + contexts[CHAT]}
+    # On every model round of the turn, not just the first.
+    assert [c["messages"][0] for c in client.calls] == [expected, expected]
+    assert seen == [CHAT, CHAT, CHAT]

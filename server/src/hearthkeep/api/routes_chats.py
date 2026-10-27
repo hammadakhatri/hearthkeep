@@ -93,13 +93,18 @@ async def list_messages(chat_id: str, session: SessionDep, request: Request) -> 
     images = hk.conn.execute(
         "SELECT id, created_at FROM images WHERE chat_id = ? ORDER BY created_at, id", (chat_id,)
     ).fetchall()
+    runs = hk.conn.execute(
+        "SELECT id, created_at FROM runs WHERE chat_id = ? ORDER BY created_at, rowid", (chat_id,)
+    ).fetchall()
     out = []
     previous_at = ""
     for r in rows:
         made: list[str] = []
+        ran: list[str] = []
         if r["role"] == "tool" and r["created_at"]:
-            # An image is saved inside its tool call, before that call's tool message.
+            # Images and runs are saved inside their tool call, before its tool message.
             made = [i["id"] for i in images if previous_at < i["created_at"] <= r["created_at"]]
+            ran = [x["id"] for x in runs if previous_at < x["created_at"] <= r["created_at"]]
         out.append(
             {
                 "id": r["id"],
@@ -109,6 +114,7 @@ async def list_messages(chat_id: str, session: SessionDep, request: Request) -> 
                 "tool_call_id": r["tool_call_id"],
                 "created_at": r["created_at"],
                 "images": made,
+                "runs": ran,
             }
         )
         previous_at = r["created_at"] or ""

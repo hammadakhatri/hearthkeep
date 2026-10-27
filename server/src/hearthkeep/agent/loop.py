@@ -14,7 +14,7 @@ import logging
 import re
 import sqlite3
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -66,6 +66,8 @@ UNEXPECTED = "Something went wrong while answering. Please try again."
 INVALID_CALL_SUMMARY = "Invalid tool call"
 INTERRUPTED = json.dumps({"error": "This step was interrupted"})
 _ATTACHMENT_ID = re.compile(r"[A-Za-z0-9_-]{1,32}")
+# The kinds of item a tool may attach, and the table each must exist in (for this chat).
+_ATTACHMENT_TABLES = {"image": "images", "run": "runs"}
 
 _log = logging.getLogger(__name__)
 
@@ -207,8 +209,11 @@ class AgentLoop:
         conn: sqlite3.Connection,
         settings: Settings,
         secrets: SecretStore | None = None,
+        context: Callable[[str], str] | None = None,
     ) -> None:
         self._client = client
+        # Per-chat text appended to the system prompt on every model round (the chat's files).
+        self._context = context
         self._registry = registry
         self._approvals = approvals
         self._conn = conn
@@ -258,6 +263,7 @@ class AgentLoop:
         messages = [{"role": "system", "content": SYSTEM_PROMPT}, *redact(history, turn.secrets)]
         steps = 0
         while True:
+            messages[0] = {"role": "system", "content": self._system_prompt(turn)}
             tools = self._registry.available(self._conn, self._docker)
             text_parts: list[str] = []
             requests: list[ToolCallRequest] = []
@@ -347,6 +353,12 @@ class AgentLoop:
                 self._save(turn, {"role": "assistant", "content": final})
                 yield self._emit(turn, "turn_done")
                 return
+
+    def _system_prompt(self, turn: _Turn) -> str:
+        extra = self._context(turn.chat_id) if self._context is not None else ""
+        if not extra:
+            return SYSTEM_PROMPT
+        return redact(SYSTEM_PROMPT + "\n\n" + extra, turn.secrets)
 
     # -- one tool call ------------------------------------------------------------------
 
@@ -511,28 +523,31 @@ class AgentLoop:
         return bool(result.ok)
 
     def _attachments(self, turn: _Turn, data: object) -> list[dict]:
-        """The valid attachment items of a tool result: images of this chat, each once.
-        Anything else is dropped silently."""
+        """The valid attachment items of a tool result: images and runs of this chat, each
+        once. Anything else is dropped silently."""
         items = data.get("attachments") if isinstance(data, dict) else None
         if not isinstance(items, list):
             return []
         checked: list[dict] = []
-        seen: set[str] = set()
+        seen: set[tuple[str, str]] = set()
         for item in items:
-            if not isinstance(item, dict) or item.get("kind") != "image":
+            if not isinstance(item, dict):
                 continue
-            image_id = item.get("id")
-            if not isinstance(image_id, str) or not _ATTACHMENT_ID.fullmatch(image_id):
+            kind, item_id = item.get("kind"), item.get("id")
+            table = _ATTACHMENT_TABLES.get(kind) if isinstance(kind, str) else None
+            if table is None:
                 continue
-            if image_id in seen:
+            if not isinstance(item_id, str) or not _ATTACHMENT_ID.fullmatch(item_id):
+                continue
+            if (kind, item_id) in seen:
                 continue
             exists = self._conn.execute(
-                "SELECT 1 FROM images WHERE id = ? AND chat_id = ?", (image_id, turn.chat_id)
+                f"SELECT 1 FROM {table} WHERE id = ? AND chat_id = ?", (item_id, turn.chat_id)
             ).fetchone()
             if exists is None:
                 continue
-            seen.add(image_id)
-            checked.append({"kind": "image", "id": image_id})
+            seen.add((kind, item_id))
+            checked.append({"kind": kind, "id": item_id})
         return checked
 
     # -- persistence --------------------------------------------------------------------

@@ -179,3 +179,66 @@ class Holder:
     async def release(self) -> None:
         self._release.set()
         await self.task
+
+
+# --- sandbox ---------------------------------------------------------------------------------
+
+
+class FakeSandbox:
+    """Stands in for SandboxRunner: `status()` reports `docker`/`image` as set, and each `run()`
+    plays the next queued outcome (a RawRun built from member bytes, or an exception to raise).
+    Nothing is ever spawned. With nothing queued, a run is "ok" with only status.json."""
+
+    TAG = "hearthkeep-sandbox:000000000000"
+
+    def __init__(self, root, *, docker: bool = True, image: bool = True) -> None:
+        self.root = root
+        self.docker, self.image = docker, image
+        self.queue: list = []
+        self.calls: list[dict] = []
+
+    def queue_run(self, outputs: dict[str, bytes] | None = None, /, **fields) -> None:
+        """`outputs` are the members the run returns (status.json is added); `fields` override
+        the RawRun's own (`members={}` for a run that returned nothing)."""
+        self.queue.append(("run", dict(outputs or {}), fields))
+
+    def queue_error(self, exc: BaseException) -> None:
+        self.queue.append(("raise", exc, None))
+
+    async def status(self):
+        from hearthkeep.sandbox.runner import SandboxStatus
+
+        return SandboxStatus(docker=self.docker, image=self.image, tag=self.TAG)
+
+    async def run(self, run_id, *, mode, files_dir, manifest, script=None, timeout_s=None):
+        from hearthkeep.sandbox.runner import (
+            NO_DOCKER_MESSAGE,
+            NO_IMAGE_MESSAGE,
+            RawRun,
+            SandboxUnavailable,
+        )
+
+        self.calls.append(
+            {"run_id": run_id, "mode": mode, "files_dir": files_dir, "manifest": manifest,
+             "script": script, "timeout_s": timeout_s}
+        )  # fmt: skip
+        if not self.docker:
+            raise SandboxUnavailable(NO_DOCKER_MESSAGE)
+        if not self.image:
+            raise SandboxUnavailable(NO_IMAGE_MESSAGE)
+        assert files_dir.is_dir(), "the chat's files folder must exist before a run"
+        kind, payload, fields = self.queue.pop(0) if self.queue else ("run", {}, {})
+        if kind == "raise":
+            raise payload
+        job = self.root / "jobs" / run_id
+        out = job / "out"
+        out.mkdir(parents=True)
+        members = {}
+        for index, (name, data) in enumerate({"status.json": b"{}", **payload}.items()):
+            path = out / f"m{index:03d}"
+            path.write_bytes(data)
+            members[name] = path
+        values = dict(status="ok", exit_code=0, stdout="", stdout_truncated=False,
+                      duration_ms=1500, members=members, error=None, job_dir=job)  # fmt: skip
+        values.update(fields)
+        return RawRun(**values)

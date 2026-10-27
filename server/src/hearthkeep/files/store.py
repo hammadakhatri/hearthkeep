@@ -215,8 +215,9 @@ class ChatFileStore:
         ).fetchone()
         return _chat_file(row) if row else None
 
-    def path(self, file_id: str) -> Path | None:
-        """The file, only ever inside its chat's files folder; None if unknown or gone."""
+    def stored_name(self, file_id: str) -> str | None:
+        """The file's name inside its chat's files folder, from its row alone (no disk access,
+        so the caller can check the file on a worker thread with `inside`)."""
         if not isinstance(file_id, str) or not FILE_ID.fullmatch(file_id):
             return None
         row = self._conn.execute(
@@ -224,4 +225,19 @@ class ChatFileStore:
         ).fetchone()
         if row is None or not CHAT_ID.fullmatch(row["chat_id"] or ""):
             return None
-        return inside(self.files_dir(row["chat_id"]), row["file_name"] or "")
+        return row["file_name"] or None
+
+    def path(self, file_id: str) -> Path | None:
+        """The file, only ever inside its chat's files folder; None if unknown or gone."""
+        found = self.get(file_id)
+        name = self.stored_name(file_id)
+        if found is None or name is None:
+            return None
+        return inside(self.files_dir(found.chat_id), name)
+
+    def remove(self, file_id: str) -> None:
+        """Forget a file: its row, then its bytes (a file refused after it was recorded)."""
+        path = self.path(file_id)
+        self._conn.execute("DELETE FROM chat_files WHERE id = ?", (file_id,))
+        if path is not None:
+            _unlink(path)

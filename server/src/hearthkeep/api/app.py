@@ -29,6 +29,7 @@ from hearthkeep.api import (
     routes_files,
     routes_images,
     routes_models,
+    routes_runs,
     routes_settings,
     routes_uploads,
 )
@@ -51,9 +52,12 @@ from hearthkeep.files.store import ChatFileStore
 from hearthkeep.images import ImageStore
 from hearthkeep.runtime.stack import ModelStack
 from hearthkeep.sandbox import image as sandbox_image
+from hearthkeep.sandbox.inspect import Inspector
 from hearthkeep.sandbox.runner import SandboxRunner
+from hearthkeep.sandbox.runs import RunStore
 from hearthkeep.secrets import SecretStore
 from hearthkeep.tools.base import ToolRegistry
+from hearthkeep.tools.python import PythonTool, analysis_context
 
 DB_FILE = "hearthkeep.db"
 DEFAULT_WEB_DIST = Path(__file__).resolve().parents[4] / "web" / "dist"
@@ -237,7 +241,11 @@ def create_app(
     approval_poll_interval: float = 0.5,
     monotonic: Callable[[], float] = time.monotonic,
     models: ModelStack | None = None,
+    sandbox: SandboxRunner | None = None,
 ) -> FastAPI:
+    """`sandbox`, when given (tests), is used as is; otherwise one is made when Docker is
+    available. Without one the `python` tool is still offered and answers that Docker is
+    needed: nothing ever runs on the host."""
     if settings.docker_available is None:
         settings = dataclasses.replace(settings, docker_available=detect_docker())
     check = health_check or chat_model_health_check(settings)
@@ -259,12 +267,23 @@ def create_app(
             files = ChatFileStore(conn, settings.data_dir)
             # Uploads cut off by a stop leave temporary files behind; none can be live yet.
             files.sweep_temp()
-            sandbox = await _start_sandbox(settings)
+            runner_sandbox = sandbox if sandbox is not None else await _start_sandbox(settings)
+            runs = RunStore(conn, settings.data_dir)
             image_tool = stack.image_tool(gpu, images)
             if image_tool is not None and registry.get(image_tool.name) is None:
                 registry.register(image_tool)
+            if registry.get(PythonTool.name) is None:
+                registry.register(PythonTool(runner_sandbox, files, runs))
             chat = stack.chat_client(chat_client, gpu)
-            loop = AgentLoop(chat, registry, approvals, conn, settings, secrets=secrets)
+            loop = AgentLoop(
+                chat,
+                registry,
+                approvals,
+                conn,
+                settings,
+                secrets=secrets,
+                context=lambda chat_id: analysis_context(files, chat_id),
+            )
             runner = TurnRunner(conn, loop)
             sessions = SessionStore(conn, settings.session_idle_days, clock=clock)
             app.state.hk = Services(
@@ -291,7 +310,9 @@ def create_app(
                 managed=stack.managed,
                 chat_model_id=stack.chat_model_id,
                 monotonic=monotonic,
-                sandbox=sandbox,
+                sandbox=runner_sandbox,
+                runs=runs,
+                inspector=Inspector(runner_sandbox, files),
             )
             yield
         finally:
@@ -331,6 +352,7 @@ def create_app(
         routes_images,
         routes_uploads,
         routes_files,
+        routes_runs,
     ):
         app.include_router(module.router)
 

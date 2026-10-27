@@ -74,7 +74,14 @@ def harness(tmp_path):
         send = SendTool()
 
         def start(
-            self, scripts=(), *, health=None, web_dist=None, limiter=None, monotonic=time.monotonic
+            self,
+            scripts=(),
+            *,
+            health=None,
+            web_dist=None,
+            limiter=None,
+            monotonic=time.monotonic,
+            sandbox=None,
         ):
             self.chat = FakeChatClient(list(scripts))
 
@@ -82,7 +89,8 @@ def harness(tmp_path):
                 return True
 
             app = create_app(
-                Settings(data_dir=tmp_path, docker_available=False),
+                # A sandbox given here stands for a running Docker.
+                Settings(data_dir=tmp_path, docker_available=sandbox is not None),
                 verifier=FakeVerifier(),
                 chat_client=self.chat,
                 registry=registry_with(ClockTool(), NoteTool(), self.send),
@@ -91,6 +99,7 @@ def harness(tmp_path):
                 rate_limiter=limiter,
                 approval_poll_interval=0.01,
                 monotonic=monotonic,
+                sandbox=sandbox,
             )
             client = TestClient(app, base_url=ORIGIN)
             client.__enter__()
@@ -159,8 +168,8 @@ def enroll(client, code, cred_id="cred-1"):
     return response
 
 
-def signed_in(h, scripts=()):
-    client = h.start(scripts)
+def signed_in(h, scripts=(), **start):
+    client = h.start(scripts, **start)
     enroll(client, h.code())
     return client
 
