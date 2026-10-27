@@ -11,6 +11,7 @@ from pathlib import Path
 
 import keyring
 from cryptography.fernet import Fernet, InvalidToken
+from keyring.errors import KeyringError
 
 _NAME_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 
@@ -33,12 +34,16 @@ class SecretStore:
             raise ValueError("secret name must match [A-Za-z0-9_.-]{1,64}")
 
     def _fernet(self, create: bool) -> Fernet | None:
-        key = keyring.get_password(self._service, self._key_user)
-        if key is None:
-            if not create:
-                return None
-            key = Fernet.generate_key().decode()
-            keyring.set_password(self._service, self._key_user, key)
+        try:
+            key = keyring.get_password(self._service, self._key_user)
+            if key is None:
+                if not create:
+                    return None
+                key = Fernet.generate_key().decode()
+                keyring.set_password(self._service, self._key_user, key)
+        except KeyringError as exc:
+            # A locked, missing or failing OS keyring backend.
+            raise SecretStoreError("the OS keyring could not be used") from exc
         try:
             return Fernet(key.encode())
         except (ValueError, TypeError) as exc:

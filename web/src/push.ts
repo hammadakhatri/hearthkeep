@@ -6,7 +6,7 @@ import { api } from './api/client'
 
 export type PushSupport = 'supported' | 'needs-home-screen' | 'unsupported'
 
-type PushState = { public_key: string; enabled: boolean }
+type PushState = { public_key: string; enabled: boolean; endpoint: string | null }
 
 /** Thrown by `enableNotifications` when the browser's permission is denied. */
 export class NotificationsBlockedError extends Error {
@@ -62,14 +62,24 @@ async function pushManager(): Promise<PushManager> {
   return (await navigator.serviceWorker.ready).pushManager
 }
 
-/** On when this browser has permission and a subscription and the server has this device's. */
+function saveEndpoint(endpoint: string): Promise<unknown> {
+  return api('/api/push/subscription', { method: 'PUT', body: JSON.stringify({ endpoint }) })
+}
+
+/**
+ * On when this browser has permission and a subscription and the server has this device's.
+ * A browser can renew its endpoint on its own; when it no longer matches the server's, the
+ * current one is saved again so pushes keep arriving.
+ */
 export async function notificationsEnabled(): Promise<boolean> {
   if (pushSupport() !== 'supported' || Notification.permission !== 'granted') return false
   const [state, subscription] = await Promise.all([
     api<PushState>('/api/push'),
     pushManager().then((manager) => manager.getSubscription()),
   ])
-  return state.enabled && subscription !== null
+  if (!state.enabled || subscription === null) return false
+  if (subscription.endpoint !== state.endpoint) await saveEndpoint(subscription.endpoint)
+  return true
 }
 
 /** Ask permission, subscribe with the server's key and save the endpoint for this device. */
@@ -84,14 +94,13 @@ export async function enableNotifications(): Promise<void> {
     await subscription.unsubscribe()
     subscription = null
   }
+  const created = subscription === null
   subscription ??= await manager.subscribe({ userVisibleOnly: true, applicationServerKey: key })
   try {
-    await api('/api/push/subscription', {
-      method: 'PUT',
-      body: JSON.stringify({ endpoint: subscription.endpoint }),
-    })
+    await saveEndpoint(subscription.endpoint)
   } catch (error) {
-    await subscription.unsubscribe().catch(() => false)
+    // Undo only what this call made: a subscription the browser already had stays.
+    if (created) await subscription.unsubscribe().catch(() => false)
     throw error
   }
 }

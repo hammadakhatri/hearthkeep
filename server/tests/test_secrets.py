@@ -90,3 +90,23 @@ def test_invalid_names_rejected_on_get_and_delete(tmp_path, bad):
         s.get(bad)
     with pytest.raises(ValueError):
         s.delete(bad)
+
+
+def test_keyring_backend_errors_become_secret_store_errors(tmp_path, memory_keyring, monkeypatch):
+    from keyring.errors import KeyringError, KeyringLocked
+
+    SecretStore(tmp_path).put("k", "supersecret")
+
+    def broken(*args):
+        raise KeyringLocked("the keyring is locked")
+
+    monkeypatch.setattr(memory_keyring, "get_password", broken)
+    monkeypatch.setattr(memory_keyring, "set_password", broken)
+    store = SecretStore(tmp_path)
+    with pytest.raises(SecretStoreError):
+        store.get("k")
+    with pytest.raises(SecretStoreError):
+        store.put("k2", "v")
+    with pytest.raises(SecretStoreError):
+        SecretStore(tmp_path / "fresh").put("k", "v")  # no store yet: the key is created
+    assert issubclass(KeyringLocked, KeyringError)

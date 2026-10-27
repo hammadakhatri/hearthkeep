@@ -9,6 +9,7 @@ never logged or audited: only its host and the status code are logged.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -214,8 +215,12 @@ class PushSender:
             "Content-Length": "0",
         }
         try:
-            async with self._client.stream("POST", url, content=b"", headers=headers) as response:
-                status = response.status_code
+            # httpx's timeout bounds each phase; this bounds the whole send.
+            async with asyncio.timeout(PUSH_TIMEOUT_SECONDS):
+                async with self._client.stream(
+                    "POST", url, content=b"", headers=headers
+                ) as response:
+                    status = response.status_code
         except Exception as exc:
             # Only the type: an httpx error's text carries the URL.
             _log.warning("push to %s failed: %s", host, type(exc).__name__)

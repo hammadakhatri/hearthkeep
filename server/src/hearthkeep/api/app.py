@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import mimetypes
 import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -223,11 +224,12 @@ def _install_static(app: FastAPI, web_dist: Path) -> None:
 
 def _push_sender(store: SecretStore) -> PushSender | None:
     """The push sender, its VAPID key made on first start; None (push answers 503) when the
-    secret store can't be read, so a keyring problem never stops Hearthkeep from starting."""
+    secret store or the keyring can't be used or the stored key is corrupt, so none of that
+    ever stops Hearthkeep from starting. Only the error type is logged, never the key."""
     try:
         return PushSender(VapidKeys.load_or_create(store))
-    except SecretStoreError as exc:
-        _log.warning("push is off: the secret store can't be read (%s)", type(exc).__name__)
+    except (SecretStoreError, ValueError, TypeError) as exc:
+        _log.warning("push is off: the VAPID key can't be loaded (%s)", type(exc).__name__)
         return None
 
 
@@ -279,6 +281,10 @@ def create_app(
     """`sandbox`, when given (tests), is used as is; otherwise one is made when Docker is
     available. Without one the `python` tool is still offered and answers that Docker is
     needed: nothing ever runs on the host."""
+    # The static files' types come from `mimetypes`, which on Windows reads the registry: a
+    # .js mapped to text/plain there would stop the service worker from registering.
+    mimetypes.add_type("text/javascript", ".js")
+    mimetypes.add_type("text/javascript", ".mjs")
     detected = settings.docker_available is None
     if detected:
         settings = dataclasses.replace(settings, docker_available=detect_docker())

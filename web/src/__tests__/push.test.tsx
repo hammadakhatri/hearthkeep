@@ -109,7 +109,7 @@ describe('NotificationToggle', () => {
   it('toggle subscribes with the server key and saves the endpoint', async () => {
     const { pushManager, notification } = fakeBrowser()
     const { calls } = mockFetch({
-      'GET /api/push': { body: { public_key: PUBLIC_KEY, enabled: false } },
+      'GET /api/push': { body: { public_key: PUBLIC_KEY, enabled: false, endpoint: null } },
       'PUT /api/push/subscription': { body: { enabled: true } },
     })
     render(<NotificationToggle />)
@@ -138,7 +138,7 @@ describe('NotificationToggle', () => {
     }
     const { unsubscribe } = fakeBrowser({ permission: 'granted', subscription: existing })
     const { calls } = mockFetch({
-      'GET /api/push': { body: { public_key: PUBLIC_KEY, enabled: true } },
+      'GET /api/push': { body: { public_key: PUBLIC_KEY, enabled: true, endpoint: ENDPOINT } },
       'DELETE /api/push/subscription': { body: { enabled: false } },
     })
     render(<NotificationToggle />)
@@ -153,7 +153,7 @@ describe('NotificationToggle', () => {
 
   it('shows the home screen note on iPhone Safari', async () => {
     fakeBrowser({ ua: IPHONE_SAFARI, push: false })
-    const { calls } = mockFetch({ 'GET /api/push': { body: { public_key: PUBLIC_KEY, enabled: false } } })
+    const { calls } = mockFetch({ 'GET /api/push': { body: { public_key: PUBLIC_KEY, enabled: false, endpoint: null } } })
     render(<NotificationToggle />)
     expect(await screen.findByText(IPHONE_NOTE)).toBeInTheDocument()
     expect(screen.getByRole('switch', { name: 'Notifications on this device' })).toBeDisabled()
@@ -162,7 +162,7 @@ describe('NotificationToggle', () => {
 
   it('says when notifications are blocked', async () => {
     const { pushManager } = fakeBrowser({ answer: 'denied' })
-    const { calls } = mockFetch({ 'GET /api/push': { body: { public_key: PUBLIC_KEY, enabled: false } } })
+    const { calls } = mockFetch({ 'GET /api/push': { body: { public_key: PUBLIC_KEY, enabled: false, endpoint: null } } })
     render(<NotificationToggle />)
     const toggle = await screen.findByRole('switch', { name: 'Notifications on this device' })
     await waitFor(() => expect(toggle).toBeEnabled())
@@ -175,7 +175,7 @@ describe('NotificationToggle', () => {
 
   it('already blocked shows the note and keeps the switch off', async () => {
     fakeBrowser({ permission: 'denied' })
-    mockFetch({ 'GET /api/push': { body: { public_key: PUBLIC_KEY, enabled: true } } })
+    mockFetch({ 'GET /api/push': { body: { public_key: PUBLIC_KEY, enabled: true, endpoint: ENDPOINT } } })
     render(<NotificationToggle />)
     expect(await screen.findByText(BLOCKED)).toBeInTheDocument()
     expect(screen.getByRole('switch', { name: 'Notifications on this device' })).toHaveAttribute('aria-checked', 'false')
@@ -253,5 +253,69 @@ describe('service worker', () => {
   it('never reads the push data or decrypts anything', () => {
     expect(swSource).not.toMatch(/\.data\b/)
     expect(swSource).not.toMatch(/import|importScripts|decrypt/)
+  })
+})
+
+describe('keeping the server in step', () => {
+  const OLD_ENDPOINT = 'https://fcm.googleapis.com/fcm/send/old-token'
+
+  function existing(endpoint = ENDPOINT): FakeSubscription {
+    return { endpoint, options: { applicationServerKey: POINT.buffer.slice(0) }, unsubscribe: vi.fn() }
+  }
+
+  it('re-saves an endpoint the browser has changed since', async () => {
+    fakeBrowser({ permission: 'granted', subscription: existing(ENDPOINT) })
+    const { calls } = mockFetch({
+      'GET /api/push': { body: { public_key: PUBLIC_KEY, enabled: true, endpoint: OLD_ENDPOINT } },
+      'PUT /api/push/subscription': { body: { enabled: true } },
+    })
+    render(<NotificationToggle />)
+    const toggle = await screen.findByRole('switch', { name: 'Notifications on this device' })
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'))
+    const puts = calls.filter((c) => c.init.method === 'PUT')
+    expect(puts).toHaveLength(1)
+    expect(bodyOf(puts[0])).toEqual({ endpoint: ENDPOINT })
+  })
+
+  it('leaves a matching endpoint alone', async () => {
+    fakeBrowser({ permission: 'granted', subscription: existing(ENDPOINT) })
+    const { calls } = mockFetch({
+      'GET /api/push': { body: { public_key: PUBLIC_KEY, enabled: true, endpoint: ENDPOINT } },
+    })
+    render(<NotificationToggle />)
+    const toggle = await screen.findByRole('switch', { name: 'Notifications on this device' })
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'))
+    expect(calls.some((c) => c.init.method === 'PUT')).toBe(false)
+  })
+
+  it('a failed save keeps a subscription this browser already had', async () => {
+    const { unsubscribe, pushManager } = fakeBrowser({ permission: 'granted', subscription: existing() })
+    mockFetch({
+      'GET /api/push': { body: { public_key: PUBLIC_KEY, enabled: false, endpoint: null } },
+      'PUT /api/push/subscription': { status: 422, body: { reason: 'push_host_not_allowed' } },
+    })
+    render(<NotificationToggle />)
+    const toggle = await screen.findByRole('switch', { name: 'Notifications on this device' })
+    await waitFor(() => expect(toggle).toBeEnabled())
+    fireEvent.click(toggle)
+    expect(await screen.findByRole('alert')).toBeInTheDocument()
+    expect(pushManager.subscribe).not.toHaveBeenCalled()
+    expect(unsubscribe).not.toHaveBeenCalled()
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('a failed save undoes a subscription made just now', async () => {
+    const { unsubscribe, pushManager } = fakeBrowser()
+    mockFetch({
+      'GET /api/push': { body: { public_key: PUBLIC_KEY, enabled: false, endpoint: null } },
+      'PUT /api/push/subscription': { status: 500, body: { reason: 'internal_error' } },
+    })
+    render(<NotificationToggle />)
+    const toggle = await screen.findByRole('switch', { name: 'Notifications on this device' })
+    await waitFor(() => expect(toggle).toBeEnabled())
+    fireEvent.click(toggle)
+    expect(await screen.findByRole('alert')).toBeInTheDocument()
+    expect(pushManager.subscribe).toHaveBeenCalledOnce()
+    expect(unsubscribe).toHaveBeenCalledOnce()
   })
 })

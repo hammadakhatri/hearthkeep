@@ -255,6 +255,23 @@ async def test_notify_never_follows_redirects(keys):
     assert len(recorder.requests) == 1
 
 
+async def test_notify_has_an_overall_time_limit(keys, monkeypatch):
+    """A service that trickles its answer can't hold a send past the overall limit."""
+    import asyncio
+
+    monkeypatch.setattr(push, "PUSH_TIMEOUT_SECONDS", 0.05)
+
+    async def stalls(request):
+        await asyncio.sleep(30)
+        return httpx.Response(201)
+
+    sender = await sender_with(keys, stalls)
+    started = asyncio.get_running_loop().time()
+    assert await sender.notify(FCM) == "failed"
+    assert asyncio.get_running_loop().time() - started < 5
+    await sender.aclose()
+
+
 async def test_notify_failed_on_network_error(keys):
     def broken(request):
         raise httpx.ConnectError("no route to " + str(request.url))

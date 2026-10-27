@@ -34,10 +34,9 @@ def _push(hk: Services) -> tuple[PushSender, PushSubscriptions]:
 @router.get("/push")
 async def push_state(session: SessionDep, request: Request) -> dict:
     sender, subscriptions = _push(services(request))
-    return {
-        "public_key": sender.public_key,
-        "enabled": subscriptions.endpoint_for(session.credential_id) is not None,
-    }
+    # This device's own endpoint, so the page can re-save one the browser has since changed.
+    endpoint = subscriptions.endpoint_for(session.credential_id)
+    return {"public_key": sender.public_key, "enabled": endpoint is not None, "endpoint": endpoint}
 
 
 @router.put("/push/subscription")

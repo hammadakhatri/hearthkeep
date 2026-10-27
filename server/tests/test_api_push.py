@@ -3,6 +3,8 @@
 # ruff: noqa: F811  (the harness fixture is imported from test_api)
 
 import json
+import logging
+import mimetypes
 
 from test_api import CSRF, enroll, harness, signed_in, step_up  # noqa: F401  (harness is a fixture)
 
@@ -71,9 +73,11 @@ def test_subscribe_binds_to_this_device_and_validates_host(harness):
     assert harness.query("SELECT credential_id, endpoint FROM push_subscriptions") == [
         ("cred-1", FCM_2)
     ]
+    assert client.get("/api/push").json()["endpoint"] == FCM_2  # lets the page spot drift
 
     add_second_device(harness, client)
-    assert client.get("/api/push").json()["enabled"] is False  # this is another device
+    state = client.get("/api/push").json()
+    assert state["enabled"] is False and state["endpoint"] is None  # this is another device
     assert subscribe(client, WNS).status_code == 200
     assert sorted(harness.query("SELECT credential_id, endpoint FROM push_subscriptions")) == [
         ("cred-1", FCM_2),
@@ -140,4 +144,52 @@ def test_service_worker_is_served_as_script_under_the_csp(harness, tmp_path):
     assert response.headers["content-type"].startswith("text/javascript")
     csp = response.headers["content-security-policy"]
     assert "default-src 'self'" in csp
-    assert "worker-src" not in csp and "script-src" not in csp
+    assert "worker-src" not in csp and "script-src" not in csp and "child-src" not in csp
+
+
+def test_js_is_served_as_javascript_even_if_the_registry_says_otherwise(harness, tmp_path):
+    """Windows can map .js to text/plain in the registry; a service worker then won't load."""
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html>app</html>", encoding="utf-8")
+    (dist / "sw.js").write_text("self.addEventListener('push', () => {})", encoding="utf-8")
+    (dist / "mod.mjs").write_text("export {}", encoding="utf-8")
+    mimetypes.add_type("text/plain", ".js")
+    mimetypes.add_type("text/plain", ".mjs")
+    try:
+        client = harness.start(web_dist=dist)
+        assert client.get("/sw.js").headers["content-type"].startswith("text/javascript")
+        assert client.get("/mod.mjs").headers["content-type"].startswith("text/javascript")
+    finally:
+        mimetypes.add_type("text/javascript", ".js")
+        mimetypes.add_type("text/javascript", ".mjs")
+
+
+def test_push_off_but_hearthkeep_starts_when_the_keyring_fails(harness, memory_keyring,
+                                                               monkeypatch, caplog):  # fmt: skip
+    from keyring.errors import KeyringLocked
+
+    def broken(*args):
+        raise KeyringLocked("the keyring is locked")
+
+    monkeypatch.setattr(memory_keyring, "get_password", broken)
+    monkeypatch.setattr(memory_keyring, "set_password", broken)
+    caplog.set_level(logging.WARNING)
+    client = signed_in(harness)
+    assert client.get("/api/push").json() == {"reason": "push_unavailable"}
+    assert client.get("/api/push").status_code == 503
+    assert subscribe(client, FCM).status_code == 503
+    assert client.delete("/api/push/subscription", headers=CSRF).status_code == 503
+    assert "SecretStoreError" in caplog.text
+
+
+def test_push_off_but_hearthkeep_starts_with_a_corrupt_vapid_key(harness, caplog):
+    garbage = "not-a-pem-but-maybe-secret-material-0123456789"
+    SecretStore(harness.data).put(VAPID_SECRET, garbage)
+    caplog.set_level(logging.DEBUG)
+    client = signed_in(harness)
+    response = client.get("/api/push")
+    assert response.status_code == 503 and response.json() == {"reason": "push_unavailable"}
+    assert garbage not in caplog.text
+    assert "ValueError" in caplog.text
+    assert SecretStore(harness.data).get(VAPID_SECRET) == garbage  # never overwritten
