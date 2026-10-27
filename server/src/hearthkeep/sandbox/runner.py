@@ -26,7 +26,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tarfile
 import threading
 import time
 import unicodedata
@@ -49,7 +48,6 @@ TMPFS_BYTES = 268_435_456
 STDERR_BYTES = 65_536
 STATUS_BYTES = 65_536
 DIAGNOSTICS_BYTES = 2048
-HEADER_BYTES = 65_536  # a PAX or GNU long-name header larger than this is refused unread
 STATUS_CACHE_S = 30.0
 CHUNK = 65_536
 KILL_TIMEOUT_S = 15.0  # for `docker kill` / `docker rm` themselves
@@ -62,14 +60,16 @@ _log = logging.getLogger(__name__)
 # Exactly these names, and nothing else, may come back (ASCII only: no Unicode digits).
 MEMBER_NAME = re.compile(
     r"status\.json|stdout\.txt|results\.jsonl|inspect\.json"
-    r"|files/[A-Za-z0-9][A-Za-z0-9._ -]{0,119}|pages/[0-9]{1,3}\.png",
+    r"|files/[A-Za-z0-9][A-Za-z0-9._ -]{0,99}|pages/[0-9]{1,3}\.png",
     re.ASCII,
 )
 # The PAX keys a plain member may carry (the entry writes nothing more exotic).
-# No `size`: a PAX size overrides the ustar one, so it would make Hearthkeep's header scan
-# and tarfile walk different archives (the entry never needs it under the 300 MB cap).
-_PAX_KEYS = frozenset({"path", "mtime", "atime", "ctime", "uid", "gid", "uname", "gname"})
-_REGULAR = (tarfile.REGTYPE, tarfile.AREGTYPE)
+# The container stream is plain ustar (see hk_entry.write_tar), read by `_unpack` below.
+BLOCK = 512
+ZERO_BLOCK = bytes(BLOCK)
+USTAR_MAGIC, USTAR_VERSION = b"ustar\0", b"00"
+_REGULAR_TYPES = (b"0", b"\0")
+_OCTAL = re.compile(rb"([0-7]+)[\0 ]*")
 # A bind-mount source is one value in --mount's comma-separated list: keep it plain.
 _UNSAFE_MOUNT = re.compile(r'[,"\'\n\r\x00]')
 
@@ -92,8 +92,6 @@ ERROR_OUTPUT = "The sandbox returned output Hearthkeep couldn't read."
 ERROR_UNEXPECTED = "The sandbox stopped unexpectedly."
 DOCKER_KILLED_EXIT = 137  # the container was killed: by its memory limit, unless the host did
 SCRIPT_KILLED_EXIT = -9  # the entry's report for a script ended by SIGKILL (outside a timeout)
-# Tar header types whose data is header text for the next member.
-_LONG_HEADER_TYPES = frozenset(b"xgLK")
 
 
 @dataclass(frozen=True)
@@ -229,16 +227,15 @@ def redact(text: str, data_dir: Path) -> str:
 
 def _one_line(text: str) -> str:
     """Control characters (line breaks included) as spaces, so a log entry stays one line."""
-    return "".join(" " if unicodedata.category(ch) == "Cc" else ch for ch in text)
+    return "".join(" " if unicodedata.category(ch) in ("Cc", "Zl", "Zp") else ch for ch in text)
 
 
 def _format_number(value: float) -> str:
     return f"{value:g}"
 
 
-def _check_name(member: tarfile.TarInfo) -> str:
-    name = member.name
-    if not isinstance(name, str) or not name:
+def _check_name(name: str) -> str:
+    if not name:
         raise _BadOutput("a member has no name")
     if "\\" in name or ".." in name or name.startswith("/"):
         raise _BadOutput("a member name is not allowed")
@@ -249,119 +246,89 @@ def _check_name(member: tarfile.TarInfo) -> str:
     return name
 
 
-def _check_member(member: tarfile.TarInfo) -> str:
-    if set(member.pax_headers) - _PAX_KEYS:
-        raise _BadOutput("a member carries unexpected headers")
-    name = _check_name(member)
-    if member.type not in _REGULAR or member.issparse():
+def _octal(field_bytes: bytes, what: str) -> int:
+    """An octal number field: digits only, then NUL or space padding (no sign, no base-256)."""
+    match = _OCTAL.fullmatch(field_bytes)
+    if match is None:
+        raise _BadOutput(f"a member header has a bad {what}")
+    return int(match.group(1), 8)
+
+
+def _text_field(field_bytes: bytes) -> bytes:
+    """A NUL-terminated text field; anything after the first NUL must be NUL too."""
+    text, _, rest = field_bytes.partition(b"\0")
+    if rest.strip(b"\0"):
+        raise _BadOutput("a member header has junk in a name field")
+    return text
+
+
+def _parse_header(block: bytes) -> tuple[str, int]:
+    """(name, size) from one 512-byte header: plain ustar, a regular file, checksum exact."""
+    if block[257:263] != USTAR_MAGIC or block[263:265] != USTAR_VERSION:
+        raise _BadOutput("a member header is not plain ustar")
+    stored = _octal(block[148:156], "checksum")
+    if stored != sum(block[:148]) + 8 * 0x20 + sum(block[156:]):
+        raise _BadOutput("a member header has a wrong checksum")
+    if block[156:157] not in _REGULAR_TYPES:
         raise _BadOutput("a member is not a regular file")
-    return name
-
-
-def _header_size(field_bytes: bytes) -> int:
-    """A tar header's size field: octal text, or GNU base-256 (high bit set)."""
-    if field_bytes[0] & 0x80:
-        if field_bytes[0] & 0x40:
-            raise _BadOutput("a member has a negative size")
-        return int.from_bytes(bytes([field_bytes[0] & 0x3F]) + field_bytes[1:], "big")
-    text = field_bytes.split(b"\0", 1)[0].strip(b" ")
+    size = _octal(block[124:136], "size")
+    name, prefix = _text_field(block[0:100]), _text_field(block[345:500])
+    full = prefix + b"/" + name if prefix else name
     try:
-        return int(text or b"0", 8)
-    except ValueError:
-        raise _BadOutput("a member has a bad size") from None
+        return _check_name(full.decode("ascii")), size
+    except UnicodeDecodeError:
+        raise _BadOutput("a member name is not ASCII") from None
 
 
-def _pax_keys(body: bytes) -> list[str]:
-    """The keys of a PAX extended header's records (`<len> <key>=<value>\\n`), strictly."""
-    keys = []
-    pos = 0
-    while pos < len(body) and body[pos] != 0:
-        space = body.find(b" ", pos, pos + 20)
-        digits = body[pos:space] if space > pos else b""
-        if not digits.isdigit():
-            raise _BadOutput("a PAX header is malformed")
-        length = int(digits)
-        record = body[pos : pos + length]
-        equals = record.find(b"=")
-        if length <= len(digits) + 1 or len(record) != length or equals < 0:
-            raise _BadOutput("a PAX header is malformed")
-        if not record.endswith(b"\n"):
-            raise _BadOutput("a PAX header is malformed")
-        try:
-            keys.append(record[len(digits) + 1 : equals].decode("utf-8"))
-        except UnicodeDecodeError:
-            raise _BadOutput("a PAX header is malformed") from None
-        pos += length
-    return keys
-
-
-def _scan_headers(tar_path: Path) -> None:
-    """Walk the raw headers before tarfile does. tarfile reads a PAX or GNU long-name header
-    into memory whole, so a huge one is refused here, unread. Global PAX headers are refused,
-    and each extended one is read (it is small by then) and held to the member key list:
-    without a PAX `size`, this walk and tarfile's step over exactly the same bytes."""
-    with open(tar_path, "rb") as raw:
-        while True:
-            block = raw.read(512)
-            if len(block) < 512 or not block.strip(b"\0"):
-                return  # the end (or a cut stream, which tarfile then refuses)
-            size = _header_size(block[124:136])
-            kind = block[156]
-            if kind == ord("g"):
-                raise _BadOutput("a global PAX header is not allowed")
-            if kind in _LONG_HEADER_TYPES and size > HEADER_BYTES:
-                raise _BadOutput("a member header is too large")
-            if kind == ord("x"):
-                body = raw.read(size)
-                if len(body) != size:
-                    raise _BadOutput("a PAX header is cut short")
-                if set(_pax_keys(body)) - _PAX_KEYS:
-                    raise _BadOutput("a member carries unexpected headers")
-                raw.seek(-size % 512, os.SEEK_CUR)
-                continue
-            raw.seek((size + 511) // 512 * 512, os.SEEK_CUR)
+def _read_exact(raw, n: int) -> bytes:
+    data = raw.read(n)
+    if len(data) != n:
+        raise _BadOutput("the archive is cut short")
+    return data
 
 
 def _unpack(tar_path: Path, out_dir: Path, max_members: int, stop: threading.Event) -> dict:
-    """Copy the accepted members of `tar_path` into `out_dir` (as m000, m001, ...); raise
-    _BadOutput at the first member that breaks a rule. Never `tarfile.extract`."""
-    _scan_headers(tar_path)
+    """Hearthkeep's own reader for the container's plain-ustar stream: each member is copied
+    into `out_dir` as m000, m001, ...; the first header that breaks a rule raises
+    _BadOutput. Never Python's tarfile, whose extensions (PAX, GNU, Solaris, sparse) would
+    each be a way for a hostile stream to say something this reader doesn't see."""
     out_dir.mkdir()
     members: dict[str, Path] = {}
-    with (
-        open(tar_path, "rb") as raw,
-        tarfile.open(fileobj=raw, mode="r|", encoding="utf-8", errors="strict") as tar,
-    ):
-        for index, member in enumerate(tar):
-            if index >= max_members:
+    total = tar_path.stat().st_size
+    with open(tar_path, "rb") as raw:
+        while True:
+            if stop.is_set():
+                raise _BadOutput("stopped")
+            block = _read_exact(raw, BLOCK)
+            if block == ZERO_BLOCK:
+                if _read_exact(raw, BLOCK) != ZERO_BLOCK:
+                    raise _BadOutput("the archive does not end cleanly")
+                while chunk := raw.read(CHUNK):  # only zero padding may follow
+                    if chunk.strip(b"\0"):
+                        raise _BadOutput("the archive does not end cleanly")
+                break
+            if len(members) >= max_members:
                 raise _BadOutput(f"more than {max_members} members")
-            name = _check_member(member)
-            if index == 0 and name != "status.json":
+            name, size = _parse_header(block)
+            if not members and name != "status.json":
                 raise _BadOutput("status.json is not the first member")
             if name in members:
                 raise _BadOutput("a member name repeats")
-            source = tar.extractfile(member)
-            if source is None:
-                raise _BadOutput("a member is not a regular file")
-            dest = out_dir / f"m{index:03d}"
-            copied = 0
+            padding = -size % BLOCK
+            if size + padding > total - raw.tell():
+                raise _BadOutput("the archive is cut short")
+            dest = out_dir / f"m{len(members):03d}"
+            left = size
             with open(dest, "xb") as target:
-                while chunk := source.read(CHUNK):
+                while left:
                     if stop.is_set():
                         raise _BadOutput("stopped")
-                    copied += len(chunk)
+                    chunk = _read_exact(raw, min(CHUNK, left))
                     target.write(chunk)
-            if copied != member.size:
-                raise _BadOutput("a member is shorter than its header says")
+                    left -= len(chunk)
+            if _read_exact(raw, padding).strip(b"\0"):
+                raise _BadOutput("a member's padding is not zeros")
             members[name] = dest
-        end = tar.offset
-    # The archive must end with its end-of-archive blocks and nothing but zeros after them:
-    # tarfile quietly stops at a broken header, which would hide a cut or padded stream.
-    with open(tar_path, "rb") as raw:
-        raw.seek(end)
-        rest = raw.read()
-    if len(rest) < 1024 or rest.strip(b"\0"):
-        raise _BadOutput("the archive does not end cleanly")
     if "status.json" not in members:
         raise _BadOutput("status.json is missing")
     return members
@@ -508,6 +475,8 @@ class SandboxRunner:
             raise ValueError("not a chat's files folder")
         chats = self._chats.resolve()
         resolved = folder.resolve()
+        if _UNSAFE_MOUNT.search(str(resolved)):
+            raise SandboxUnavailable(DATA_PATH_MESSAGE)
         if resolved.parent.parent != chats or resolved.name != "files":
             raise ValueError("not a chat's files folder")
         for path in (folder.parent, folder):
@@ -757,7 +726,7 @@ class SandboxRunner:
             with contextlib.suppress(BaseException):
                 await work
             raise
-        except (_BadOutput, tarfile.TarError, EOFError, UnicodeError, OSError, ValueError) as exc:
+        except (_BadOutput, UnicodeError, OSError, ValueError) as exc:
             reason = str(exc) if isinstance(exc, _BadOutput) else "the archive could not be read"
             return fail("sandbox_error", ERROR_OUTPUT, f"output refused: {reason}")
         with contextlib.suppress(OSError):

@@ -18,7 +18,7 @@ from hearthkeep.sandbox.charts import ChartError, validate_chart_spec
 MAX_BYTES = 5 * 1024 * 1024
 MAX_LINES = 2000
 MAX_NAME = 100
-MAX_FILE_NAME = 120  # hk.file allows 120 characters
+MAX_FILE_NAME = 100  # hk.file allows 100 characters (so the name fits a ustar header)
 MAX_TEXT = 200
 MAX_NOTE = 500
 MAX_INT = 2**63

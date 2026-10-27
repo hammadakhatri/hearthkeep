@@ -14,7 +14,8 @@ import numpy as np
 import pandas as pd
 
 MAX_TABLE_ROWS = 500
-FILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,119}")
+# At most 100 characters, so `files/<name>` fits a plain ustar header (prefix + name).
+FILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,99}")
 NOT_A_NUMBER = "not a number"
 ROW_INDEX = "hk_row"  # the index name hk.read gives
 
@@ -164,7 +165,7 @@ def file(name: str, data) -> None:
     if not isinstance(name, str) or not FILE_NAME.fullmatch(name):
         raise ValueError(
             "file names use letters, digits, spaces, dots, dashes and underscores, start with "
-            "a letter or digit and are at most 120 characters"
+            "a letter or digit and are at most 100 characters"
         )
     target = out_dir() / "files" / name
     target.parent.mkdir(parents=True, exist_ok=True)

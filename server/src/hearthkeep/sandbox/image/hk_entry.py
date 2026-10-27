@@ -253,7 +253,7 @@ def _add_file(tar: tarfile.TarFile, path: Path, name: str) -> None:
         member.mtime = int(info.st_mtime)
         member.mode = 0o644
         tar.addfile(member, _Exact(fd, info.st_size))
-    except OSError:
+    except (OSError, ValueError):  # ValueError: a name ustar can't hold; that file is left out
         return
     finally:
         os.close(fd)
@@ -263,7 +263,9 @@ def write_tar(out: Path, stream, owned: dict[str, bytes]) -> None:
     """An uncompressed tar of `out`. The entry's own files (`owned`) come first, from
     memory; then every other regular file (no links, devices, fifos, unreadable or sparse
     files, nothing over 300 MB)."""
-    with tarfile.open(fileobj=stream, mode="w|", format=tarfile.PAX_FORMAT) as tar:
+    # Plain ustar, never PAX or GNU extensions: the host reads exactly this format and
+    # refuses anything else.
+    with tarfile.open(fileobj=stream, mode="w|", format=tarfile.USTAR_FORMAT) as tar:
         for name, data in owned.items():
             _add_bytes(tar, name, data)
         try:

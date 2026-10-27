@@ -212,3 +212,35 @@ def test_entry_pages_clamps_dpi_and_scales_huge_pages(job, monkeypatch):
     assert max(Image.open(io.BytesIO(contents["pages/1.png"])).size) <= 2000
     status, contents = run(job, "pages", args={"file": fid, "pages": [2], "dpi": 10})
     assert scales[-1][0] == 50 / 72  # dpi clamped to 50
+
+
+def test_entry_tar_is_plain_ustar_and_skips_names_ustar_cannot_hold(job):
+    # Plain ustar only (the host refuses PAX and GNU headers). A name ustar can't hold is
+    # left out, and the files after it still come through.
+    (job.job / "main.py").write_text(
+        "import os\n"
+        "import hk\n"
+        "out = os.environ['HK_OUT']\n"
+        "os.makedirs(os.path.join(out, 'files'), exist_ok=True)\n"
+        "open(os.path.join(out, 'files', 'a' * 101), 'w').write('long')\n"
+        "hk.file('b' * 100, 'max')\n"
+        "hk.file('zz.txt', 'after')\n",
+        encoding="utf-8",
+    )
+    job.save()
+    stream = io.BytesIO()
+    assert hk_entry.run("script", job=job.job, out=job.out, work=job.work, stdout=stream) == 0
+    raw = stream.getvalue()
+    names = []
+    pos = 0
+    while raw[pos : pos + 512].strip(b"\0"):
+        header = raw[pos : pos + 512]
+        assert header[257:265] == b"ustar\x0000"
+        assert header[156:157] in (b"0", b"\0")
+        size = int(header[124:136].rstrip(b"\0 "), 8)
+        prefix, name = header[345:500].rstrip(b"\0"), header[0:100].rstrip(b"\0")
+        names.append((prefix + b"/" + name if prefix else name).decode("ascii"))
+        pos += 512 + (size + 511) // 512 * 512
+    assert names[0] == "status.json"
+    assert "files/" + "b" * 100 in names and "files/zz.txt" in names
+    assert "files/" + "a" * 101 not in names

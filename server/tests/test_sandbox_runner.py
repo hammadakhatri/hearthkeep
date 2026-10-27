@@ -35,10 +35,11 @@ def option_values(argv: list[str], option: str) -> list[str]:
     return [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == option]
 
 
-def make_tar(members: list[tuple], *, status: dict | None = None, pax: bool = True) -> bytes:
+def make_tar(
+    members: list[tuple], *, status: dict | None = None, fmt: int = tarfile.USTAR_FORMAT
+) -> bytes:
     """members: (name, bytes) for files, or (TarInfo, bytes|None) for anything odd."""
     buf = io.BytesIO()
-    fmt = tarfile.PAX_FORMAT if pax else tarfile.GNU_FORMAT
     with tarfile.open(fileobj=buf, mode="w", format=fmt) as tar:
         if status is not False:
             body = json.dumps(
@@ -412,17 +413,20 @@ BAD_TARS = {
     "backslash": lambda: make_tar([("files\\evil", b"x")]),
     "control": lambda: make_tar([("files/a\x01b", b"x")]),
     "nul_in_pax_path": lambda: make_tar(
-        [(_info("files/ab", size=1, pax_headers={"path": "files/a\x00b"}), b"x")]
+        [(_info("files/ab", size=1, pax_headers={"path": "files/a\x00b"}), b"x")],
+        fmt=tarfile.PAX_FORMAT,
     ),
     "pax_extra_key": lambda: make_tar(
-        [(_info("files/ab", size=1, pax_headers={"linkpath": "/etc"}), b"x")]
+        [(_info("files/ab", size=1, pax_headers={"linkpath": "/etc"}), b"x")],
+        fmt=tarfile.PAX_FORMAT,
     ),
     "pax_sparse": lambda: make_tar(
-        [(_info("files/ab", size=1, pax_headers={"GNU.sparse.major": "1"}), b"x")]
+        [(_info("files/ab", size=1, pax_headers={"GNU.sparse.major": "1"}), b"x")],
+        fmt=tarfile.PAX_FORMAT,
     ),
     "unknown_top_level": lambda: make_tar([("evil.txt", b"x")]),
     "unicode_digits": lambda: make_tar([("pages/\u0663.png", b"x")]),
-    "long_name": lambda: make_tar([("files/" + "a" * 121, b"x")]),
+    "long_name": lambda: make_tar([("files/" + "a" * 101, b"x")], fmt=tarfile.PAX_FORMAT),
     "leading_dot": lambda: make_tar([("files/.hidden", b"x")]),
     "trailing_newline": lambda: make_tar([("stdout.txt\n", b"x")]),
     "duplicate": lambda: make_tar([("stdout.txt", b"a"), ("stdout.txt", b"b")]),
@@ -437,6 +441,30 @@ BAD_TARS = {
     "junk_after_end": lambda: make_tar([("stdout.txt", b"x")]) + b"junk" * 300,
     "empty": lambda: b"",
     "gzip": lambda: _gzip_tar(),
+    # Header-level rules of Hearthkeep's own reader (each header built by hand).
+    "gnu_magic": lambda: _ustar_tar(_ustar(b"files/a", 1, magic=b"ustar ", version=b" \0")),
+    "bad_version": lambda: _ustar_tar(_ustar(b"files/a", 1, version=b"01")),
+    "bad_checksum": lambda: _ustar_tar(_ustar(b"files/a", 1, checksum=1)),
+    "checksum_not_octal": lambda: _ustar_tar(_ustar(b"files/a", 1, checksum_field=b"12345x\0 ")),
+    "size_not_octal": lambda: _ustar_tar(_ustar(b"files/a", 1, size_field=b"0000000000a\0")),
+    "size_digit_8": lambda: _ustar_tar(_ustar(b"files/a", 1, size_field=b"00000000008\0")),
+    "size_base256": lambda: _ustar_tar(
+        _ustar(b"files/a", 1, size_field=b"\x80" + b"\0" * 10 + b"\x01")
+    ),
+    "size_beyond_the_stream": lambda: _ustar_tar(_ustar(b"files/a", 1 << 30), data=b"x"),
+    "name_junk_after_nul": lambda: _ustar_tar(_ustar(b"files/a\0junk", 1)),
+    "non_ascii_name": lambda: _ustar_tar(_ustar(b"files/a\xffb", 1)),
+    "prefix_escapes": lambda: _ustar_tar(_ustar(b"evil", 1, prefix=b"files/..")),
+    "padding_not_zero": lambda: _ustar_tar(_ustar(b"files/a", 1), data=b"x" + b"p" * 511),
+    "second_end_block_not_zero": lambda: _status_only() + bytes(512) + b"z" * 512,
+    "one_end_block_only": lambda: _status_only() + bytes(512),
+    "contiguous_type_7": lambda: _ustar_tar(_ustar(b"files/a", 1, kind=b"7")),
+    **{
+        f"type_{chr(kind[0]) if kind[0] > 32 else kind[0]}": (
+            lambda kind=kind: _ustar_tar(_ustar(b"files/a", 0, kind=kind), data=b"")
+        )
+        for kind in (b"1", b"2", b"3", b"4", b"5", b"6", b"x", b"g", b"X", b"L", b"K", b"S")
+    },
 }
 
 
@@ -552,42 +580,16 @@ def _pax_global_tar() -> bytes:
 
 HOSTILE_HEADERS = {
     "pax_x": lambda: make_tar(
-        [(_info("files/ab", size=1, pax_headers={"comment": "c" * 70_000}), b"x")]
+        [(_info("files/ab", size=1, pax_headers={"comment": "c" * 70_000}), b"x")],
+        fmt=tarfile.PAX_FORMAT,
     ),
     "pax_g": _pax_global_tar,
-    "gnu_longname": lambda: make_tar([("files/" + "a" * 70_000, b"x")], pax=False),
+    "gnu_longname": lambda: make_tar([("files/" + "a" * 70_000, b"x")], fmt=tarfile.GNU_FORMAT),
     "gnu_longlink": lambda: make_tar(
-        [(_info("files/l", tarfile.SYMTYPE, linkname="a" * 70_000), None)], pax=False
+        [(_info("files/l", tarfile.SYMTYPE, linkname="a" * 70_000), None)],
+        fmt=tarfile.GNU_FORMAT,
     ),
 }
-
-
-@pytest.mark.parametrize("case", sorted(HOSTILE_HEADERS))
-async def test_huge_tar_headers_refused_before_tarfile(fake, monkeypatch, case):
-    raw_tar = HOSTILE_HEADERS[case]()
-    opened = []
-    real_open = runner_mod.tarfile.open
-
-    def spy(*args, **kwargs):
-        opened.append(1)
-        return real_open(*args, **kwargs)
-
-    monkeypatch.setattr(runner_mod.tarfile, "open", spy)
-    fake.emit(raw_tar)
-    raw = await run_script(fake.runner(), run_id=f"h-{case}")
-    assert raw.status == "sandbox_error"
-    assert raw.error == "The sandbox returned output Hearthkeep couldn't read."
-    assert opened == []  # refused by Hearthkeep's own header scan, before tarfile saw it
-    assert not (fake.jobs_root() / f"h-{case}").exists()
-
-
-async def test_small_pax_headers_still_pass_the_scan(fake):
-    fake.emit(make_tar([("files/" + "a" * 110, b"x")]))  # long enough to need a PAX path
-    raw = await run_script(fake.runner())
-    names = set(raw.members)
-    raw.cleanup()
-    assert raw.status == "ok"
-    assert "files/" + "a" * 110 in names
 
 
 def test_status_json_size_is_checked_before_reading(tmp_path, monkeypatch):
@@ -1023,38 +1025,6 @@ SCAN_REFUSED = {
 }
 
 
-@pytest.mark.parametrize("case", sorted(SCAN_REFUSED))
-async def test_pax_headers_are_parsed_by_the_scan(fake, monkeypatch, case):
-    opened = []
-    real_open = runner_mod.tarfile.open
-
-    def spy(*args, **kwargs):
-        opened.append(1)
-        return real_open(*args, **kwargs)
-
-    raw_tar = SCAN_REFUSED[case]()
-    monkeypatch.setattr(runner_mod.tarfile, "open", spy)
-    fake.emit(raw_tar)
-    raw = await run_script(fake.runner(), run_id=f"s-{case}")
-    assert raw.status == "sandbox_error"
-    assert raw.error == "The sandbox returned output Hearthkeep couldn't read."
-    assert opened == []  # tarfile never saw it (nor the hidden `L`)
-    assert not (fake.jobs_root() / f"s-{case}").exists()
-
-
-def test_pax_size_is_not_an_allowed_member_key():
-    assert "size" not in runner_mod._PAX_KEYS
-
-
-async def test_allowed_pax_records_still_pass(fake):
-    fake.emit(make_tar([("files/" + "b" * 110, b"x")]))  # tarfile writes a PAX `path`
-    raw = await run_script(fake.runner())
-    count = len(raw.members)
-    raw.cleanup()
-    assert raw.status == "ok"
-    assert count == 2
-
-
 @pytest.mark.parametrize(
     "spell",
     [
@@ -1151,3 +1121,217 @@ async def test_chats_folder_leading_to_a_comma_path_is_unavailable(tmp_path, fak
         await run_script(runner)
     assert caught.value.user_message == runner_mod.DATA_PATH_MESSAGE
     assert not any(c[0] == "run" for c in fake.calls())
+
+
+# Fix round 3: Hearthkeep's own ustar reader
+
+
+def _ustar(
+    name: bytes,
+    size: int,
+    *,
+    prefix: bytes = b"",
+    kind: bytes = b"0",
+    magic: bytes = b"ustar\0",
+    version: bytes = b"00",
+    size_field: bytes | None = None,
+    checksum: int | None = None,
+    checksum_field: bytes | None = None,
+) -> bytes:
+    """One 512-byte header, built by hand (so it can be wrong in exactly one way)."""
+    block = bytearray(512)
+    block[0 : len(name)] = name
+    block[100:108] = b"0000644\0"
+    block[108:116] = block[116:124] = b"0000000\0"
+    block[124:136] = size_field if size_field is not None else b"%011o\0" % size
+    block[136:148] = b"00000000000\0"
+    block[156:157] = kind
+    block[257:263] = magic
+    block[263:265] = version
+    block[345 : 345 + len(prefix)] = prefix
+    block[148:156] = b" " * 8
+    value = sum(block) if checksum is None else checksum
+    block[148:156] = checksum_field if checksum_field is not None else b"%06o\0 " % value
+    return bytes(block)
+
+
+STATUS_BODY = b'{"exit_code": 0, "timed_out": false, "stdout_truncated": false}'
+
+
+def _status_only() -> bytes:
+    return _ustar(b"status.json", len(STATUS_BODY)) + STATUS_BODY + bytes(-len(STATUS_BODY) % 512)
+
+
+def _ustar_tar(header: bytes, data: bytes = b"x" + bytes(511)) -> bytes:
+    """status.json, then `header` with `data` (already padded), then a clean end."""
+    return _status_only() + header + data + bytes(1024) + bytes(8192)
+
+
+def _x_padding_records() -> bytes:
+    # A tiny `x` whose padding holds GNU sparse 1.0 records: refused at the `x`, unread.
+    body = _pax_record("path", "files/a")
+    padding = _pax_record("GNU.sparse.major", "1") + _pax_record("GNU.sparse.minor", "0")
+    return _ustar_tar(
+        _ustar(b"././@PaxHeader", len(body), kind=b"x"),
+        data=(body + padding).ljust(512, b"\0") + _ustar(b"files/a", 0),
+    )
+
+
+def _solaris_x() -> bytes:
+    body = _pax_record("path", "files/a")
+    return _ustar_tar(_ustar(b"././@PaxHeader", len(body), kind=b"X"), data=_padded(body))
+
+
+def _gnu_sparse_extended() -> bytes:
+    header = bytearray(_ustar(b"files/a", 512, kind=b"S"))
+    header[482] = 1  # isextended: extension blocks follow
+    header[148:156] = b" " * 8
+    header[148:156] = b"%06o\0 " % sum(header)
+    extension = bytearray(512)
+    extension[504] = 1  # and another, and another...
+    return _status_only() + bytes(header) + bytes(extension) * 50 + bytes(1024)
+
+
+def _negative_size() -> bytes:
+    return _ustar_tar(_ustar(b"files/a", 0, size_field=b"-0000000001\0"))
+
+
+def _x_chain(count: int = 600) -> bytes:
+    body = _pax_record("comment", "x")
+    one = _ustar(b"././@PaxHeader", len(body), kind=b"x") + _padded(body)
+    return _status_only() + one * count + _ustar(b"files/a", 0) + bytes(1024)
+
+
+PROBES = {
+    **HOSTILE_HEADERS,
+    **SCAN_REFUSED,
+    "x_padding_records": _x_padding_records,
+    "solaris_X": _solaris_x,
+    "gnu_sparse_extension_blocks": _gnu_sparse_extended,
+    "negative_size": _negative_size,
+    "x_chain_600": _x_chain,
+}
+
+
+@pytest.mark.parametrize("case", sorted(PROBES))
+async def test_hostile_streams_are_refused(fake, case):
+    fake.emit(PROBES[case]())
+    raw = await run_script(fake.runner(), run_id=f"p-{case}"[:32])
+    assert raw.status == "sandbox_error"
+    assert raw.error == "The sandbox returned output Hearthkeep couldn't read."
+    assert raw.members == {}
+    assert not (fake.jobs_root() / f"p-{case}"[:32]).exists()
+
+
+# (bad_status unpacks fine: status.json is checked after the reader)
+@pytest.mark.parametrize("case", sorted(PROBES) + sorted(set(BAD_TARS) - {"bad_status"}))
+def test_reader_refuses_promptly_with_bounded_memory(tmp_path, case):
+    import threading
+    import tracemalloc
+
+    source = (PROBES | BAD_TARS)[case]
+    tar = tmp_path / "out.tar"
+    tar.write_bytes(source())
+    tracemalloc.start()
+    started = time.monotonic()
+    try:
+        with pytest.raises(runner_mod._BadOutput):
+            runner_mod._unpack(tar, tmp_path / "out", 200, threading.Event())
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert time.monotonic() - started < 2
+    assert peak < 512 * 1024  # a few blocks and one chunk, whatever the stream says
+
+
+def test_x_chain_is_refused_at_the_first_x(tmp_path):
+    import threading
+
+    tar = tmp_path / "out.tar"
+    tar.write_bytes(_x_chain())
+    with pytest.raises(runner_mod._BadOutput, match="not a regular file"):
+        runner_mod._unpack(tar, tmp_path / "out", 200, threading.Event())
+    assert sorted(p.name for p in (tmp_path / "out").iterdir()) == ["m000"]  # status.json only
+
+
+def test_the_runner_does_not_use_tarfile():
+    source = Path(runner_mod.__file__).read_text(encoding="utf-8")
+    assert "import tarfile" not in source and "tarfile." not in source
+
+
+async def test_hundred_character_file_name_fits_ustar(fake):
+    name = "files/" + "a" * 100  # ustar holds it as prefix "files" + a 100-byte name
+    fake.emit(make_tar([(name, b"x")]))
+    raw = await run_script(fake.runner())
+    names = set(raw.members)
+    raw.cleanup()
+    assert raw.status == "ok"
+    assert name in names
+
+
+async def test_old_style_regular_type_is_accepted(fake):
+    fake.emit(_status_only() + _ustar(b"stdout.txt", 2, kind=b"\0") + b"hi" + bytes(510)
+              + bytes(1024))  # fmt: skip
+    raw = await run_script(fake.runner())
+    raw.cleanup()
+    assert (raw.status, raw.stdout) == ("ok", "hi")
+
+
+def test_file_names_are_at_most_a_hundred_characters():
+    assert runner_mod.MEMBER_NAME.fullmatch("files/" + "a" * 100)
+    assert not runner_mod.MEMBER_NAME.fullmatch("files/" + "a" * 101)
+    from hearthkeep.sandbox import results
+
+    assert results.MAX_FILE_NAME == 100
+
+
+def test_redact_finds_the_real_path_behind_a_junction(tmp_path):
+    real = tmp_path / "real data place"
+    real.mkdir()
+    link = tmp_path / "linked"
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(real), str(link))
+    else:
+        os.symlink(real, link)
+    redacted = runner_mod.redact(f"mount {real}{os.sep}files failed", link)
+    assert redacted == f"mount <data>{os.sep}files failed"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="8.3 names are a Windows thing")
+def test_redact_finds_the_long_name_given_the_short_one(tmp_path):
+    import ctypes
+
+    data = tmp_path / "another long data folder"
+    data.mkdir()
+    buf = ctypes.create_unicode_buffer(1024)
+    if not ctypes.windll.kernel32.GetShortPathNameW(str(data), buf, 1024):
+        pytest.skip("no short names on this volume")
+    short = buf.value
+    if short.lower() == str(data).lower():
+        pytest.skip("8.3 names are off on this volume")
+    # Hearthkeep knows only the short spelling; Docker reports the long one.
+    redacted = runner_mod.redact(f"mount {data}\\files failed", Path(short))
+    assert redacted == "mount <data>\\files failed"
+
+
+def test_one_line_replaces_unicode_line_separators():
+    assert runner_mod._one_line("a\u2028b\u2029c\r\nd") == "a b c  d"
+
+
+def test_files_dir_with_a_comma_is_unavailable(tmp_path):
+    runner = SandboxRunner(tmp_path, image_tag=TAG)
+    target = tmp_path / "odd,files"
+    target.mkdir()
+    chat = tmp_path / "workspace" / "chats" / CHAT
+    chat.mkdir(parents=True)
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(chat / "files"))
+    else:
+        os.symlink(target, chat / "files")
+    with pytest.raises(SandboxUnavailable) as caught:
+        runner._files_dir(chat / "files")
+    assert caught.value.user_message == runner_mod.DATA_PATH_MESSAGE

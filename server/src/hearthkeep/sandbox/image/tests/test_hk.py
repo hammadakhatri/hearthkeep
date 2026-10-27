@@ -255,7 +255,7 @@ def test_file_writes_csv_and_xlsx(job):
     assert (job.out / "files" / "raw.bin").read_bytes() == b"\x00\x01"
     members = [r["member"] for r in by_type(job.results(), "file")]
     assert members == ["files/prices.csv", "files/prices.xlsx", "files/notes.txt", "files/raw.bin"]
-    for bad in ("../escape.csv", ".hidden", "a/b.csv", "", "x" * 121, "tab\tname.csv"):
+    for bad in ("../escape.csv", ".hidden", "a/b.csv", "", "x" * 101, "tab\tname.csv"):
         with pytest.raises(ValueError):
             hk.file(bad, "x")
     hk.cleaned("Dropped the totals row.")
