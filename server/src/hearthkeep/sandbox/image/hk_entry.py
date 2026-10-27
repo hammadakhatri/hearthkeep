@@ -31,6 +31,7 @@ DEFAULT_TIMEOUT_S = 110
 DEFAULT_DPI = 150
 MIN_DPI, MAX_DPI = 50, 300
 MAX_PAGE_SIDE = 2000
+MAX_PAGE_ERRORS = 50  # page_errors entries kept in status.json
 _CHUNK = 65_536
 MAX_MEMBER_BYTES = 300 * 1024 * 1024  # a single tar member is capped at 300 MB
 SPARSE_RATIO = 8  # allocated space under 1/8 of the size: a sparse file
@@ -176,7 +177,10 @@ def run_inspect(manifest: dict, out: Path) -> None:
     _write(out / "inspect.json", json.dumps(report).encode("utf-8"))
 
 
-def run_pages(manifest: dict, out: Path) -> None:
+def run_pages(manifest: dict, out: Path) -> dict:
+    """Render the pages asked for; returns what status.json adds: the PDF's page count and,
+    for each page that failed to render, its exception's type name (at most
+    MAX_PAGE_ERRORS of them)."""
     import pypdfium2 as pdfium
 
     args = manifest.get("args", {})
@@ -185,6 +189,7 @@ def run_pages(manifest: dict, out: Path) -> None:
     pages_dir = out / "pages"
     _replace(pages_dir)
     pages_dir.mkdir(parents=True)
+    errors: dict[str, str] = {}
     pdf = pdfium.PdfDocument(entry["path"])
     try:
         count = len(pdf)
@@ -196,11 +201,14 @@ def run_pages(manifest: dict, out: Path) -> None:
             target = pages_dir / f"{n}.png"
             try:
                 _render_page(pdf, n, dpi, target)
-            except Exception:
+            except Exception as exc:
                 with contextlib.suppress(OSError):
                     target.unlink()  # never a half-written image
+                if len(errors) < MAX_PAGE_ERRORS:
+                    errors[str(n)] = type(exc).__name__[:64]
     finally:
         pdf.close()
+    return {"page_count": count, "page_errors": errors}
 
 
 def _render_page(pdf, n: int, dpi: int, target: Path) -> None:
@@ -310,8 +318,11 @@ def run(
         if mode == "script":
             timeout_s = int(manifest.get("script_timeout_s") or DEFAULT_TIMEOUT_S)
             status, owned["stdout.txt"] = run_script(job, out, work, timeout_s)
-        elif mode in ("inspect", "pages"):
-            (run_inspect if mode == "inspect" else run_pages)(manifest, out)
+        elif mode == "inspect":
+            run_inspect(manifest, out)
+            status["exit_code"] = 0
+        elif mode == "pages":
+            status.update(run_pages(manifest, out))
             status["exit_code"] = 0
         else:
             raise ValueError(f"unknown mode {mode!r}")

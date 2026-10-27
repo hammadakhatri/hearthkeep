@@ -1287,10 +1287,10 @@ def test_file_names_are_at_most_a_hundred_characters():
 
 def test_page_images_up_to_page_2000_may_come_back():
     # read_pages asks for pages 1 to 2000.
-    assert runner_mod.MEMBER_NAME.fullmatch("pages/1.png")
-    assert runner_mod.MEMBER_NAME.fullmatch("pages/2000.png")
-    assert not runner_mod.MEMBER_NAME.fullmatch("pages/20000.png")
-    assert not runner_mod.MEMBER_NAME.fullmatch("pages/x.png")
+    for n in ("1", "9", "10", "999", "1000", "1999", "2000"):
+        assert runner_mod.MEMBER_NAME.fullmatch(f"pages/{n}.png"), n
+    for n in ("0", "0000", "01", "001", "2001", "2999", "9999", "20000", "x", ""):
+        assert not runner_mod.MEMBER_NAME.fullmatch(f"pages/{n}.png"), n
 
 
 def test_redact_finds_the_real_path_behind_a_junction(tmp_path):

@@ -30,7 +30,14 @@ from hearthkeep.sandbox.runner import (
 )
 from hearthkeep.sandbox.runs import OutputRecord, RunRecord, RunStore
 from hearthkeep.tools.base import ToolContext, ToolResult
-from hearthkeep.tools.text import CONTENT_BUDGET, assemble, csv_line, fenced, one_line
+from hearthkeep.tools.text import (
+    CONTENT_BUDGET,
+    DATA_NOTE,
+    assemble,
+    csv_line,
+    fenced,
+    one_line,
+)
 
 PYTHON_LEVEL_KEY = "python"
 SCRIPT_MAX_CHARS = 20000
@@ -221,7 +228,7 @@ def format_run_for_model(rec: RunRecord, outputs: list[OutputRecord]) -> str:
     head = f"Run {rec.status} in {rec.duration_ms / 1000:.1f} s."
     sections: list[tuple[str, list[str], int]] = []
     if rec.stdout:
-        printed = fenced(rec.stdout[:PRINTED_CHARS].rstrip("\n"))
+        printed = DATA_NOTE + "\n" + fenced(rec.stdout[:PRINTED_CHARS].rstrip("\n"))
         if len(rec.stdout) > PRINTED_CHARS or rec.stdout_truncated:
             printed += "\n" + PRINTED_CUT
         sections.append(("Printed output", [printed], 0))

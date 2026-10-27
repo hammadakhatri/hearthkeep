@@ -232,6 +232,25 @@ def test_entry_pages_render_error_skips_only_that_page(job, monkeypatch):
     status, contents = run(job, "pages", args={"file": fid, "pages": [1, 2, 3], "dpi": 72})
     assert status["exit_code"] == 0
     assert sorted(n for n in contents if n.startswith("pages/")) == ["pages/1.png", "pages/3.png"]
+    assert status["page_errors"] == {"2": "PdfiumError"}
+    assert status["page_count"] == 3
+
+
+def test_entry_pages_errors_are_capped(job, monkeypatch):
+    import hk_entry as entry
+    import pypdfium2
+
+    def broken(self, *args, **kwargs):
+        raise ValueError("no")
+
+    monkeypatch.setattr(pypdfium2.PdfPage, "render", broken)
+    monkeypatch.setattr(entry, "MAX_PAGE_ERRORS", 2)
+    pdf = merge_pdfs(text_pdf(["One"]), text_pdf(["Two"]), text_pdf(["Three"]))
+    fid = job.add("three.pdf", "pdf", pdf)
+    status, contents = run(job, "pages", args={"file": fid, "pages": [1, 2, 3, 9], "dpi": 72})
+    assert status["exit_code"] == 0
+    assert status["page_errors"] == {"1": "ValueError", "2": "ValueError"}
+    assert not [n for n in contents if n.startswith("pages/")]
 
 
 def test_entry_tar_is_plain_ustar_and_skips_names_ustar_cannot_hold(job):

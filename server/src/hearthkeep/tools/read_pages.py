@@ -43,7 +43,15 @@ from hearthkeep.sandbox.runner import RawRun, SandboxRunner, SandboxUnavailable
 from hearthkeep.sandbox.runs import RunStore
 from hearthkeep.tools.base import ToolContext, ToolResult
 from hearthkeep.tools.python import NO_DOCKER, NO_IMAGE, PYTHON_LEVEL_KEY, unavailable_message
-from hearthkeep.tools.text import CONTENT_BUDGET, MORE, assemble, csv_line, fenced, one_line
+from hearthkeep.tools.text import (
+    CONTENT_BUDGET,
+    DATA_NOTE,
+    MORE,
+    assemble,
+    csv_line,
+    fenced,
+    one_line,
+)
 
 __all__ = ["NO_DOCKER", "NO_IMAGE", "TABLE_NOTE", "VISION_PROMPT", "ReadPagesTool"]
 
@@ -69,15 +77,21 @@ PAGE_TEXT_SHOWN = 2000
 TABLE_ROWS_SHOWN = 50
 TABLE_CHARS = 4000
 PROBLEMS_SHOWN = 20
+PAGE_TIMEOUT_S = 120.0  # wall-clock limit for the model to read one page
+STATUS_BYTES = 65_536
+_ERROR_TYPE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}", re.ASCII)
 
 NOT_FOUND = "There's no file with that id in this chat."
 NOT_PDF = "read_pages reads PDF pages only; that file is not a PDF."
 PENDING = "That file is still being checked. Try again in a moment."
-NOT_IN_PDF = "Page {n} isn't in this PDF (it has {count} pages)."
+NOT_IN_PDF = "Page {n} isn't in this PDF."
 RENDER_FAILED = "Hearthkeep couldn't render the pages of this PDF."
 PAGE_NOT_RENDERED = "Couldn't render page {n}."
+PAGE_RENDER_ERROR = "Couldn't render page {n} ({error})."
+PAGE_TOO_SLOW = "Page {n} took too long to read."
 PAGE_NOT_READ = "Couldn't read page {n}."
 STOPPED = "Reading the pages was stopped."
+STOPPED_EARLY = "Stopped before any page was read."
 TOO_MANY_VALUES = "Only the first {n} numbers read were kept as values; the tables have them all."
 DESCRIPTION = (
     "Read scanned pages (pages that are only an image) of a PDF attached to this chat. "
@@ -219,6 +233,8 @@ def format_pages_for_model(read: list[tuple[int, PageRead]], problems: list[str]
     """At most CONTENT_BUDGET characters, ending with ENDING whatever is cut."""
     shown = ", ".join(str(n) for n, _ in read) or "none"
     head = f"Pages read by the chat model: {shown}."
+    if read:
+        head += "\n" + DATA_NOTE
     sections: list[tuple[str, list[str], int]] = []
     if problems:
         lines = [f"- {one_line(p)}" for p in problems]
@@ -286,6 +302,43 @@ def _printed(read: list[tuple[int, PageRead]]) -> tuple[str, bool]:
     return text[:PRINTED_MAX], len(text) > PRINTED_MAX
 
 
+def _render_report(path: Path | None) -> tuple[int | None, dict[int, str]]:
+    """The PDF's page count and each failed page's error type name, from status.json.
+    Anything unexpected in it is ignored."""
+    if path is None:
+        return None, {}
+    try:
+        with open(path, "rb") as f:
+            status = json.loads(f.read(STATUS_BYTES).decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError):
+        return None, {}
+    if not isinstance(status, dict):
+        return None, {}
+    count = status.get("page_count")
+    if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+        count = None
+    errors: dict[int, str] = {}
+    found = status.get("page_errors")
+    for key, name in found.items() if isinstance(found, dict) else ():
+        if not (isinstance(key, str) and key.isascii() and key.isdigit() and len(key) <= 4):
+            continue
+        if isinstance(name, str) and _ERROR_TYPE.fullmatch(name):
+            errors[int(key)] = name
+    return count, errors
+
+
+async def _off_loop(fn, *args):
+    """`fn(*args)` in a worker thread. A cancellation first waits for the worker (it may be
+    reading the run's job folder, which is removed next), then propagates."""
+    work = asyncio.ensure_future(asyncio.to_thread(fn, *args))
+    try:
+        return await asyncio.shield(work)
+    except asyncio.CancelledError:
+        with contextlib.suppress(BaseException):
+            await work
+        raise
+
+
 def _takes_temperature(chat) -> bool:
     try:
         params = inspect.signature(chat.stream).parameters
@@ -351,8 +404,8 @@ class ReadPagesTool:
         pages = [int(n) for n in args["pages"]][:MAX_PAGES]
         count = (found.summary or {}).get("pages") if isinstance(found.summary, dict) else None
         problems: list[str] = []
-        if isinstance(count, int):
-            problems = [NOT_IN_PDF.format(n=n, count=count) for n in pages if n > count]
+        if isinstance(count, int) and not isinstance(count, bool):
+            problems = [NOT_IN_PDF.format(n=n) for n in pages if n > count]
             pages = [n for n in pages if n <= count]
         if not pages:
             return ToolResult(ok=False, content=" ".join(problems))
@@ -377,10 +430,58 @@ class ReadPagesTool:
             raw = await runner.run(run_id, mode="pages", files_dir=folder, manifest=manifest)
         except SandboxUnavailable as exc:
             return ToolResult(ok=False, content=unavailable_message(exc))
+        except asyncio.CancelledError:
+            # Stopped while rendering (the runner removes its own job folder then): the run
+            # is still saved, with no pages.
+            stopped = RawRun("failed", None, "", False, 0, {}, STOPPED)
+            self._save_stopped(stopped, run_id, ctx, [], [*problems, STOPPED_EARLY], started)
+            raise
         try:
             return await self._read(raw, run_id, ctx, pages, problems, started)
         finally:
             raw.cleanup()
+
+    def _save(
+        self,
+        raw: RawRun,
+        run_id: str,
+        ctx: ToolContext,
+        read: list[tuple[int, PageRead]],
+        problems: list[str],
+        started: float,
+        status: str,
+        error: str | None,
+    ) -> None:
+        stdout, cut = _printed(read)
+        saved = dataclasses.replace(
+            raw,
+            status=status,
+            error=error,
+            stdout=stdout,
+            stdout_truncated=cut,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            members={},
+        )
+        self._runs.save(
+            saved, _results(read, problems), run_id=run_id, chat_id=ctx.chat_id,
+            turn_id=ctx.turn_id, purpose="vision", script=None,
+        )  # fmt: skip
+
+    def _save_stopped(
+        self,
+        raw: RawRun,
+        run_id: str,
+        ctx: ToolContext,
+        read: list[tuple[int, PageRead]],
+        problems: list[str],
+        started: float,
+    ) -> None:
+        """Every run is saved, a stopped one too; the cancellation matters more than a save
+        that fails (only its type is logged)."""
+        try:
+            self._save(raw, run_id, ctx, read, problems, started, "failed", STOPPED)
+        except Exception as exc:
+            _log.error("could not save a stopped vision run: %s", type(exc).__name__)
 
     async def _read(
         self,
@@ -395,21 +496,7 @@ class ReadPagesTool:
         read: list[tuple[int, PageRead]] = []
 
         def save(status: str, error: str | None) -> None:
-            stdout, cut = _printed(read)
-            saved = dataclasses.replace(
-                raw,
-                status=status,
-                error=error,
-                stdout=stdout,
-                stdout_truncated=cut,
-                duration_ms=int((time.monotonic() - started) * 1000),
-                members={},
-            )
-            parsed = _results(read, problems)
-            self._runs.save(
-                saved, parsed, run_id=run_id, chat_id=ctx.chat_id, turn_id=ctx.turn_id,
-                purpose="vision", script=None,
-            )  # fmt: skip
+            self._save(raw, run_id, ctx, read, problems, started, status, error)
 
         if raw.status != "ok":
             # The container's own words (raw.stdout) are never kept or shown.
@@ -418,29 +505,50 @@ class ReadPagesTool:
             return ToolResult(ok=False, content=error, data=attachments)
 
         try:
-            for n in pages:
-                url = await asyncio.to_thread(_page_image, raw.members.get(f"pages/{n}.png"))
-                if url is None:
-                    problems.append(PAGE_NOT_RENDERED.format(n=n))
-                    continue
-                reply = await self._ask(n, url)
-                page = parse_page(reply) if reply is not None else None
-                if page is None:
-                    problems.append(PAGE_NOT_READ.format(n=n))
-                    continue
-                read.append((n, page))
+            page_count, page_errors = await _off_loop(
+                _render_report, raw.members.get("status.json")
+            )
+            if page_count is not None:  # the inspect summary didn't know the page count
+                problems.extend(NOT_IN_PDF.format(n=n) for n in pages if n > page_count)
+                pages = [n for n in pages if n <= page_count]
+            hold = getattr(self._chat, "hold", None)
+            # One chat-model lease for all the pages of this call, when the client has one.
+            async with hold() if callable(hold) else contextlib.nullcontext():
+                for n in pages:
+                    page = await self._page(n, raw, page_errors, problems)
+                    if page is not None:
+                        read.append((n, page))
         except ProviderError as exc:
             save("failed", exc.user_message)
             return ToolResult(ok=False, content=exc.user_message, data=attachments)
         except asyncio.CancelledError:
-            try:  # every run is saved, with the pages it did read
-                save("failed", STOPPED)
-            except Exception as exc:  # the cancellation matters more; only the type is logged
-                _log.error("could not save a stopped vision run: %s", type(exc).__name__)
+            self._save_stopped(raw, run_id, ctx, read, problems, started)
             raise
-        save("ok", None)
+        save("ok" if read else "failed", None)
         content = format_pages_for_model(read, problems)
         return ToolResult(ok=bool(read), content=content, data=attachments)
+
+    async def _page(
+        self, n: int, raw: RawRun, page_errors: dict[int, str], problems: list[str]
+    ) -> PageRead | None:
+        """One page read, or None with its problem added."""
+        path = raw.members.get(f"pages/{n}.png")
+        url = await _off_loop(_page_image, path)
+        if url is None:
+            error = page_errors.get(n) if path is None else None
+            problem = PAGE_RENDER_ERROR.format(n=n, error=error) if error else None
+            problems.append(problem or PAGE_NOT_RENDERED.format(n=n))
+            return None
+        try:
+            async with asyncio.timeout(PAGE_TIMEOUT_S):
+                reply = await self._ask(n, url)
+        except TimeoutError:
+            problems.append(PAGE_TOO_SLOW.format(n=n))
+            return None
+        page = parse_page(reply) if reply is not None else None
+        if page is None:
+            problems.append(PAGE_NOT_READ.format(n=n))
+        return page
 
     async def _ask(self, n: int, url: str) -> str | None:
         """The model's reply for one page (its text only), or None when it is over
