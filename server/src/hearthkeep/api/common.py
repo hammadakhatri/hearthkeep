@@ -28,6 +28,7 @@ from hearthkeep.folders import FolderStore
 from hearthkeep.images import ImageStore
 from hearthkeep.models.cards import CardError, ModelCard
 from hearthkeep.numbercheck import NumberChecker
+from hearthkeep.push import PushSender, PushSubscriptions
 from hearthkeep.runtime.gpu import GpuScheduler
 from hearthkeep.sandbox.handle import SandboxHandle
 from hearthkeep.sandbox.inspect import Inspector
@@ -139,6 +140,8 @@ class Services:
     inspector: Inspector | None = None
     checker: NumberChecker | None = None
     folders: FolderStore | None = None  # the owner's allowed folders
+    push: PushSender | None = None  # None when the secret store can't be read
+    subscriptions: PushSubscriptions | None = None
     health_cache: tuple[float, bool] | None = None
     health_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 

@@ -120,10 +120,21 @@ class SessionStore:
             "UPDATE sessions SET revoked_at = ? WHERE credential_id = ? AND revoked_at IS NULL",
             (now, credential_id),
         )
+        # A removed device gets no more notifications: its push subscription goes with it.
+        unsubscribed = conn.execute(
+            "DELETE FROM push_subscriptions WHERE credential_id = ?", (credential_id,)
+        ).rowcount
         if changed:
             audit.record(conn, actor, "credential.revoked", {"credential_id": credential_id})
         for _ in range(cursor.rowcount):
             audit.record(conn, actor, "session.revoked", {"reason": "credential_revoked"})
+        if unsubscribed:
+            audit.record(
+                conn,
+                actor,
+                "push.disabled",
+                {"credential_id": credential_id, "reason": "credential_revoked"},
+            )
 
 
 class StepUp:

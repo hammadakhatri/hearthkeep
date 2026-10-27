@@ -7,6 +7,8 @@ from hearthkeep.api.app import chat_model_health_check
 from hearthkeep.config import Settings
 from hearthkeep.providers.chat import OpenAIChatClient, ProviderError
 from hearthkeep.providers.comfyui import ComfyUIClient, RenderError
+from hearthkeep.push import PushSender, VapidKeys
+from hearthkeep.secrets import SecretStore
 
 PROXY = "http://127.0.0.1:9"  # nothing listens there
 
@@ -60,5 +62,16 @@ async def test_comfyui_client_ignores_env_proxies(created):
     comfy = ComfyUIClient("http://127.0.0.1:1")
     with pytest.raises(RenderError):
         await comfy.free()
+    assert len(created) == 1
+    assert_direct(created[0])
+
+
+async def test_push_sender_ignores_env_proxies(created, tmp_path):
+    sender = PushSender(VapidKeys.load_or_create(SecretStore(tmp_path)))
+    try:
+        # A disallowed endpoint: refused before any request, so nothing leaves the test.
+        assert await sender.notify("https://127.0.0.1:1/fcm/send/x") == "failed"
+    finally:
+        await sender.aclose()
     assert len(created) == 1
     assert_direct(created[0])

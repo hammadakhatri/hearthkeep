@@ -303,8 +303,69 @@
   transition: width var(--dur) var(--ease);
 }
 
+/* Notifications on this device: text on the left, an on/off switch on the right. */
+.notify {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: start;
+}
+
+.notify b {
+  font-weight: 500;
+}
+
+.notify .note {
+  margin-top: 10px;
+}
+
+.switch {
+  position: relative;
+  flex: none;
+  width: 48px;
+  height: 28px;
+  margin-top: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--s3);
+  transition: background var(--dur) var(--ease);
+}
+
+.switch-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--fg2);
+  transition:
+    transform var(--dur) var(--ease),
+    background var(--dur) var(--ease);
+}
+
+.switch[aria-checked='true'] {
+  background: var(--accent);
+}
+
+.switch[aria-checked='true'] .switch-knob {
+  transform: translateX(20px);
+  background: var(--fg);
+}
+
+.switch:disabled {
+  opacity: 0.5;
+}
+
+.notify[aria-busy='true'] .switch {
+  opacity: 0.6;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .gpu-fill {
+  .gpu-fill,
+  .switch,
+  .switch-knob {
     transition: none;
   }
 }

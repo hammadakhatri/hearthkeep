@@ -30,6 +30,7 @@ from hearthkeep.api import (
     routes_folders,
     routes_images,
     routes_models,
+    routes_push,
     routes_runs,
     routes_settings,
     routes_uploads,
@@ -53,13 +54,14 @@ from hearthkeep.files.store import ChatFileStore
 from hearthkeep.folders import FolderStore
 from hearthkeep.images import ImageStore
 from hearthkeep.numbercheck import NumberChecker
+from hearthkeep.push import PushSender, PushSubscriptions, VapidKeys
 from hearthkeep.runtime.stack import ModelStack
 from hearthkeep.sandbox import image as sandbox_image
 from hearthkeep.sandbox.handle import SandboxHandle
 from hearthkeep.sandbox.inspect import Inspector
 from hearthkeep.sandbox.runner import SandboxRunner
 from hearthkeep.sandbox.runs import RunStore
-from hearthkeep.secrets import SecretStore
+from hearthkeep.secrets import SecretStore, SecretStoreError
 from hearthkeep.tools.base import ToolRegistry
 from hearthkeep.tools.files import FilesTool
 from hearthkeep.tools.python import PythonTool, analysis_context
@@ -219,6 +221,16 @@ def _install_static(app: FastAPI, web_dist: Path) -> None:
         return error_response(404, "not_found")
 
 
+def _push_sender(store: SecretStore) -> PushSender | None:
+    """The push sender, its VAPID key made on first start; None (push answers 503) when the
+    secret store can't be read, so a keyring problem never stops Hearthkeep from starting."""
+    try:
+        return PushSender(VapidKeys.load_or_create(store))
+    except SecretStoreError as exc:
+        _log.warning("push is off: the secret store can't be read (%s)", type(exc).__name__)
+        return None
+
+
 async def _make_sandbox(settings: Settings) -> SandboxRunner:
     """A sandbox runner; containers a stopped Hearthkeep left behind are removed first (none of
     this runner's can exist yet)."""
@@ -272,6 +284,7 @@ def create_app(
         settings = dataclasses.replace(settings, docker_available=detect_docker())
     check = health_check or chat_model_health_check(settings)
     stack = models or ModelStack()
+    store = secrets or SecretStore(Path(settings.data_dir))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -279,6 +292,7 @@ def create_app(
         # runs there, so it is only ever used from one thread.
         conn = db.connect(Path(settings.data_dir) / DB_FILE)
         runner: TurnRunner | None = None
+        push: PushSender | None = None
         try:
             recover_after_restart(conn)
             approvals = ApprovalStore(
@@ -314,13 +328,14 @@ def create_app(
                 approvals,
                 conn,
                 settings,
-                secrets=secrets,
+                secrets=store,
                 context=lambda chat_id: analysis_context(files, chat_id),
                 docker=handle.docker_available,
                 reply_checker=checker,
             )
             runner = TurnRunner(conn, loop)
             sessions = SessionStore(conn, settings.session_idle_days, clock=clock)
+            push = _push_sender(store)
             app.state.hk = Services(
                 settings=settings,
                 conn=conn,
@@ -350,6 +365,8 @@ def create_app(
                 inspector=inspector,
                 checker=checker,
                 folders=folders,
+                push=push,
+                subscriptions=PushSubscriptions(conn),
             )
             yield
         finally:
@@ -358,9 +375,14 @@ def create_app(
                 if runner is not None:
                     await runner.shutdown()
             finally:
-                # After the runner: no turn can still be holding a lease on a model server.
-                await stack.stop()
-                conn.close()
+                try:
+                    # After the runner: no turn can still be sending a push.
+                    if push is not None:
+                        await push.aclose()
+                finally:
+                    # After the runner: no turn can still be holding a lease on a model server.
+                    await stack.stop()
+                    conn.close()
 
     app = FastAPI(
         title="Hearthkeep",
@@ -391,6 +413,7 @@ def create_app(
         routes_files,
         routes_folders,
         routes_runs,
+        routes_push,
     ):
         app.include_router(module.router)
 
