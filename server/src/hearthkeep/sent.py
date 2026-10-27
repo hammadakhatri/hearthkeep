@@ -74,6 +74,14 @@ def _item(row: sqlite3.Row, dismissed: bool = False) -> SentItem:
     )
 
 
+def _summary_text(text: object) -> str:
+    if not isinstance(text, str) or not text.strip():
+        raise SendRefused("no_text")
+    if len(text) > MAX_SUMMARY_CHARS:
+        raise SendRefused("too_long")
+    return text
+
+
 def question_before(conn: sqlite3.Connection, chat_id: str, message_id: int | None) -> str:
     """The owner's last message in the chat (before `message_id` when given): its numbers are
     exempt from the number check, as they were for the reply."""
@@ -105,6 +113,7 @@ class SentStore:
         self._push = push
         self._subscriptions = subscriptions
         self._tasks: set[asyncio.Task] = set()
+        self._closing = False
 
     # ---- sending ---------------------------------------------------------------------------
 
@@ -156,14 +165,39 @@ class SentStore:
         title = self._title(chat_id, kind, ref_id)
         marks: list[dict] | None = None
         if kind == "summary":
-            if not isinstance(text, str) or not text.strip():
-                raise SendRefused("no_text")
-            if len(text) > MAX_SUMMARY_CHARS:
-                raise SendRefused("too_long")
+            text = _summary_text(text)
             found = self._checker.marks_for(chat_id, text, turn_id=turn_id, question=question)
             marks = web_marks(text, found) if found is not None else None
         else:
             text = None
+        return self._record(chat_id, kind, ref_id, title, text, marks, devices, actor)
+
+    def send_checked_summary(
+        self,
+        *,
+        chat_id: str,
+        ref_id: str,
+        text: str,
+        marks: list[dict] | None,
+        devices: Literal["all"] | list[str],
+        actor: str = "owner",
+    ) -> SentItem:
+        """A reply already number-checked when it was written: its stored text and marks are
+        kept as they are (the check knew the turn, the question and Hearthkeep's own words)."""
+        text = _summary_text(text)
+        return self._record(chat_id, "summary", ref_id, SUMMARY_TITLE, text, marks, devices, actor)
+
+    def _record(
+        self,
+        chat_id: str,
+        kind: Kind,
+        ref_id: str | None,
+        title: str,
+        text: str | None,
+        marks: list[dict] | None,
+        devices: Literal["all"] | list[str],
+        actor: str,
+    ) -> SentItem:
         targets = self._targets(devices)
         item = SentItem(
             id=token_urlsafe(12),
@@ -204,10 +238,15 @@ class SentStore:
     async def notify(self, item: SentItem) -> None:
         """One payload-free push to each target device that is still enrolled and has push
         on: only endpoints stored for a target are ever used. A gone subscription is removed.
-        Never raises."""
+        Never raises: any error is logged by its type only."""
         if self._push is None or self._subscriptions is None:
             return
-        for credential_id in self.targets(item.id):
+        try:
+            targets = self.targets(item.id)
+        except Exception as exc:
+            _log.warning("push for a sent item failed (%s)", type(exc).__name__)
+            return
+        for credential_id in targets:
             try:
                 if self._credentials.get(credential_id) is None:
                     continue
@@ -223,8 +262,9 @@ class SentStore:
 
     def notify_later(self, item: SentItem) -> None:
         """`notify` as a tracked background task: the caller never waits on a push service.
-        `aclose` finishes or cancels what is still running."""
-        if self._push is None or self._subscriptions is None:
+        `aclose` finishes or cancels what is still running; once it has begun, no new task
+        is made."""
+        if self._push is None or self._subscriptions is None or self._closing:
             return
         task = asyncio.get_running_loop().create_task(self.notify(item))
         self._tasks.add(task)
@@ -235,7 +275,9 @@ class SentStore:
         return len(self._tasks)
 
     async def aclose(self, grace: float = SHUTDOWN_GRACE_SECONDS) -> None:
-        """At shutdown: wait up to `grace` seconds for running pushes, then cancel the rest."""
+        """At shutdown: wait up to `grace` seconds for running pushes, then cancel the rest.
+        From here on `notify_later` makes no task."""
+        self._closing = True
         tasks = list(self._tasks)
         if not tasks:
             return

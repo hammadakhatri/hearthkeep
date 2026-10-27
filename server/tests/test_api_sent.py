@@ -20,7 +20,7 @@ from test_api import (  # noqa: F401  (harness is a fixture)
 from test_api_push import add_second_device, subscribe
 from test_api_runs import SPEC, run_once
 
-from hearthkeep.providers.chat import StreamDone, TextDelta
+from hearthkeep.providers.chat import StreamDone, TextDelta, ToolCallRequest
 from hearthkeep.push import PushSender, VapidKeys
 
 FCM = "https://fcm.googleapis.com/fcm/send/device-one:APA91b-secret"
@@ -101,35 +101,75 @@ def test_web_summary_text_comes_from_server(harness):
     assert checked["text"] == "Checked: 5 rows in all."
 
     [(user_id,)] = harness.query("SELECT id FROM messages WHERE role = 'user'")
-    for ref in (str(user_id), "999999", "abc", ""):
+    for ref, status in ((str(user_id), 404), ("999999", 404), ("abc", 404), ("1e3", 404),
+                        ("", 422)):  # fmt: skip
         refused = post_sent(client, kind="summary", ref_id=ref, devices="all")
-        assert refused.status_code in (404, 422), ref
+        assert refused.status_code == status, ref
     assert len(harness.query("SELECT id FROM sent_items")) == 2
 
 
-def test_web_summary_marks_use_the_messages_turn(harness, tmp_path):
+def add_chat_file(harness, chat_id, file_id="f1", name="a.csv"):
+    c = harness.conn()
+    c.execute(
+        "INSERT INTO chat_files (id, chat_id, name, kind, mime, size, status, source, file_name,"
+        " created_at) VALUES (?, ?, ?, 'csv', 'text/csv', 1, 'ready', 'upload', ?, 'now')",
+        (file_id, chat_id, name, f"{file_id}.csv"),
+    )
+    c.close()
+
+
+def test_web_summary_reuses_the_stored_check(harness, tmp_path):
     client, chat_id, turn_id, run_id = run_once(harness, tmp_path)  # a run that reported 42.5
     [(message_id,)] = harness.query(
         "SELECT id FROM messages WHERE role = 'assistant' AND content = 'Done.'"
     )
+    add_chat_file(harness, chat_id)
+    stored = [{"start": 6, "end": 10, "text": "42.5", "kind": "computed", "page": None,
+               "note": None}]  # fmt: skip
     c = harness.conn()
     c.execute(
-        "INSERT INTO chat_files (id, chat_id, name, kind, mime, size, status, source, file_name,"
-        " created_at) VALUES ('f1', ?, 'a.csv', 'csv', 'text/csv', 1, 'ready', 'upload',"
-        " 'f1.csv', 'now')",
-        (chat_id,),
-    )
-    c.execute(
         "INSERT INTO number_checks (message_id, chat_id, turn_id, text, marks, created_at)"
-        " VALUES (?, ?, ?, 'Total 42.5, 7 more.', '[]', 'now')",
-        (message_id, chat_id, turn_id),
+        " VALUES (?, ?, ?, 'Total 42.5, 7 more.', ?, 'now')",
+        (message_id, chat_id, turn_id, json.dumps(stored)),
     )
     c.close()
     item = post_sent(client, kind="summary", ref_id=str(message_id), devices="all").json()
-    assert [(m["text"], m["kind"]) for m in item["marks"]] == [
-        ("42.5", "computed"),
-        ("7", "unverified"),
-    ]
+    assert (item["text"], item["marks"]) == ("Total 42.5, 7 more.", stored)  # as stored
+
+
+def test_web_summary_without_a_check_is_checked_without_a_turn(harness, tmp_path):
+    client, chat_id, turn_id, run_id = run_once(harness, tmp_path)  # a run that reported 42.5
+    add_chat_file(harness, chat_id)
+    c = harness.conn()
+    message_id = c.execute(
+        "INSERT INTO messages (chat_id, role, content, created_at)"
+        " VALUES (?, 'assistant', 'Total 42.5.', 'now')",
+        (chat_id,),
+    ).lastrowid
+    c.close()
+    item = post_sent(client, kind="summary", ref_id=str(message_id), devices="all").json()
+    # No stored check, so no turn: the run's results are no evidence.
+    assert [(m["text"], m["kind"]) for m in item["marks"]] == [("42.5", "unverified")]
+
+
+def test_step_limit_message_stays_unmarked_in_a_sent_summary(harness):
+    rounds = [[TextDelta("Found 5 rows."), ToolCallRequest("c0", "clock", "{}"),
+               StreamDone("tool_calls")]]  # fmt: skip
+    rounds += [[ToolCallRequest(f"c{i}", "clock", "{}"), StreamDone("tool_calls")]
+               for i in range(1, 12)]  # fmt: skip
+    client = signed_in(harness, rounds)
+    chat_id = new_chat(client)
+    add_chat_file(harness, chat_id)  # a chat with files: its replies are number-checked
+    turn_id = say(client, chat_id, "go").json()["turn_id"]
+    read_events(client, chat_id, turn_id)
+    [(message_id, text, marks)] = harness.query(
+        "SELECT message_id, text, marks FROM number_checks WHERE chat_id = ?", (chat_id,)
+    )
+    assert "step limit" in text and "(8 tool steps)" in text
+    item = post_sent(client, kind="summary", ref_id=str(message_id), devices="all").json()
+    assert item["text"] == text
+    assert item["marks"] == json.loads(marks)
+    assert [m["text"] for m in item["marks"]] == ["5"]  # never the 8 of Hearthkeep's own words
 
 
 def test_tray_lists_this_devices_items_with_chart_spec(harness, tmp_path):
@@ -170,10 +210,44 @@ def test_send_refusals(harness, tmp_path):
     assert post_sent(client, kind="table", ref_id=ids["chart"], devices="all").status_code == 404
     unknown = post_sent(client, kind="chart", ref_id=ids["chart"], devices=["cred-9"])
     assert (unknown.status_code, unknown.json()["reason"]) == (422, "unknown_device")
+    for kind, ref in (("chart", ids["table"]), ("file", ids["chart"]), ("chart", "missing"),
+                      ("table", ids["file"])):  # fmt: skip
+        refused = post_sent(client, kind=kind, ref_id=ref, devices="all")
+        assert (refused.status_code, refused.json()["reason"]) == (404, "not_found"), kind
+    add_chat_file(harness, chat_id)
+    as_table = post_sent(client, kind="table", ref_id="f1", devices="all")  # a file, as a table
+    assert (as_table.status_code, as_table.json()["reason"]) == (404, "not_found")
+    other = new_chat(client)
+    add_chat_file(harness, other, file_id="f2")
+    assert post_sent(client, kind="file", ref_id="f2", devices="all").status_code == 201
     assert post_sent(client, kind="photo", ref_id=ids["chart"], devices="all").status_code == 422
     assert post_sent(client, kind="chart", ref_id="x" * 40, devices="all").status_code == 422
     assert post_sent(client, kind="chart", ref_id=ids["chart"], devices="some").status_code == 422
-    assert harness.query("SELECT * FROM sent_items") == []
+    assert len(harness.query("SELECT * FROM sent_items")) == 1
+
+
+def test_download_after_the_thing_was_deleted_is_404(harness, tmp_path):
+    client, chat_id, turn_id, run_id = run_once(harness, tmp_path)
+    ids = outputs(harness)
+    add_chat_file(harness, chat_id)
+    folder = tmp_path / "workspace" / "chats" / chat_id / "files"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "f1.csv").write_bytes(b"x,y\n")
+    sent = {
+        ref: post_sent(client, kind=kind, ref_id=ref, devices="all").json()["id"]
+        for kind, ref in (("table", ids["table"]), ("file", ids["file"]), ("file", "f1"))
+    }
+    for item_id in sent.values():
+        assert client.get(f"/api/sent/{item_id}/download").status_code == 200
+    c = harness.conn()
+    c.execute("DELETE FROM outputs WHERE id = ?", (ids["table"],))
+    c.execute("DELETE FROM chat_files WHERE id = 'f1'")
+    c.close()
+    for path in (tmp_path / "workspace" / "chats" / chat_id / "runs").rglob("*.csv"):
+        path.unlink()  # the run's output file is gone from disk, its row stays
+    for item_id in sent.values():
+        got = client.get(f"/api/sent/{item_id}/download")
+        assert (got.status_code, got.json()) == (404, {"reason": "not_found"})
 
 
 def test_download_table_csv_and_file(harness, tmp_path):

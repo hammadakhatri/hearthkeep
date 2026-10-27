@@ -63,6 +63,43 @@ async def test_device_names_match_case_insensitively(env):
     assert every.content == "Sent to 2 device(s)."
 
 
+async def test_a_name_shared_by_several_devices_sends_to_each(env):
+    env.device("cred-3", "phone")
+    result = await env.tool.run({"kind": "summary", "text": "x", "device": "Phone"}, env.ctx)
+    assert result.ok and result.content == 'Sent to 2 devices named "Phone".'
+    assert env.sent.inbox("cred-1") == []
+    assert len(env.sent.inbox("cred-2")) == len(env.sent.inbox("cred-3")) == 1
+
+
+async def test_a_device_named_all(env):
+    env.device("cred-3", "All")
+    # Written exactly as the device's name: that device only.
+    named = await env.tool.run({"kind": "summary", "text": "x", "device": "All"}, env.ctx)
+    assert named.content == "Sent to 1 device(s)."
+    assert [len(env.sent.inbox(c)) for c in ("cred-1", "cred-2", "cred-3")] == [0, 0, 1]
+    # Any other spelling of all means every device.
+    every = await env.tool.run({"kind": "summary", "text": "x", "device": "all"}, env.ctx)
+    assert every.content == "Sent to 3 device(s)."
+    env.device("cred-4", "all")  # two devices now answer to "All" in some case
+    both = await env.tool.run({"kind": "summary", "text": "x", "device": "All"}, env.ctx)
+    assert both.content == "Sent to 4 device(s)."  # ambiguous: every device
+    assert "All" in env.tool.description and "every device" in env.tool.description
+
+
+async def test_at_most_five_sends_per_turn(env):
+    for _ in range(5):
+        ok = await env.tool.run({"kind": "summary", "text": "x"}, env.ctx)
+        assert ok.ok
+    refused = await env.tool.run({"kind": "summary", "text": "x"}, env.ctx)
+    assert (refused.ok, refused.content) == (False, "You've already sent 5 items this turn.")
+    assert env.conn.execute("SELECT COUNT(*) FROM sent_items").fetchone()[0] == 5
+    # A refused send doesn't count; another turn has its own five.
+    env.ctx.turn_id = "t2"
+    assert (await env.tool.run({"kind": "summary"}, env.ctx)).ok is False
+    for _ in range(5):
+        assert (await env.tool.run({"kind": "summary", "text": "x"}, env.ctx)).ok
+
+
 async def test_unknown_device_name_lists_names(env):
     env.device("cred-3", "Old tablet")
     env.revoke("cred-3")

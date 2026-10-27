@@ -316,11 +316,37 @@ async def test_background_pushes_are_tracked_and_ended_at_shutdown(env):
     await env.sent.aclose(grace=1.0)
     assert env.sender.calls == [FCM_1] and env.sent.pending == 0
 
-    hanging = Hanging()
-    env.sent._push = hanging
-    env.sent.notify_later(item)
+    sent = SentStore(env.conn, env.runs, env.files, env.credentials, env.checker, Hanging(),
+                     env.subscriptions)  # fmt: skip
+    sent.notify_later(item)
     await asyncio.wait_for(started.wait(), 1.0)
-    assert env.sent.pending == 1
-    await asyncio.wait_for(env.sent.aclose(grace=0.05), 1.0)
+    assert sent.pending == 1
+    await asyncio.wait_for(sent.aclose(grace=0.05), 1.0)
     assert Hanging.cancelled is True
+    assert sent.pending == 0
+
+
+async def test_push_task_errors_are_logged_by_type_only(env, caplog):
+    env.subscriptions.set("cred-1", FCM_1)
+    item = env.send(kind="summary", text="hello")
+
+    def broken(item_id):
+        raise RuntimeError("private detail 4242")
+
+    env.sent.targets = broken  # fails before any device is looked at
+    with caplog.at_level(logging.DEBUG):
+        env.sent.notify_later(item)
+        await env.sent.aclose()
+    assert "RuntimeError" in caplog.text
+    assert "private detail" not in caplog.text
+    assert env.sender.calls == []
+
+
+async def test_no_push_task_once_closing_has_begun(env):
+    env.subscriptions.set("cred-1", FCM_1)
+    item = env.send(kind="summary", text="hello")
+    await env.sent.aclose()  # nothing running: closing still begins
+    env.sent.notify_later(item)
     assert env.sent.pending == 0
+    await asyncio.sleep(0)
+    assert env.sender.calls == []

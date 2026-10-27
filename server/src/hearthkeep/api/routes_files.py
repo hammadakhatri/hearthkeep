@@ -2,21 +2,19 @@
 
 from __future__ import annotations
 
-import unicodedata
 from typing import Annotated
-from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from hearthkeep.api.common import ApiError, actor, current_session, record, services
+from hearthkeep.api.downloads import chat_file_download
 from hearthkeep.api.multipart import multipart_boundary, parse_file_part, read_limited_body
 from hearthkeep.auth.sessions import Session
 from hearthkeep.files.checks import (
     MAX_FILE_BYTES,
     MESSAGES,
-    MIME,
     TOO_BIG,
     FileCheck,
     FileRefused,
@@ -146,30 +144,6 @@ async def get_file(file_id: str, session: SessionDep, request: Request) -> dict:
     return file_json(_found(request, file_id))
 
 
-def _ascii_name(name: str, kind: str) -> str:
-    plain = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
-    plain = "".join(c for c in plain if c.isprintable() and c not in '"\\')
-    return plain.strip() or f"file.{kind}"
-
-
-def content_disposition(name: str, kind: str) -> str:
-    return (
-        f'attachment; filename="{_ascii_name(name, kind)}"; '
-        f"filename*=UTF-8''{quote(name, safe='')}"
-    )
-
-
 @router.get("/files/{file_id}/download")
 async def download_file(file_id: str, session: SessionDep, request: Request) -> FileResponse:
-    found = _found(request, file_id)
-    path = services(request).files.path(file_id)
-    if path is None:
-        raise ApiError(404, "not_found")
-    return FileResponse(
-        path,
-        media_type=MIME[found.kind],
-        headers={
-            "Content-Disposition": content_disposition(found.name, found.kind),
-            "Cache-Control": "private, no-store",
-        },
-    )
+    return chat_file_download(services(request).files, _found(request, file_id))

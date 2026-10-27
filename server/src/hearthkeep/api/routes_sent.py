@@ -7,23 +7,21 @@ or the message itself), never from the client. Pushes run in the background.
 
 from __future__ import annotations
 
+import json
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from hearthkeep.api.common import ApiError, Services, actor, current_session, services
-from hearthkeep.api.routes_files import content_disposition
-from hearthkeep.api.routes_runs import table_csv
+from hearthkeep.api.downloads import chat_file_download, output_download, text_download
 from hearthkeep.auth.sessions import Session
-from hearthkeep.files.checks import MIME
 from hearthkeep.sent import SUMMARY_TITLE, SendRefused, SentItem, SentStore, question_before
 
 router = APIRouter(prefix="/api")
 
 SessionDep = Annotated[Session, Depends(current_session)]
-_NO_STORE = {"Cache-Control": "private, no-store"}
 MAX_DEVICES = 32
 _STATUS_FOR_REASON = {"not_found": 404}
 
@@ -33,10 +31,13 @@ class SendBody(BaseModel):
 
     kind: Literal["chart", "table", "file", "summary"]
     ref_id: str = Field(min_length=1, max_length=32)
-    devices: Literal["all"] | Annotated[
-        list[Annotated[str, Field(min_length=1, max_length=1024)]],
-        Field(min_length=1, max_length=MAX_DEVICES),
-    ]
+    devices: (
+        Literal["all"]
+        | Annotated[
+            list[Annotated[str, Field(min_length=1, max_length=1024)]],
+            Field(min_length=1, max_length=MAX_DEVICES),
+        ]
+    )
 
 
 def _sent(hk: Services) -> SentStore:
@@ -67,25 +68,29 @@ def item_json(hk: Services, item: SentItem) -> dict:
     }
 
 
-def _summary_source(hk: Services, ref_id: str) -> tuple[str, str, str | None, str]:
-    """(chat id, text, turn id, question) of an assistant message: the text its number check
-    stored (with that check's turn), else the message's own content."""
+def _summary_source(hk: Services, ref_id: str) -> tuple[str, str, list[dict] | None] | None:
+    """(chat id, text, marks) of an assistant message that was number-checked: the check's
+    stored text and marks, as they are. None when it has no check (the caller checks the
+    message's own content then). 404 for anything but an assistant message."""
     if not ref_id.isascii() or not ref_id.isdigit():
         raise ApiError(404, "not_found")
+    message = _assistant_message(hk, ref_id)
+    checked = hk.conn.execute(
+        "SELECT text, marks FROM number_checks WHERE message_id = ? AND chat_id = ?",
+        (message["id"], message["chat_id"]),
+    ).fetchone()
+    if checked is None:
+        return None
+    return message["chat_id"], checked["text"] or "", json.loads(checked["marks"] or "[]")
+
+
+def _assistant_message(hk: Services, ref_id: str):
     message = hk.conn.execute(
         "SELECT id, chat_id, role, content FROM messages WHERE id = ?", (int(ref_id),)
     ).fetchone()
     if message is None or message["role"] != "assistant":
         raise ApiError(404, "not_found")
-    chat_id = message["chat_id"]
-    checked = hk.conn.execute(
-        "SELECT text, turn_id FROM number_checks WHERE message_id = ? AND chat_id = ?",
-        (message["id"], chat_id),
-    ).fetchone()
-    question = question_before(hk.conn, chat_id, message["id"])
-    if checked is not None:
-        return chat_id, checked["text"] or "", checked["turn_id"], question
-    return chat_id, message["content"] or "", None, question
+    return message
 
 
 def _ref_chat(hk: Services, ref_id: str) -> str:
@@ -103,24 +108,40 @@ def _ref_chat(hk: Services, ref_id: str) -> str:
 async def send(body: SendBody, session: SessionDep, request: Request) -> JSONResponse:
     hk = services(request)
     sent = _sent(hk)
-    turn_id: str | None = None
-    text: str | None = None
-    question = ""
-    if body.kind == "summary":
-        chat_id, text, turn_id, question = _summary_source(hk, body.ref_id)
-    else:
-        chat_id = _ref_chat(hk, body.ref_id)
     try:
-        item = sent.send(
-            chat_id=chat_id,
-            kind=body.kind,
-            ref_id=body.ref_id,
-            text=text,
-            devices=body.devices,
-            turn_id=turn_id,
-            question=question,
-            actor=actor(session),
-        )
+        if body.kind != "summary":
+            item = sent.send(
+                chat_id=_ref_chat(hk, body.ref_id),
+                kind=body.kind,
+                ref_id=body.ref_id,
+                text=None,
+                devices=body.devices,
+                actor=actor(session),
+            )
+        elif (checked := _summary_source(hk, body.ref_id)) is not None:
+            chat_id, text, marks = checked
+            item = sent.send_checked_summary(
+                chat_id=chat_id,
+                ref_id=body.ref_id,
+                text=text,
+                marks=marks,
+                devices=body.devices,
+                actor=actor(session),
+            )
+        else:
+            # Never checked (a chat without files then): check the message now. Its turn
+            # isn't known, so no analysis run is evidence.
+            message = _assistant_message(hk, body.ref_id)
+            item = sent.send(
+                chat_id=message["chat_id"],
+                kind="summary",
+                ref_id=body.ref_id,
+                text=message["content"] or "",
+                devices=body.devices,
+                turn_id=None,
+                question=question_before(hk.conn, message["chat_id"], message["id"]),
+                actor=actor(session),
+            )
     except SendRefused as refused:
         raise ApiError(_STATUS_FOR_REASON.get(refused.reason, 422), refused.reason) from None
     sent.notify_later(item)  # never waited for: the push service may be slow or down
@@ -152,43 +173,20 @@ async def dismiss(item_id: str, session: SessionDep, request: Request) -> dict:
 
 @router.get("/sent/{item_id}/download", response_model=None)
 async def download(item_id: str, session: SessionDep, request: Request) -> Response:
+    """A table as CSV, a file's bytes or a summary as text; 404 for a chart (saved as PNG on
+    the device) or for a thing deleted since it was sent."""
     hk = services(request)
     item = _sent(hk).item_for(item_id, session.credential_id)
     if item is None:
         raise ApiError(404, "not_found")
     if item.kind == "summary":
-        return Response(
-            (item.text or "").encode("utf-8"),
-            media_type="text/plain; charset=utf-8",
-            headers={"Content-Disposition": content_disposition(f"{SUMMARY_TITLE}.txt", "txt"),
-                     **_NO_STORE},  # fmt: skip
-        )
-    if item.ref_id is None or item.kind == "chart":  # charts are saved as PNG on the device
+        return text_download(item.text or "", f"{SUMMARY_TITLE}.txt")
+    if item.ref_id is None or item.kind == "chart":
         raise ApiError(404, "not_found")
     out = hk.runs.output(item.ref_id) if hk.runs is not None else None
     if out is not None and out.chat_id == item.chat_id and out.kind == item.kind:
-        if out.kind == "table":
-            return Response(
-                table_csv(out),
-                media_type="text/csv; charset=utf-8",
-                headers={"Content-Disposition": content_disposition(f"{out.name}.csv", "csv"),
-                         **_NO_STORE},  # fmt: skip
-            )
-        path = hk.runs.output_path(out.id)
-        if path is None:
-            raise ApiError(404, "not_found")
-        ext = out.name.rsplit(".", 1)[-1] if "." in out.name else "bin"
-        return FileResponse(
-            path,
-            media_type=out.mime,
-            headers={"Content-Disposition": content_disposition(out.name, ext), **_NO_STORE},
-        )
+        return output_download(hk.runs, out)
     found = hk.files.get(item.ref_id) if item.kind == "file" else None
-    path = hk.files.path(item.ref_id) if found is not None else None
-    if found is None or found.chat_id != item.chat_id or path is None:
+    if found is None or found.chat_id != item.chat_id:
         raise ApiError(404, "not_found")
-    return FileResponse(
-        path,
-        media_type=MIME[found.kind],
-        headers={"Content-Disposition": content_disposition(found.name, found.kind), **_NO_STORE},
-    )
+    return chat_file_download(hk.files, found)
