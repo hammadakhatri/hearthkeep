@@ -40,6 +40,7 @@ from hearthkeep.providers.chat import (
 )
 from hearthkeep.secrets import SecretStore, SecretStoreError
 from hearthkeep.tools.base import Tool, ToolContext, ToolRegistry, ToolResult
+from hearthkeep.tools.text import one_line
 
 SYSTEM_PROMPT = (
     "You are Hearthkeep, a private assistant running on its owner's own computer. "
@@ -71,6 +72,30 @@ _ATTACHMENT_ID = re.compile(r"[A-Za-z0-9_-]{1,32}")
 _ATTACHMENT_TABLES = {"image": "images", "run": "runs", "file": "chat_files"}
 
 _log = logging.getLogger(__name__)
+_ARG_ERROR_CHARS = 200
+
+
+def _invalid_args(name: str, exc: jsonschema.ValidationError) -> str:
+    """Which argument broke which rule, and the limit, for the model; never the value it
+    sent (that may be pages of prose or a file's contents)."""
+    field = "/".join(map(str, exc.absolute_path)) or "arguments"
+    rule, limit = exc.validator, exc.validator_value
+    if rule == "maxLength":
+        detail = f"'{field}' is too long (at most {limit} characters)."
+    elif rule == "minLength":
+        detail = f"'{field}' is empty."
+    elif rule == "enum":
+        detail = f"'{field}' must be one of: {', '.join(map(str, limit))}."
+    elif rule == "pattern":
+        detail = f"'{field}' is not in the right format."
+    elif rule == "type":
+        kinds = limit if isinstance(limit, str) else " or ".join(map(str, limit))
+        detail = f"'{field}' must be of type {kinds}."
+    elif rule in ("required", "additionalProperties"):
+        detail = exc.message  # names only, no values
+    else:
+        detail = one_line(exc.message)[:_ARG_ERROR_CHARS]
+    return f"Invalid arguments for '{name}': {detail}"
 
 
 class ReplyChecker(Protocol):
@@ -485,7 +510,7 @@ class AgentLoop:
         try:
             jsonschema.validate(args, tool.parameters)
         except jsonschema.ValidationError as exc:
-            return None, {}, f"Invalid arguments for '{call.name}': {exc.message}"
+            return None, {}, _invalid_args(call.name, exc)
         except jsonschema.SchemaError:
             return None, {}, f"The tool '{call.name}' is misconfigured and cannot be used."
         return tool, args, None

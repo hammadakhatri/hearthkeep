@@ -32,7 +32,7 @@ from hearthkeep.sandbox.runs import OutputRecord, RunRecord, RunStore
 from hearthkeep.tools.base import ToolContext, ToolResult
 from hearthkeep.tools.text import (
     CONTENT_BUDGET,
-    DATA_NOTE,
+    PRINTED_NOTE,
     assemble,
     csv_line,
     fenced,
@@ -58,27 +58,40 @@ PRINTED_CUT = "(printed output cut)"
 # (CONTENT_BUDGET, in tools.text).
 CAPS = {"values": 50, "tables": 5, "charts": 20, "files": 20, "cleaning": 20, "problems": 20}
 
-ANALYSIS_PROMPT = (
-    "This chat has files the owner attached:\n{files}\n\nTo answer questions about them, use "
-    "the python tool. Scripts run in a sandbox with no internet, and the files are read-only. "
-    "Use the hk library: hk.read(file_id) loads a file (it handles encodings, separators, "
-    "header rows and sheets); hk.result(name, value, unit=None) reports a number, date or "
-    "count; hk.document(name, value, page=N) reports a number read from a PDF page; hk.bar, "
-    "hk.line and hk.scatter (or hk.chart with a Vega-Lite spec) make charts, "
-    "with highlight= for problem areas; hk.table(name, rows) reports the rows behind a "
-    "finding; hk.file(name, data) saves a cleaned file; hk.cleaned(note) records anything you "
-    "cleaned or assumed; hk.pdf_text and hk.pdf_tables read PDFs that have text.\nRules: "
-    "Report each number you will mention with hk.result (one result per number you state, not "
-    "whole tables), or with hk.document(name, value, page=N) for a number read from a PDF page; "
-    "numbers not reported this way show as unverified. Never "
-    "compute, estimate or round a number yourself. Every number, date and count in your reply "
-    "must come from a result of a run in this chat, written as reported or rounded. Start "
-    "with two or three plain sentences that answer the question. Then say what you had to "
-    "clean or assume. If a script fails or the data can't answer the question, say what went "
-    "wrong and what the owner could do; never estimate. When files arrive without a question, "
-    "run hk.profile(file_id) once and reply with a short 'at a glance' summary that ends by "
-    "inviting a question."
-)
+ANALYSIS_PROMPT = """\
+This chat has files the owner attached:
+{files}
+
+How to answer questions about them:
+1. Work everything out in a python tool call. Scripts run in a sandbox with no internet and \
+the files are read-only. Only what the script reports with hk, and what it prints, comes back \
+to you.
+2. Load a file with df = hk.read("<file id>"). Number and date columns come back parsed \
+(YYYY-MM-DD and day/month dates included). Never call pd.to_datetime with dayfirst=True: it \
+reads 2025-03-12 as 3 December. If a date column is still text, use \
+df["col"] = hk.dates(df["col"]).
+3. In the script, call hk.result("<name>", value) once for every number, date or count you \
+will state, name first, for example hk.result("Total spent", df["amount"].sum(), unit="GBP"). \
+For a value read off a PDF page use hk.document("<name>", value, page=N).
+4. Show the rows behind a finding with hk.table("<name>", rows), gaps in dated data with \
+hk.gaps(df, "<date column>", by="<group column>"), charts with hk.bar, hk.line or hk.scatter, \
+and anything you cleaned or assumed with hk.cleaned("<note>"). Save files only with \
+hk.file(name, data).
+Example:
+    import hk
+    df = hk.read("<file id>")
+    negative = df[df["amount"] < 0]
+    hk.result("Negative amounts", len(negative))
+    hk.table("Rows with a negative amount", negative)
+5. Then reply in plain words. hk.result is Python: it never appears in your reply. Write the \
+value itself, for example "There are 3 negative amounts." Use only numbers a run reported \
+with hk.result or hk.document, as reported or rounded to fewer digits; any other number shows \
+as unverified. Never estimate.
+Start with two or three plain sentences that answer the question, then say what you cleaned \
+or assumed. If a script fails, fix it and run it again; if the data can't answer the \
+question, say what went wrong and what the owner could do. When files arrive without a \
+question, run hk.profile("<file id>") once and reply with a short 'at a glance' summary that \
+ends by inviting a question."""
 KIND_LABELS = {
     "csv": "CSV",
     "xlsx": "Excel workbook",
@@ -88,11 +101,18 @@ KIND_LABELS = {
     "json": "JSON",
 }
 DESCRIPTION = (
-    "Run a Python script in a locked-down sandbox to analyse the files attached to this chat. "
-    "There is no internet and the files are read-only. Use the hk library (hk.read, "
-    "hk.result, hk.bar/line/scatter/chart, hk.table, hk.file, hk.cleaned, hk.profile, "
-    "hk.pdf_text, hk.pdf_tables) to report what you found; only what hk reports and what the "
-    "script prints comes back."
+    "Run a Python script in a locked-down sandbox (no internet, read-only files) to analyse "
+    "this chat's files. Put the whole analysis in script and a few words in purpose. In the "
+    "script: df = hk.read(file_id); hk.result(name, value) for each number you will state; "
+    "hk.document(name, value, page=N) for a value read off a PDF page; hk.table(name, rows); "
+    "hk.gaps(df, date_col, by=col); hk.bar/line/scatter/chart; hk.file(name, data) to save "
+    "a file; hk.cleaned(note); hk.profile(file_id); hk.pdf_text/hk.pdf_tables. Only what hk "
+    "reports and what the script prints comes back."
+)
+NO_NUMBERS = (
+    "No numbers were reported with hk.result, so any number you state from the printed "
+    'output will show as unverified. Run the script again with hk.result("<name>", value) '
+    "for each number you will mention."
 )
 
 
@@ -228,7 +248,7 @@ def format_run_for_model(rec: RunRecord, outputs: list[OutputRecord]) -> str:
     head = f"Run {rec.status} in {rec.duration_ms / 1000:.1f} s."
     sections: list[tuple[str, list[str], int]] = []
     if rec.stdout:
-        printed = DATA_NOTE + "\n" + fenced(rec.stdout[:PRINTED_CHARS].rstrip("\n"))
+        printed = PRINTED_NOTE + "\n" + fenced(rec.stdout[:PRINTED_CHARS].rstrip("\n"))
         if len(rec.stdout) > PRINTED_CHARS or rec.stdout_truncated:
             printed += "\n" + PRINTED_CUT
         sections.append(("Printed output", [printed], 0))
@@ -246,6 +266,8 @@ def format_run_for_model(rec: RunRecord, outputs: list[OutputRecord]) -> str:
     sections.append(_section("Problems", problems, CAPS["problems"]))
     # The error is a fixed, short message: room is kept for it whatever else is cut.
     tail = f"\n\nError:\n{one_line(rec.error)}" if rec.error else ""
+    if rec.status == "ok" and not any(v.kind in ("computed", "document") for v in rec.values):
+        tail += f"\n\nNote:\n{NO_NUMBERS}"  # e.g. the model wrote hk.result in its reply
     return assemble(head, sections, CONTENT_BUDGET - len(tail)) + tail
 
 
@@ -275,9 +297,9 @@ class PythonTool:
                 "description": "The Python script to run (it can import hk).",
             },
             "purpose": {
+                # No maxLength: a long purpose is cut in the summary, never refused.
                 "type": "string",
                 "minLength": 1,
-                "maxLength": PURPOSE_MAX_CHARS,
                 "description": "A few words on what the script works out, for the owner.",
             },
         },
@@ -299,7 +321,9 @@ class PythonTool:
         return ActionClass.LOOK
 
     def summarize(self, args: dict) -> str:
-        return f"Run Python: {args.get('purpose', '')}"
+        purpose = args.get("purpose")
+        shown = one_line(purpose)[:PURPOSE_MAX_CHARS] if isinstance(purpose, str) else ""
+        return f"Run Python: {shown}"
 
     async def run(self, args: dict, ctx: ToolContext) -> ToolResult:
         # Without Docker nothing runs at all: there is no fallback to the host.

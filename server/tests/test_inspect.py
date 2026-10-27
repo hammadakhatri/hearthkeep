@@ -267,21 +267,25 @@ def test_analysis_context_lines(store):
 
 
 def test_analysis_prompt_is_exact():
-    # The number-check sentence comes first after "Rules:".
-    assert (
-        "\nRules: Report each number you will mention with hk.result (one result per number you "
-        "state, not whole tables), or with hk.document(name, value, page=N) for a number read "
-        "from a PDF page; numbers not reported this way show as unverified. Never compute, "
-        "estimate or round a number yourself." in ANALYSIS_PROMPT
-    )
-    assert "hk.document(name, value, page=N) reports a number read from a PDF page;" in (
-        ANALYSIS_PROMPT.split("\nRules:")[0]
-    )
+    # The final-review text, verbatim: hk.result is called in the script, name first, and
+    # never appears in the reply.
     assert ANALYSIS_PROMPT.startswith(
-        "This chat has files the owner attached:\n{files}\n\nTo answer questions about them, "
-        "use the python tool."
+        "This chat has files the owner attached:\n{files}\n\nHow to answer questions about them:\n"
+        "1. Work everything out in a python tool call. "
+    )
+    assert (
+        "3. In the script, call hk.result(\"<name>\", value) once for every number, date or "
+        "count you will state, name first, for example "
+        "hk.result(\"Total spent\", df[\"amount\"].sum(), unit=\"GBP\"). For a value read off a "
+        "PDF page use hk.document(\"<name>\", value, page=N).\n" in ANALYSIS_PROMPT
+    )
+    assert (
+        "5. Then reply in plain words. hk.result is Python: it never appears in your reply. "
+        "Write the value itself, for example \"There are 3 negative amounts.\" Use only numbers "
+        "a run reported with hk.result or hk.document, as reported or rounded to fewer digits; "
+        "any other number shows as unverified. Never estimate.\n" in ANALYSIS_PROMPT
     )
     assert ANALYSIS_PROMPT.endswith(
-        "When files arrive without a question, run hk.profile(file_id) once and reply with a "
-        "short 'at a glance' summary that ends by inviting a question."
+        "When files arrive without a question, run hk.profile(\"<file id>\") once and reply "
+        "with a short 'at a glance' summary that ends by inviting a question."
     )

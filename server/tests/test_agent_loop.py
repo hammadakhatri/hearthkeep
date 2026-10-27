@@ -977,3 +977,66 @@ async def test_malformed_checker_result_never_breaks_the_turn(conn, settings, ap
     loop = AgentLoop(client, registry, approvals, conn, settings, reply_checker=Odd())
     events = await drain_chat(loop, user("how many?"), FILE_CHAT)
     assert types(events) == ["text_delta", "turn_done"]
+
+
+class StrictTool:
+    name = "strict"
+    level_key = "demo"
+    description = "Takes strict arguments."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "word": {"type": "string", "minLength": 1, "maxLength": 5},
+            "colour": {"type": "string", "enum": ["red", "green"]},
+            "code": {"type": "string", "pattern": "^[a-z]+$"},
+            "count": {"type": "integer"},
+        },
+        "additionalProperties": False,
+    }
+
+    def classify(self, args):
+        return ActionClass.LOOK
+
+    def summarize(self, args):
+        return "Strict"
+
+    async def run(self, args, ctx):
+        return ToolResult(ok=True, content="fine")
+
+
+async def test_invalid_arguments_name_the_field_and_rule_never_the_value(
+    conn, settings, approvals, registry
+):
+    from hearthkeep.tools.send import SendToDevicesTool
+
+    registry.register(SendToDevicesTool(None, None))
+    registry.register(StrictTool())
+    secret_ish = "VALUE-" + "x" * 4100
+    bad_calls = [
+        ("send_to_devices", {"kind": "summary", "text": secret_ish}),
+        ("strict", {"word": ""}),
+        ("strict", {"colour": "VALUE-blue"}),
+        ("strict", {"code": "VALUE-9"}),
+        ("strict", {"count": "VALUE-seven"}),
+        ("strict", {"extra": 1}),
+    ]
+    script = [
+        [call(name, a, f"c{i}"), StreamDone("tool_calls")] for i, (name, a) in enumerate(bad_calls)
+    ]
+    client = FakeChatClient([*script, [TextDelta("Sorry."), StreamDone("stop")]])
+    loop = make_loop(client, registry, approvals, conn, replace(settings, max_agent_steps=10))
+    await drain(loop, user("go"))
+    errors = [
+        json.loads(tool_messages(client.calls[i]["messages"])[-1]["content"])["error"]
+        for i in range(1, len(bad_calls) + 1)
+    ]
+    assert errors == [
+        "Invalid arguments for 'send_to_devices': 'text' is too long (at most 4000 characters).",
+        "Invalid arguments for 'strict': 'word' is empty.",
+        "Invalid arguments for 'strict': 'colour' must be one of: red, green.",
+        "Invalid arguments for 'strict': 'code' is not in the right format.",
+        "Invalid arguments for 'strict': 'count' must be of type integer.",
+        "Invalid arguments for 'strict': Additional properties are not allowed "
+        "('extra' was unexpected)",
+    ]
+    assert not any("VALUE" in e for e in errors)
