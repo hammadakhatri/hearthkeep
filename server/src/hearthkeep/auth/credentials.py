@@ -89,6 +89,20 @@ class CredentialStore:
         ).fetchone()
         return _from_row(row) if row is not None else None
 
+    def rename(self, credential_id: str, name: str, actor: str) -> Credential | None:
+        """Give an unrevoked device a new (cleaned) name; None if there is no such device.
+        The audit records which device, never the name."""
+        cleaned = clean_device_name(name)
+        with db.transaction(self._conn):
+            changed = self._conn.execute(
+                "UPDATE credentials SET device_name = ? WHERE id = ? AND revoked_at IS NULL",
+                (cleaned, credential_id),
+            ).rowcount
+            if not changed:
+                return None
+            audit.record(self._conn, actor, "device.renamed", {"credential_id": credential_id})
+        return self.get(credential_id)
+
     def update_sign_count(self, credential_id: str, sign_count: int) -> None:
         self._conn.execute(
             "UPDATE credentials SET sign_count = ? WHERE id = ? AND revoked_at IS NULL",

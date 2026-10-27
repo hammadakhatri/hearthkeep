@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
-from hearthkeep import db
+from hearthkeep import db, startup
 from hearthkeep.api.common import ApiError, Services, actor, current_session, record, services
 from hearthkeep.auth.sessions import Session
 from hearthkeep.permissions import (
@@ -95,3 +96,16 @@ async def set_tool_level(tool: str, body: LevelBody, session: SessionDep, reques
             {"tool": key, "from": old.value, "to": new.value, "step_up": widening},
         )
     return _item(hk, key, await hk.docker_available())
+
+
+@router.get("/settings/startup")
+async def startup_settings(session: SessionDep, request: Request) -> dict:
+    """Whether Hearthkeep starts at login, and the command that changes it. Only the CLI on the
+    PC changes it; the web app shows it."""
+    hk = services(request)
+    state = await asyncio.to_thread(startup.cached_status, hk.monotonic())
+    command = None
+    if state.supported:
+        verb = "disable" if state.enabled else "enable"
+        command = f'hearthkeep startup {verb} --data "{hk.settings.data_dir}"'
+    return {"supported": state.supported, "enabled": state.enabled, "command": command}

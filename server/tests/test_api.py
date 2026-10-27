@@ -1130,3 +1130,128 @@ def test_messages_include_number_check_on_last_assistant_message(harness):
     assert messages[-1]["number_check"] == expected
     assert frames[-2]["data"] == expected
     assert [m["number_check"] for m in messages[:-1]] == [None, None, None]
+
+
+# ---- devices and sessions (Settings) ---------------------------------------------------
+
+
+def add_second_device(h, client, cred_id="cred-2"):
+    """Enroll another passkey from a second browser; returns that browser's client."""
+    token = step_up(client, "add_device")
+    code = client.post("/api/devices/add-code", json={"step_up_token": token}, headers=CSRF)
+    other = h.start()
+    enroll(other, code.json()["code"], cred_id=cred_id)
+    return other
+
+
+def test_devices_include_last_used(harness):
+    client = signed_in(harness)
+    other = add_second_device(harness, client)
+    other.get("/api/chats")  # refreshes cred-2's session
+    c = harness.conn()
+    try:
+        c.execute(
+            "UPDATE sessions SET last_seen_at = '2020-01-01T00:00:00+00:00'"
+            " WHERE credential_id = 'cred-2'"
+        )
+        c.commit()
+    finally:
+        c.close()
+    devices = {d["id"]: d for d in client.get("/api/devices").json()}
+    assert devices["cred-2"]["last_used_at"] == "2020-01-01T00:00:00+00:00"
+    assert devices["cred-1"]["last_used_at"] > "2020"  # refreshed by this very request
+    assert devices["cred-1"]["current"] is True and devices["cred-2"]["current"] is False
+    c = harness.conn()
+    try:
+        c.execute("DELETE FROM sessions WHERE credential_id = 'cred-2'")
+        c.commit()
+    finally:
+        c.close()
+    devices = {d["id"]: d for d in client.get("/api/devices").json()}
+    assert devices["cred-2"]["last_used_at"] is None
+
+
+def test_rename_device_audited_and_cleaned(harness):
+    client = signed_in(harness)
+    renamed = client.patch(
+        "/api/devices/cred-1", json={"device_name": "  Kitchen\n  tablet  "}, headers=CSRF
+    )
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json()["device_name"] == "Kitchen tablet"
+    assert renamed.json()["current"] is True
+    assert client.get("/api/devices").json()[0]["device_name"] == "Kitchen tablet"
+    blank = client.patch("/api/devices/cred-1", json={"device_name": "   "}, headers=CSRF)
+    assert blank.json()["device_name"] == "Unnamed device"
+    too_long = client.patch("/api/devices/cred-1", json={"device_name": "x" * 65}, headers=CSRF)
+    assert too_long.status_code == 422
+    missing = client.patch("/api/devices/nope", json={"device_name": "a"}, headers=CSRF)
+    assert missing.status_code == 404
+    events = [e for e in harness.events() if e["event"] == "device.renamed"]
+    cookie = client.cookies.get("hk_session")
+    assert [e["detail"] for e in events] == [{"credential_id": "cred-1"}] * 2
+    assert {e["actor"] for e in events} == {f"session:{public_id(cookie)}"}
+    assert "Kitchen" not in json.dumps(events)
+
+
+def test_sign_out_others_keeps_this_session(harness):
+    client = signed_in(harness)
+    other = add_second_device(harness, client)
+    third = harness.start()
+    assert login(third).status_code == 200  # another session of cred-1
+    assert other.get("/api/chats").status_code == 200
+
+    response = client.post("/api/sessions/sign-out-others", headers=CSRF)
+    assert response.status_code == 200, response.text
+    assert response.json() == {"signed_out": 2}
+    assert client.get("/api/chats").status_code == 200
+    assert other.get("/api/chats").status_code == 401
+    assert third.get("/api/chats").status_code == 401
+    revoked = [e for e in harness.events() if e["event"] == "session.revoked"]
+    assert [e["detail"] for e in revoked[-2:]] == [{"reason": "signed_out_others"}] * 2
+    assert client.post("/api/sessions/sign-out-others", headers=CSRF).json() == {"signed_out": 0}
+    assert harness.start().post("/api/sessions/sign-out-others", headers=CSRF).status_code == 401
+
+
+def test_startup_settings_endpoint(harness, monkeypatch):
+    from hearthkeep import startup
+
+    now = [100.0]
+    calls = []
+    answer = [startup.StartupStatus(True, False, None)]
+
+    def fake_status(*, run=None):
+        calls.append(1)
+        return answer[0]
+
+    startup.clear_cache()
+    monkeypatch.setattr(startup, "status", fake_status)
+    client = signed_in(harness, monotonic=lambda: now[0])
+    data = str(harness.data)
+    first = client.get("/api/settings/startup")
+    assert first.status_code == 200
+    assert first.json() == {
+        "supported": True,
+        "enabled": False,
+        "command": f'hearthkeep startup enable --data "{data}"',
+    }
+    answer[0] = startup.StartupStatus(True, True, data)
+    assert client.get("/api/settings/startup").json()["enabled"] is False  # cached
+    assert len(calls) == 1
+    now[0] += 30
+    on = client.get("/api/settings/startup").json()
+    assert on == {
+        "supported": True,
+        "enabled": True,
+        "command": f'hearthkeep startup disable --data "{data}"',
+    }
+    assert len(calls) == 2
+
+    answer[0] = startup.StartupStatus(False, False, None)
+    startup.clear_cache()
+    assert client.get("/api/settings/startup").json() == {
+        "supported": False,
+        "enabled": False,
+        "command": None,
+    }
+    assert harness.start().get("/api/settings/startup").status_code == 401
+    startup.clear_cache()

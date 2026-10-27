@@ -114,6 +114,29 @@ describe('Sign in', () => {
     })
   })
 
+  it('sign-in reads the enroll code from the link and clears it', async () => {
+    window.history.replaceState(null, '', '/?x=1#enroll=ABCD2345')
+    const replace = vi.spyOn(window.history, 'replaceState')
+    mockFetch({ 'GET /api/auth/session': signedOut, 'GET /api/health': healthy })
+    render(<App />)
+    const code = await screen.findByLabelText('Setup code')
+    expect(code).toHaveValue('ABCD2345')
+    expect(screen.getByRole('heading', { name: 'Set up this device' })).toBeInTheDocument()
+    expect(window.location.hash).toBe('')
+    expect(window.location.search).toBe('?x=1')
+    expect(replace).toHaveBeenCalled()
+    replace.mockRestore()
+    window.history.replaceState(null, '', '/')
+  })
+
+  it('ignores an enroll link that is not a code', async () => {
+    window.history.replaceState(null, '', '/#enroll=<script>')
+    mockFetch({ 'GET /api/auth/session': signedOut })
+    render(<App />)
+    expect(await screen.findByRole('button', { name: 'Sign in with passkey' })).toBeInTheDocument()
+    window.history.replaceState(null, '', '/')
+  })
+
   it('explains an invalid setup code', async () => {
     mockFetch({
       'GET /api/auth/session': signedOut,

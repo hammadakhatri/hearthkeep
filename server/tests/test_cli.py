@@ -248,3 +248,89 @@ def test_health_owned_chat_model_starts_on_first_use(serve, tmp_path, monkeypatc
     assert seen[0]["chat_model_state"] == "starts_on_first_use"
     assert seen[0]["chat_model"] == "gemma-4-12b"
     assert seen[1]["chat_model_state"] == "ready"
+
+
+# ---- start at login --------------------------------------------------------------------
+
+
+def test_cli_startup_commands(tmp_path, monkeypatch, capsys):
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from hearthkeep import startup
+
+    data = tmp_path / "data"
+    xml: list[str] = []
+
+    def fake_run(argv, **kw):
+        if "/Create" in argv:
+            xml[:] = [open(argv[argv.index("/XML") + 1], encoding="utf-16").read()]
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+        if "/Delete" in argv:
+            xml.clear()
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+        if xml:
+            return subprocess.CompletedProcess(argv, 0, xml[0].encode("utf-16"), b"")
+        return subprocess.CompletedProcess(argv, 1, b"", b"")
+
+    monkeypatch.setattr(startup, "is_windows", lambda: True)
+    monkeypatch.setattr(cli, "startup_run", fake_run)
+    startup.clear_cache()
+
+    assert cli.main(["startup", "status", "--data", str(data)]) == 0
+    assert capsys.readouterr().out.strip() == "Start at login: off"
+
+    assert cli.main(["startup", "enable", "--data", str(data)]) == 0
+    log = data.resolve() / "logs" / "hearthkeep.log"
+    assert capsys.readouterr().out.strip() == (
+        f"Hearthkeep will start when you sign in to Windows. Logs: {log}"
+    )
+    pythonw = Path(sys.executable).with_name("pythonw.exe")
+    assert f"<Command>{pythonw}</Command>" in xml[0]
+
+    assert cli.main(["startup", "status", "--data", str(data)]) == 0
+    assert capsys.readouterr().out.strip() == f"Start at login: on (data folder {data.resolve()})"
+
+    assert cli.main(["startup", "disable", "--data", str(data)]) == 0
+    capsys.readouterr()
+    assert cli.main(["startup", "status", "--data", str(data)]) == 0
+    assert capsys.readouterr().out.strip() == "Start at login: off"
+
+    monkeypatch.setattr(startup, "is_windows", lambda: False)
+    for command in ("enable", "disable", "status"):
+        assert cli.main(["startup", command, "--data", str(data)]) == 2
+        assert capsys.readouterr().err.strip() == (
+            "Start at login is built in only on Windows. "
+            "See docs/install.md for macOS and Linux."
+        )
+
+
+def test_serve_log_file_redirects_output(serve, monkeypatch):
+    import sys
+
+    log = serve.data / "logs" / "hearthkeep.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("earlier line\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "stdout", sys.stdout)
+    monkeypatch.setattr(sys, "stderr", sys.stderr)
+    try:
+        assert serve("--log-file", str(log)) == 0
+        assert sys.stdout is sys.stderr and sys.stdout.line_buffering
+        print("é after start", file=sys.stderr)
+    finally:
+        if sys.stdout.name == str(log):
+            sys.stdout.close()
+    text = log.read_text(encoding="utf-8")
+    assert text.startswith("earlier line\n")
+    assert "Models:" in text and "Chat:" in text and "é after start" in text
+
+
+def test_main_module_calls_cli_main(monkeypatch):
+    import runpy
+
+    calls = []
+    monkeypatch.setattr(cli, "main", lambda argv=None: calls.append(argv) or 0)
+    with pytest.raises(SystemExit) as exit_:
+        runpy.run_module("hearthkeep", run_name="__main__")
+    assert exit_.value.code == 0 and calls == [None]

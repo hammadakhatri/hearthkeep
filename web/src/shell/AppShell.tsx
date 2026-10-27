@@ -4,6 +4,7 @@ import { Analysis } from '../views/Analysis'
 import { Chat, type ChatTarget } from '../views/Chat'
 import { Images } from '../views/Images'
 import { Placeholder } from '../views/Placeholder'
+import { Settings } from '../views/Settings'
 import { ToolsPermissions } from '../views/ToolsPermissions'
 import { BottomTabs, Sidebar } from './Sidebar'
 import { TopBar, useHealth, type HealthState } from './TopBar'
@@ -106,6 +107,8 @@ export function AppShell({ initialView = DEFAULT_VIEW, onSignOut }: Props) {
                 <Images />
               ) : view === 'analysis' ? (
                 <Analysis onOpenChat={openChat} />
+              ) : view === 'settings' ? (
+                <Settings />
               ) : (
                 <Placeholder view={view} />
               )}

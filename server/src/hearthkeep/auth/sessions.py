@@ -102,6 +102,28 @@ class SessionStore:
             if cursor.rowcount:
                 audit.record(self._conn, "owner", "session.revoked", {})
 
+    def revoke_others(self, current_session_id: str, actor: str) -> int:
+        """Sign out every live session except `current_session_id`; how many were ended.
+        Sessions already past the idle limit are dead anyway and are not counted."""
+        now = self._clock()
+        with db.transaction(self._conn):
+            count = self._conn.execute(
+                "UPDATE sessions SET revoked_at = ? WHERE id != ? AND revoked_at IS NULL"
+                " AND last_seen_at >= ?",
+                (_iso(now), _hash(current_session_id), _iso(now - self._idle)),
+            ).rowcount
+            for _ in range(count):
+                audit.record(self._conn, actor, "session.revoked", {"reason": "signed_out_others"})
+        return count
+
+    def last_used(self) -> dict[str, str]:
+        """The latest `last_seen_at` of any session, per credential id."""
+        rows = self._conn.execute(
+            "SELECT credential_id, MAX(last_seen_at) AS seen FROM sessions"
+            " WHERE last_seen_at IS NOT NULL GROUP BY credential_id"
+        ).fetchall()
+        return {r["credential_id"]: r["seen"] for r in rows}
+
     def revoke_credential(self, credential_id: str, actor: str = "owner") -> None:
         """Revoke a passkey and every session it created."""
         with db.transaction(self._conn):

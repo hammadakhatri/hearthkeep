@@ -5,6 +5,14 @@ import { AlertIcon, BackIcon, InfoIcon, PasskeyIcon } from '../shell/icons'
 
 type Mode = 'signin' | 'enroll'
 
+/** A setup link from another device: `#enroll=` and the 8-character code. */
+const ENROLL_LINK = /^#enroll=([A-HJKMNP-Z2-9]{8})$/i
+
+function codeFromLink(): string | null {
+  const match = ENROLL_LINK.exec(window.location.hash)
+  return match ? match[1].toUpperCase() : null
+}
+
 /** A friendly default name; the owner can change it before adding the device. */
 export function guessDeviceName(ua = navigator.userAgent, touch = navigator.maxTouchPoints ?? 0): string {
   if (/iPhone/.test(ua)) return 'iPhone'
@@ -28,11 +36,12 @@ function Note({ kind, children }: { kind: 'error' | 'info'; children: string }) 
 }
 
 export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
-  const [mode, setMode] = useState<Mode>('signin')
+  const [linkCode] = useState(codeFromLink)
+  const [mode, setMode] = useState<Mode>(linkCode ? 'enroll' : 'signin')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  const [code, setCode] = useState('')
+  const [code, setCode] = useState(linkCode ?? '')
   const [codeInvalid, setCodeInvalid] = useState(false)
   const [deviceName, setDeviceName] = useState(guessDeviceName)
   const codeInput = useRef<HTMLInputElement>(null)
@@ -41,6 +50,12 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
   useEffect(() => {
     if (mode === 'enroll') codeInput.current?.focus()
   }, [mode])
+
+  // The code is in the form now; it does not stay in the address bar or the history.
+  useEffect(() => {
+    if (!window.location.hash.startsWith('#enroll=')) return
+    window.history.replaceState(null, '', window.location.pathname + window.location.search)
+  }, [])
 
   function switchTo(next: Mode, message: string | null = null) {
     setMode(next)

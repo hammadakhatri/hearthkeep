@@ -1,0 +1,254 @@
+/* Settings: devices, folders, notifications and start at login, one section each. */
+
+.settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  width: 100%;
+  max-width: var(--content);
+  margin: 0 auto;
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.settings-section h2 {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  letter-spacing: var(--tracking-snug);
+}
+
+.settings-lede {
+  max-width: 62ch;
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+/* Devices and folders share one list style. */
+.device-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+
+.device-list.skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-4) 18px;
+  background: var(--s1);
+}
+
+.device {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: 14px 18px;
+  background: var(--s1);
+}
+
+.device + .device {
+  border-top: 1px solid var(--line);
+}
+
+.device-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--sp-4);
+  align-items: center;
+}
+
+.device-text {
+  min-width: 0;
+}
+
+.device-name {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.device-name b {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.device-name svg {
+  flex: none;
+  color: var(--muted);
+}
+
+.device-name .badge {
+  padding: 3px 8px;
+}
+
+.device-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 3px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.folder-path {
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+.device-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+
+.device-confirm {
+  font-size: 12.5px;
+  color: var(--fg2);
+}
+
+.device-rename {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--sp-3);
+}
+
+.device-rename .field {
+  flex: 1 1 220px;
+}
+
+.device-only {
+  margin-top: 0;
+}
+
+.device.empty {
+  padding: var(--sp-4) 18px;
+}
+
+/* A fresh code for a new device: the QR code beside the code itself. */
+.add-code {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-5);
+  align-items: center;
+}
+
+.qr {
+  flex: none;
+  border-radius: var(--r-md);
+}
+
+.add-code-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  min-width: 0;
+  flex: 1 1 220px;
+}
+
+.add-code-value {
+  font-family: var(--mono);
+  font-size: var(--text-xl);
+  font-weight: 500;
+  letter-spacing: 0.18em;
+}
+
+.add-code-link {
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.folder-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--sp-3);
+}
+
+.folder-form .field {
+  flex: 1 1 260px;
+}
+
+.folder-form + .hint {
+  margin-top: 0;
+}
+
+/* Start at login: the state, then the command to change it on the PC. */
+.startup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.startup-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+}
+
+.startup-row .perm-sub {
+  margin-top: 0;
+}
+
+.startup-how {
+  font-size: var(--text-sm);
+  color: var(--fg2);
+}
+
+.command {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 6px 6px 6px 14px;
+  border-radius: var(--r-md);
+  background: var(--black);
+  border: 1px solid var(--line);
+}
+
+.command code {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  color: var(--fg);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+@media (max-width: 640px) {
+  .device-main {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--sp-3);
+  }
+
+  .device-actions {
+    justify-content: flex-start;
+  }
+
+  .startup-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

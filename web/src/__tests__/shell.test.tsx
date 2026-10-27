@@ -3,18 +3,19 @@ import { describe, expect, it } from 'vitest'
 import { AppShell } from '../shell/AppShell'
 import { healthy, mockFetch, standby, unreachable } from '../test/fetch'
 
-const SEVEN = ['Today', 'Chat', 'Images', 'Analysis', 'Repos', 'Files', 'Tools & permissions']
+const EIGHT = ['Today', 'Chat', 'Images', 'Analysis', 'Repos', 'Files', 'Tools & permissions', 'Settings']
 
 describe('AppShell', () => {
-  it('renders sidebar with seven destinations', () => {
+  it('renders sidebar with eight destinations', () => {
     mockFetch({ 'GET /api/health': healthy })
     render(<AppShell onSignOut={() => {}} />)
     const sidebar = screen.getByRole('navigation', { name: 'Hearthkeep' })
-    for (const name of SEVEN) {
+    for (const name of EIGHT) {
       expect(within(sidebar).getByRole('button', { name })).toBeInTheDocument()
     }
-    // Tools & permissions sits apart, at the bottom.
+    // Tools & permissions and Settings sit apart, at the bottom.
     const footer = within(sidebar).getByRole('button', { name: 'Tools & permissions' }).parentElement!
+    expect(within(footer).getByRole('button', { name: 'Settings' })).toBeInTheDocument()
     expect(within(footer).queryByRole('button', { name: 'Chat' })).toBeNull()
   })
 
@@ -68,6 +69,7 @@ describe('AppShell', () => {
 
     fireEvent.click(within(tabs).getByRole('button', { name: 'More' }))
     const sheet = screen.getByRole('dialog', { name: 'More' })
+    expect(within(sheet).getByRole('button', { name: 'Settings' })).toBeInTheDocument()
     fireEvent.click(within(sheet).getByRole('button', { name: 'Repos' }))
     expect(screen.queryByRole('dialog', { name: 'More' })).toBeNull()
     expect(screen.getByRole('heading', { level: 1, name: 'Repos' })).toBeInTheDocument()

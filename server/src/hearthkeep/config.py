@@ -119,6 +119,8 @@ def detect_docker() -> bool:
             capture_output=True,
             timeout=5,
             check=False,
+            # Under pythonw a console child would flash a window on the owner's screen.
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except Exception:
         return False

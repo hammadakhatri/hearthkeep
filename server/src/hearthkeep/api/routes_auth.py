@@ -24,7 +24,7 @@ from hearthkeep.api.common import (
     set_session_cookie,
 )
 from hearthkeep.approvals import ApprovalError
-from hearthkeep.auth.credentials import Credential, complete_enrollment
+from hearthkeep.auth.credentials import DEVICE_NAME_MAX, Credential, complete_enrollment
 from hearthkeep.auth.sessions import Session
 from hearthkeep.auth.webauthn import VerificationError, b64url_decode
 
@@ -75,17 +75,26 @@ class AddCodeBody(BaseModel):
     step_up_token: str = Field(max_length=256)
 
 
+class RenameBody(BaseModel):
+    device_name: str = Field(max_length=DEVICE_NAME_MAX)
+
+
 def _challenge(options: dict) -> bytes:
     return b64url_decode(options["challenge"])
 
 
-def _device(cred: Credential, current_id: str | None = None) -> dict:
-    return {
+def _device(
+    cred: Credential, current_id: str | None = None, last_used: dict[str, str] | None = None
+) -> dict:
+    device = {
         "id": cred.id,
         "device_name": cred.device_name,
         "created_at": cred.created_at,
         "current": cred.id == current_id,
     }
+    if last_used is not None:
+        device["last_used_at"] = last_used.get(cred.id)
+    return device
 
 
 def _enroll_failed(hk: Services, request: Request, reason: str, stage: str) -> ApiError:
@@ -298,7 +307,25 @@ async def add_device_code(body: AddCodeBody, session: SessionDep, request: Reque
 @router.get("/devices")
 async def list_devices(session: SessionDep, request: Request) -> list[dict]:
     hk = services(request)
-    return [_device(c, session.credential_id) for c in hk.credentials.unrevoked()]
+    last_used = hk.sessions.last_used()
+    return [_device(c, session.credential_id, last_used) for c in hk.credentials.unrevoked()]
+
+
+@router.patch("/devices/{credential_id}")
+async def rename_device(
+    credential_id: str, body: RenameBody, session: SessionDep, request: Request
+) -> dict:
+    hk = services(request)
+    cred = hk.credentials.rename(credential_id, body.device_name, actor(session))
+    if cred is None:
+        raise ApiError(404, "not_found")
+    return _device(cred, session.credential_id, hk.sessions.last_used())
+
+
+@router.post("/sessions/sign-out-others")
+async def sign_out_others(session: SessionDep, request: Request) -> dict:
+    hk = services(request)
+    return {"signed_out": hk.sessions.revoke_others(session.id, actor(session))}
 
 
 @router.delete("/devices/{credential_id}")

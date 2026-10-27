@@ -182,3 +182,16 @@ def test_range_boundaries_accepted(tmp_path):
         "port = 65535\nsession_idle_days = 1\napproval_ttl_minutes = 1\nmax_agent_steps = 50",
     )
     assert load_settings(tmp_path).max_agent_steps == 50
+
+
+def test_detect_docker_never_flashes_a_window_on_windows(monkeypatch):
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen.update(kw)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(config.subprocess, "run", fake_run)
+    monkeypatch.setattr(config.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    detect_docker()
+    assert seen["creationflags"] == 0x08000000

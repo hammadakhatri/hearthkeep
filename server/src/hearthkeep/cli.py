@@ -1,16 +1,18 @@
-"""Command line: `hearthkeep serve | enroll-code | secrets set/list | sandbox build/status`."""
+"""Command line: `hearthkeep serve | enroll-code | secrets set/list | sandbox build/status |
+startup enable/disable/status`."""
 
 from __future__ import annotations
 
 import argparse
 import dataclasses
 import getpass
+import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from hearthkeep import db
+from hearthkeep import db, startup
 from hearthkeep.api.app import DB_FILE
 from hearthkeep.api.common import ENROLLMENT_CODE_TTL_MINUTES
 from hearthkeep.auth.enrollment import EnrollmentCodes, EnrollmentError, first_device_allowed
@@ -35,6 +37,8 @@ if TYPE_CHECKING:
 
 EXIT_USAGE = 2
 GRACEFUL_SHUTDOWN_SECONDS = 5
+
+startup_run = subprocess.run  # how `startup` runs schtasks; replaced in tests
 
 
 def _settings(data: Path) -> Settings:
@@ -226,6 +230,14 @@ def build_model_stack(
     return stack, chat_client, settings, lines
 
 
+def _log_to(path: Path) -> None:
+    """Send everything printed from here on to `path` (appended, UTF-8, line by line). Started
+    at login by pythonw there is no console, so without this the output would be lost."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    log = open(path, "a", encoding="utf-8", buffering=1)  # noqa: SIM115 (lives as long as we do)
+    sys.stdout = sys.stderr = log
+
+
 def cmd_serve(
     args: argparse.Namespace,
     *,
@@ -243,6 +255,8 @@ def cmd_serve(
     )
     from hearthkeep.auth.webauthn import PyWebAuthnVerifier
 
+    if args.log_file:
+        _log_to(Path(args.log_file))
     settings = _settings(Path(args.data))
     if args.insecure_dev_auth:
         conn = _connect(settings)
@@ -373,6 +387,47 @@ def cmd_sandbox_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _startup_unsupported() -> int:
+    print(startup.UNSUPPORTED, file=sys.stderr)
+    return EXIT_USAGE
+
+
+def cmd_startup_enable(args: argparse.Namespace) -> int:
+    if not startup.is_windows():
+        return _startup_unsupported()
+    settings = _settings(Path(args.data))
+    data = Path(settings.data_dir).resolve()
+    try:
+        startup.enable(data, run=startup_run)
+    except startup.StartupError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(
+        "Hearthkeep will start when you sign in to Windows. "
+        f"Logs: {startup.log_path(data)}"
+    )
+    return 0
+
+
+def cmd_startup_disable(args: argparse.Namespace) -> int:
+    if not startup.is_windows():
+        return _startup_unsupported()
+    removed = startup.disable(run=startup_run)
+    print("Start at login: off" + ("" if removed else " (it was not on)"))
+    return 0
+
+
+def cmd_startup_status(args: argparse.Namespace) -> int:
+    if not startup.is_windows():
+        return _startup_unsupported()
+    state = startup.status(run=startup_run)
+    if state.enabled:
+        print(f"Start at login: on (data folder {state.data_dir})")
+    else:
+        print("Start at login: off")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="hearthkeep", description="Your private AI, at home.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -386,6 +441,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--insecure-dev-auth",
         action="store_true",
         help="DEVELOPMENT ONLY: accept any passkey response (localhost origins only)",
+    )
+    serve.add_argument(
+        "--log-file", metavar="PATH", help="append everything printed to PATH (UTF-8)"
     )
     serve.set_defaults(func=cmd_serve)
 
@@ -406,6 +464,15 @@ def build_parser() -> argparse.ArgumentParser:
     build.set_defaults(func=cmd_sandbox_build)
     status = with_data(sandbox_sub.add_parser("status", help="show Docker and the sandbox image"))
     status.set_defaults(func=cmd_sandbox_status)
+
+    login = sub.add_parser("startup", help="start Hearthkeep when you sign in (Windows)")
+    login_sub = login.add_subparsers(dest="startup_command", required=True)
+    for name, func, text in (
+        ("enable", cmd_startup_enable, "start Hearthkeep, with no window, when you sign in"),
+        ("disable", cmd_startup_disable, "stop starting Hearthkeep when you sign in"),
+        ("status", cmd_startup_status, "show whether Hearthkeep starts when you sign in"),
+    ):
+        with_data(login_sub.add_parser(name, help=text)).set_defaults(func=func)
     return parser
 
 
