@@ -827,7 +827,7 @@ async def test_docker_flag_refreshes_every_round(conn, approvals, tmp_path):
 FILE_CHAT = "e" * 32
 
 
-def _number_checker(conn, tmp_path, *, with_file=True, total=5):
+def _number_checker(conn, tmp_path, *, with_file=True, total=5, turn_id="t1"):
     from hearthkeep.files.store import ChatFileStore
     from hearthkeep.numbercheck import NumberChecker
     from hearthkeep.sandbox.runs import RunStore
@@ -843,8 +843,8 @@ def _number_checker(conn, tmp_path, *, with_file=True, total=5):
                            "is_date": False, "kind": "computed", "page": None}]}  # fmt: skip
     conn.execute(
         "INSERT INTO runs (id, chat_id, turn_id, purpose, status, results, created_at)"
-        " VALUES ('r1', ?, 't0', 'analysis', 'ok', ?, '2026-01-01')",
-        (FILE_CHAT, json.dumps(results)),
+        " VALUES ('r1', ?, ?, 'analysis', 'ok', ?, '2026-01-01')",
+        (FILE_CHAT, turn_id, json.dumps(results)),
     )
     return NumberChecker(conn, RunStore(conn, tmp_path), ChatFileStore(conn, tmp_path))
 
@@ -903,8 +903,9 @@ async def test_number_check_covers_plain_followup_reply(
     loop = AgentLoop(client, registry, approvals, conn, settings, reply_checker=checker)
     events = await drain_chat(loop, user("And in 2024?"), FILE_CHAT, turn_id="t2")
     assert types(events)[-2:] == ["number_check", "turn_done"]
-    # The year from the question is exempt.
-    assert [(m["text"], m["kind"]) for m in events[-2]["marks"]] == [("5", "computed")]
+    # The year from the question is exempt; the 5 was reported in an earlier turn (t1), so it
+    # is not evidence for this one.
+    assert [(m["text"], m["kind"]) for m in events[-2]["marks"]] == [("5", "unverified")]
 
 
 async def test_number_check_after_step_limit_message(conn, settings, approvals, registry, tmp_path):

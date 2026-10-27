@@ -267,11 +267,15 @@ def test_analysis_context_lines(store):
 
 
 def test_analysis_prompt_is_exact():
-    # The number-check sentence comes first after "Rules:"; the rest is unchanged.
+    # The number-check sentence comes first after "Rules:".
     assert (
-        "\nRules: Report every number you will mention with hk.result, even ones you can read "
-        "from a table; numbers that weren't reported this way show as unverified. never "
-        "compute, estimate or round a number yourself." in ANALYSIS_PROMPT
+        "\nRules: Report each number you will mention with hk.result (one result per number you "
+        "state, not whole tables), or with hk.document(name, value, page=N) for a number read "
+        "from a PDF page; numbers not reported this way show as unverified. Never compute, "
+        "estimate or round a number yourself." in ANALYSIS_PROMPT
+    )
+    assert "hk.document(name, value, page=N) reports a number read from a PDF page;" in (
+        ANALYSIS_PROMPT.split("\nRules:")[0]
     )
     assert ANALYSIS_PROMPT.startswith(
         "This chat has files the owner attached:\n{files}\n\nTo answer questions about them, "

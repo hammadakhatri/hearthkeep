@@ -1115,8 +1115,9 @@ def test_messages_include_number_check_on_last_assistant_message(harness):
     assert [m["role"] for m in messages] == ["user", "assistant", "tool", "assistant"]
     expected = {
         "text": "Let me count.\n\nThere are 5 rows.",
-        "marks": [{"start": 25, "end": 26, "text": "5", "kind": "computed", "page": None,
-                   "note": None}],
+        # The run was saved outside this turn, so it is not evidence for it.
+        "marks": [{"start": 25, "end": 26, "text": "5", "kind": "unverified", "page": None,
+                   "note": "Not found in any result from this chat's analysis."}],
     }  # fmt: skip
     assert messages[-1]["number_check"] == expected
     assert frames[-2]["data"] == expected

@@ -7,19 +7,23 @@ Mentions that also appear in the owner's question of that turn or in a file name
 no mark. When in doubt a mention is `unverified`: flagging a right number is better than letting
 a wrong one through. So:
 
-- Only named results confirm a number: the `hk.result` values of analysis runs give
-  `computed`; `hk.document` values and everything a vision run read (values and table cells)
-  give `document`. Both match within the precision written ("3" covers [2.5, 3.5)). Table cells
-  and printed output of analysis runs are never evidence: thousands of unnamed numbers would
-  confirm almost any number by chance.
+- Only named results of this turn confirm a number: the `hk.result` values of the turn's
+  analysis runs give `computed`. The turn's `hk.document` values, and what any vision run of
+  the chat read (values and table cells), give `document`. Table cells and printed output of
+  analysis runs, and earlier turns' named results, are never evidence: with many unnamed or
+  unrelated numbers, almost any number finds a match by chance.
+- Named values match within the precision written ("3" covers [2.5, 3.5)). When a side has
+  more than BIG_POOL named values, integers with at most 2 significant digits and every
+  percent match only exactly. Vision table cells match only exactly, or within the precision
+  written when 3 or more significant digits are written, and never as 100·v.
 - A written sign (`+`, `−`) must match the value's sign; an unsigned number may state a size.
 - A percent matches `100·v` only for ratio-like values (|v| ≤ 10), and `v` itself only when the
   value's unit is a percent.
 - Durations, times, fractions, short-year dates, phone numbers, URLs and code are never matched.
 
-Work is bounded: at most MAX_REPORTED reported values, MAX_REPLY_CHARS characters of a reply
-(or of an exempt text); matching is a
-binary search per mention. Offsets are code points inside; the web gets UTF-16 offsets.
+Work is bounded: at most MAX_REPORTED reported values and MAX_REPLY_CHARS characters of a
+reply (or of an exempt text); matching is a binary search per mention. Offsets are code points
+inside; the web gets UTF-16 offsets.
 """
 
 from __future__ import annotations
@@ -47,6 +51,7 @@ UNVERIFIED_NOTE = "Not found in any result from this chat's analysis."
 MAX_REPORTED = 50_000
 MAX_REPLY_CHARS = 20_000
 MAX_RUNS = 200
+BIG_POOL = 100  # more named values than this: small numbers and percents match exactly only
 MAX_ABS = 2.0**63  # larger run values are dropped (results.py stores them as null too)
 
 _log = logging.getLogger(__name__)
@@ -71,6 +76,7 @@ class Mention:
     month_year: bool = False  # "March 2024": matches any day of that month
     signed: bool = False  # a "+" or "−" was written
     ordinal: bool = False  # "12th"
+    digits: int = 0  # significant digits written
 
 
 @dataclass
@@ -80,6 +86,7 @@ class Reported:
     kind: Kind
     page: int | None
     percent: bool = False  # the value's unit is a percent
+    cell: bool = False  # a vision run's table cell (unnamed: matched more strictly)
 
 
 @dataclass
@@ -357,6 +364,7 @@ def _number(m: re.Match, work: str, text: str) -> Mention | None:
         return _plain_mention(begin, stop, text)  # too big to compare: always unverified
     if sign in _MINUS and sign:
         number = -number
+    digits = len((whole + fraction).lstrip("0"))
     plain = begin == start and stop == end
     if (
         plain
@@ -367,7 +375,8 @@ def _number(m: re.Match, work: str, text: str) -> Mention | None:
         return _plain_mention(start, end, text, value=number,
                               date=datetime.date(int(number), 1, 1), year_only=True)  # fmt: skip
     return Mention(begin, stop, text[begin:stop], number, len(fraction), scale, percent, None,
-                   None, False, False, signed=bool(sign), ordinal=ordinal)  # fmt: skip
+                   None, False, False, signed=bool(sign), ordinal=ordinal,
+                   digits=digits)  # fmt: skip
 
 
 def _scan(text: str) -> list[Mention]:
@@ -458,11 +467,13 @@ def _from_mentions(mentions: Iterable[Mention], kind: Kind, page: int | None) ->
 Loaded = list[tuple[RunRecord, list[dict]]]
 
 
-def _load(runs: RunStore, chat_id: str) -> Loaded:
-    """The chat's runs (newest first), read from the database, with the table outputs' data of
-    vision runs (what was read from a document; analysis tables are never evidence)."""
+def _load(runs: RunStore, chat_id: str, turn_id: str) -> Loaded:
+    """The evidence runs, newest first, read from the database: this turn's analysis runs and
+    every vision run of the chat, with the vision runs' table outputs."""
     loaded: Loaded = []
     for run in runs.runs_for_chat(chat_id, MAX_RUNS):
+        if run.purpose != "vision" and run.turn_id != turn_id:
+            continue  # an earlier turn's results are not evidence for this reply
         tables: list = []
         if run.purpose == "vision":
             tables = [o.data for o in runs.outputs(run.id) if o.kind == "table"]
@@ -489,6 +500,7 @@ def _reported_from(loaded: Loaded) -> Iterator[Reported]:
                 for cell in row if isinstance(row, list) else ():
                     found = _number_or_date(cell, "document", None)
                     if found is not None:
+                        found.cell = True
                         yield found
 
 
@@ -496,9 +508,9 @@ def _capped(loaded: Loaded) -> list[Reported]:
     return list(itertools.islice(_reported_from(loaded), MAX_REPORTED))
 
 
-def reported_values(runs: RunStore, chat_id: str) -> list[Reported]:
-    """The values this chat's runs reported, newest runs first, at most MAX_REPORTED."""
-    return _capped(_load(runs, chat_id))
+def reported_values(runs: RunStore, chat_id: str, turn_id: str) -> list[Reported]:
+    """The evidence for a reply of this turn, newest runs first, at most MAX_REPORTED."""
+    return _capped(_load(runs, chat_id, turn_id))
 
 
 # ---- matching ------------------------------------------------------------------------------------
@@ -515,6 +527,10 @@ class _Side:
     numbers: dict[str, list[tuple[float, int]]] = field(
         default_factory=lambda: {f: [] for f in _FORMS}
     )
+    cells: dict[str, list[tuple[float, int]]] = field(
+        default_factory=lambda: {"v": [], "a": []}
+    )  # vision table cells: no percent or 100·v forms
+    named: int = 0  # how many named numbers
     dates: dict[datetime.date, int | None] = field(default_factory=dict)
     month_days: dict[tuple[int, int], int | None] = field(default_factory=dict)
     months: dict[tuple[int, int], int | None] = field(default_factory=dict)
@@ -522,7 +538,12 @@ class _Side:
 
     def add(self, r: Reported) -> None:
         page = r.page or 0
-        if r.value is not None:
+        if r.value is not None and r.cell:
+            self.cells["v"].append((r.value, page))
+            if r.value < 0:
+                self.cells["a"].append((-r.value, page))
+        elif r.value is not None:
+            self.named += 1
             v = r.value
             forms = [("v", v)]
             if r.percent:
@@ -545,27 +566,25 @@ class _Side:
             self.years.setdefault(d.year, r.page)
 
     def finish(self) -> None:
-        for values in self.numbers.values():
+        for values in (*self.numbers.values(), *self.cells.values()):
             values.sort()
 
-    def number(self, m: Mention, exact: bool = False) -> tuple[bool, int | None]:
-        """Within the precision written, half-open: [m - t, m + t). `exact`: equal only."""
-        target = m.value * m.scale  # type: ignore[operator]
-        slack = 1e-9 * max(1.0, abs(target))
-        if exact:
-            low, high, closed = target - slack, target + slack, True
-        else:
-            tolerance = 0.5 * 10.0 ** (-m.decimals) * m.scale
-            low, high, closed = target - tolerance - slack, target + tolerance, False
+    def number(self, m: Mention) -> tuple[bool, int | None]:
+        """Named values within the precision written (exactly, for small numbers and percents
+        in a big pool); cells exactly, or within the precision when 3+ digits are written."""
+        small = m.percent or (m.decimals == 0 and m.digits <= 2)
         forms = ["pv", "h"] if m.percent else ["v"]
         if not m.signed:
             forms += ["pa", "ha"] if m.percent else ["a"]
-        for form in forms:
-            values = self.numbers[form]
-            i = bisect.bisect_left(values, (low, -1))
-            if i < len(values) and (values[i][0] <= high if closed else values[i][0] < high):
-                return True, values[i][1] or None
-        return False, None
+        found = _lookup(self.numbers, forms, m, exact=small and self.named > BIG_POOL)
+        if found[0] or m.percent:
+            return found
+        cell_forms = ["v"] if m.signed else ["v", "a"]
+        return _lookup(self.cells, cell_forms, m, exact=m.digits < 3)
+
+    def equal(self, m: Mention) -> bool:
+        """A named value exactly equal to the number as written (the year path)."""
+        return _lookup(self.numbers, ["v"], m, exact=True)[0]
 
     def day(self, m: Mention, when: datetime.date) -> tuple[bool, int | None]:
         if m.month_day_only:
@@ -579,6 +598,25 @@ class _Side:
         if key in table:
             return True, table[key]  # type: ignore[index]
         return False, None
+
+
+def _lookup(
+    lists: dict[str, list[tuple[float, int]]], forms: list[str], m: Mention, exact: bool
+) -> tuple[bool, int | None]:
+    """Half-open [m - t, m + t) for the precision written; `exact`: equal (1e-9 relative)."""
+    target = m.value * m.scale  # type: ignore[operator]
+    slack = 1e-9 * max(1.0, abs(target))
+    if exact:
+        low, high, closed = target - slack, target + slack, True
+    else:
+        tolerance = 0.5 * 10.0 ** (-m.decimals) * m.scale
+        low, high, closed = target - tolerance - slack, target + tolerance, False
+    for form in forms:
+        values = lists[form]
+        i = bisect.bisect_left(values, (low, -1))
+        if i < len(values) and (values[i][0] <= high if closed else values[i][0] < high):
+            return True, values[i][1] or None
+    return False, None
 
 
 _RANK = {"computed": 2, "document": 1}
@@ -600,7 +638,8 @@ def _resolve(m: Mention, sides: tuple[_Side, _Side]) -> tuple[str, int | None] |
         return _best(sides, lambda s: s.number(m))
     if m.year_only:
         by_year = _best(sides, lambda s: s.day(m, m.date))  # type: ignore[arg-type]
-        by_value = _best(sides, lambda s: s.number(m, exact=True))  # an equal value only
+        # As a number: only an equal named analysis value (no sizes, cells or documents).
+        by_value = ("computed", None) if sides[0].equal(m) else None
         found = [r for r in (by_year, by_value) if r is not None]
         return max(found, key=lambda r: _RANK[r[0]]) if found else None
     ends = [m.date] if m.date_end is None else [m.date, m.date_end]
@@ -735,22 +774,26 @@ class NumberChecker:
         self._runs = runs
         self._files = files
 
-    def _inputs(self, chat_id: str, question: str) -> tuple[Loaded, list[str], list[str]] | None:
+    def _inputs(
+        self, chat_id: str, turn_id: str, question: str
+    ) -> tuple[Loaded, list[str], list[str]] | None:
         chat_files = self._files.list(chat_id)
         if not chat_files:
             return None
         names = [f.name for f in chat_files]
-        return _load(self._runs, chat_id), [without_attachment_lines(question)], names
+        return _load(self._runs, chat_id, turn_id), [without_attachment_lines(question)], names
 
     def marks_for(
         self,
         chat_id: str,
+        turn_id: str,
         text: str,
         question: str = "",
         excluded: Sequence[tuple[int, int]] = (),
     ) -> list[Mark] | None:
-        """The reply's marks (code-point offsets), or None when the chat has no files."""
-        inputs = self._inputs(chat_id, question)
+        """The marks of a reply of this turn (code-point offsets), or None when the chat has no
+        files."""
+        inputs = self._inputs(chat_id, turn_id, question)
         if inputs is None:
             return None
         loaded, exempt, names = inputs
@@ -770,7 +813,7 @@ class NumberChecker:
         anything goes wrong: the check never stops a reply. The database is read here (its
         connection belongs to this thread); the matching runs in a worker thread."""
         try:
-            inputs = self._inputs(chat_id, question)
+            inputs = self._inputs(chat_id, turn_id, question)
             if inputs is None:
                 return None
             loaded, exempt, names = inputs
