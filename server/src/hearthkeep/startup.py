@@ -57,6 +57,14 @@ def same_folder(a: Path | str, b: Path | str) -> bool:
     )
 
 
+def on_for_another_folder(state: StartupStatus, data_dir: Path | str) -> bool:
+    """The task is on but starts Hearthkeep with another data folder. `data_dir` is resolved
+    first, as `enable` resolves the folder it writes into the task."""
+    if not state.enabled or state.data_dir is None:
+        return False
+    return not state.serves(Path(data_dir).resolve())
+
+
 def quote_arg(value: str) -> str:
     """One Windows command-line argument in double quotes. Backslashes before the closing
     quote are doubled, so a drive root (a data folder at the top of a drive) keeps its

@@ -105,7 +105,7 @@ async def startup_settings(session: SessionDep, request: Request) -> dict:
     hk = services(request)
     state = await asyncio.to_thread(startup.cached_status, hk.monotonic())
     # On for another data folder: enabling here points it at this one.
-    other = state.enabled and state.data_dir is not None and not state.serves(hk.settings.data_dir)
+    other = startup.on_for_another_folder(state, hk.settings.data_dir)
     command = None
     if state.supported:
         verb = "disable" if state.enabled and not other else "enable"

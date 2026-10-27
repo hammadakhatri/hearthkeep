@@ -425,8 +425,8 @@ def cmd_startup_status(args: argparse.Namespace) -> int:
     if not startup.is_windows():
         return _startup_unsupported()
     state = startup.status(run=startup_run)
-    data = Path(_settings(Path(args.data)).data_dir).resolve()
-    if state.enabled and state.data_dir is not None and not state.serves(data):
+    data = Path(_settings(Path(args.data)).data_dir)
+    if startup.on_for_another_folder(state, data):
         print(f"Start at login: on, for another data folder ({state.data_dir})")
     elif state.enabled:
         print(f"Start at login: on (data folder {state.data_dir})")

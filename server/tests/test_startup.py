@@ -197,3 +197,11 @@ def test_status_knows_another_data_folder(windows, tmp_path):
     state = startup.status(run=run)
     assert state.serves(tmp_path / "one") is True
     assert state.serves(tmp_path / "two") is False
+
+
+def test_another_folder_is_judged_on_the_resolved_path(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    state = startup.StartupStatus(True, True, str((tmp_path / "data").resolve()))
+    assert startup.on_for_another_folder(state, Path("data")) is False  # relative, same folder
+    assert startup.on_for_another_folder(state, Path("other")) is True
+    assert startup.on_for_another_folder(startup.StartupStatus(True, False, None), "x") is False

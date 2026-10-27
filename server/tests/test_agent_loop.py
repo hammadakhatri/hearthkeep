@@ -1040,3 +1040,48 @@ async def test_invalid_arguments_name_the_field_and_rule_never_the_value(
         "('extra' was unexpected)",
     ]
     assert not any("VALUE" in e for e in errors)
+
+
+class RangeTool(StrictTool):
+    name = "ranged"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "n": {"type": "integer", "minimum": 1, "maximum": 5},
+            "tags": {"type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": True},
+            "odd": {"type": "integer", "multipleOf": 2},
+        },
+        "additionalProperties": False,
+    }
+
+
+async def test_every_validator_names_the_field_and_limit_never_the_value(
+    conn, settings, approvals, registry
+):
+    registry.register(RangeTool())
+    bad = [
+        {"n": 0},
+        {"n": 777777},
+        {"tags": []},
+        {"tags": ["VALUE-a", "VALUE-b", "VALUE-c"]},
+        {"tags": ["VALUE-a", "VALUE-a"]},
+        {"odd": 777773},
+    ]
+    script = [[call("ranged", a, f"c{i}"), StreamDone("tool_calls")] for i, a in enumerate(bad)]
+    client = FakeChatClient([*script, [TextDelta("Sorry."), StreamDone("stop")]])
+    loop = make_loop(client, registry, approvals, conn, replace(settings, max_agent_steps=10))
+    await drain(loop, user("go"))
+    errors = [
+        json.loads(tool_messages(client.calls[i]["messages"])[-1]["content"])["error"]
+        for i in range(1, len(bad) + 1)
+    ]
+    prefix = "Invalid arguments for 'ranged': "
+    assert errors == [
+        prefix + "'n' must be at least 1.",
+        prefix + "'n' must be at most 5.",
+        prefix + "'tags' needs at least 1 item.",
+        prefix + "'tags' has too many items (at most 2).",
+        prefix + "'tags' has repeated items.",
+        prefix + "'odd' breaks the multipleOf rule.",
+    ]
+    assert not any("VALUE" in e or "7777" in e for e in errors)

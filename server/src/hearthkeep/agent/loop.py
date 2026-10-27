@@ -91,10 +91,23 @@ def _invalid_args(name: str, exc: jsonschema.ValidationError) -> str:
     elif rule == "type":
         kinds = limit if isinstance(limit, str) else " or ".join(map(str, limit))
         detail = f"'{field}' must be of type {kinds}."
+    elif rule in ("minimum", "exclusiveMinimum"):
+        bound = "at least" if rule == "minimum" else "more than"
+        detail = f"'{field}' must be {bound} {limit}."
+    elif rule in ("maximum", "exclusiveMaximum"):
+        bound = "at most" if rule == "maximum" else "less than"
+        detail = f"'{field}' must be {bound} {limit}."
+    elif rule == "minItems":
+        detail = f"'{field}' needs at least {limit} item{'' if limit == 1 else 's'}."
+    elif rule == "maxItems":
+        detail = f"'{field}' has too many items (at most {limit})."
+    elif rule == "uniqueItems":
+        detail = f"'{field}' has repeated items."
     elif rule in ("required", "additionalProperties"):
-        detail = exc.message  # names only, no values
-    else:
+        # Argument names only (jsonschema's message for these never holds a value).
         detail = one_line(exc.message)[:_ARG_ERROR_CHARS]
+    else:  # any other rule: its name, never jsonschema's message (that quotes the value)
+        detail = f"'{field}' breaks the {one_line(str(rule))[:40]} rule."
     return f"Invalid arguments for '{name}': {detail}"
 
 
