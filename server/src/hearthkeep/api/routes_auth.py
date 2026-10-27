@@ -31,7 +31,7 @@ from hearthkeep.auth.webauthn import VerificationError, b64url_decode
 router = APIRouter(prefix="/api")
 
 OWNER_USER_ID = b"hearthkeep-owner"
-StepUpPurpose = Literal["approval", "settings", "add_device"]
+StepUpPurpose = Literal["approval", "settings", "add_device", "add_folder"]
 
 SessionDep = Annotated[Session, Depends(current_session)]
 

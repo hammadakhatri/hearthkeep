@@ -27,6 +27,7 @@ from hearthkeep.api import (
     routes_auth,
     routes_chats,
     routes_files,
+    routes_folders,
     routes_images,
     routes_models,
     routes_runs,
@@ -49,6 +50,7 @@ from hearthkeep.auth.sessions import SessionStore, StepUp
 from hearthkeep.auth.webauthn import ChallengeStore, Verifier
 from hearthkeep.config import LOOPBACK_HOSTS, Settings, detect_docker
 from hearthkeep.files.store import ChatFileStore
+from hearthkeep.folders import FolderStore
 from hearthkeep.images import ImageStore
 from hearthkeep.numbercheck import NumberChecker
 from hearthkeep.runtime.stack import ModelStack
@@ -59,6 +61,7 @@ from hearthkeep.sandbox.runner import SandboxRunner
 from hearthkeep.sandbox.runs import RunStore
 from hearthkeep.secrets import SecretStore
 from hearthkeep.tools.base import ToolRegistry
+from hearthkeep.tools.files import FilesTool
 from hearthkeep.tools.python import PythonTool, analysis_context
 from hearthkeep.tools.read_pages import ReadPagesTool
 
@@ -300,6 +303,10 @@ def create_app(
             chat = stack.chat_client(chat_client, gpu)
             if registry.get(ReadPagesTool.name) is None:
                 registry.register(ReadPagesTool(handle, files, runs, chat))
+            folders = FolderStore(conn, settings.data_dir)
+            inspector = Inspector(handle, files)
+            if registry.get(FilesTool.name) is None:
+                registry.register(FilesTool(folders, files, inspector))
             checker = NumberChecker(conn, runs, files)
             loop = AgentLoop(
                 chat,
@@ -340,8 +347,9 @@ def create_app(
                 monotonic=monotonic,
                 sandbox=handle,
                 runs=runs,
-                inspector=Inspector(handle, files),
+                inspector=inspector,
                 checker=checker,
+                folders=folders,
             )
             yield
         finally:
@@ -381,6 +389,7 @@ def create_app(
         routes_images,
         routes_uploads,
         routes_files,
+        routes_folders,
         routes_runs,
     ):
         app.include_router(module.router)

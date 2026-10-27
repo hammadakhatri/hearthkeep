@@ -25,6 +25,7 @@ from hearthkeep.files.checks import (
 )
 from hearthkeep.files.store import CHAT_ID, ChatFile, ChatFileStore, StagedFile
 from hearthkeep.sandbox.inspect import Inspector
+from hearthkeep.sandbox.inspect import inspect_recorded as inspect_file
 
 router = APIRouter(prefix="/api")
 
@@ -96,26 +97,12 @@ def prepare_upload(
 async def inspect_recorded(
     inspector: Inspector | None, store: ChatFileStore, saved: ChatFile
 ) -> ChatFile:
-    """Inspect a file just recorded as "pending" (while pending, no turn lists or mounts it).
-
-    - Checked: "ready", with its summary.
-    - Couldn't be checked (no Docker, a timeout, a sandbox error): "unchecked", still attached.
-    - Password-protected or unreadable: removed (row and bytes) and refused.
-    - Cancelled part way (the request or the server stopping): removed too, so nothing is
-      left half-checked; the owner never got its id and attaches it again.
-    """
-    if inspector is None:
-        store.set_status(saved.id, "unchecked", None)
-        return store.get(saved.id) or saved
+    """The shared inspection (`sandbox.inspect.inspect_recorded`), with a refusal as the
+    API's error."""
     try:
-        await inspector.inspect(saved)
+        return await inspect_file(inspector, store, saved)
     except FileRefused as error:
-        store.remove(saved.id)
         raise _refusal(error) from None
-    except BaseException:
-        store.remove(saved.id)  # cancelled part way: keep nothing half-checked
-        raise
-    return store.get(saved.id) or saved
 
 
 @router.post("/chats/{chat_id}/files", status_code=201)

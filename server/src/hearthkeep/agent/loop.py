@@ -68,7 +68,7 @@ INVALID_CALL_SUMMARY = "Invalid tool call"
 INTERRUPTED = json.dumps({"error": "This step was interrupted"})
 _ATTACHMENT_ID = re.compile(r"[A-Za-z0-9_-]{1,32}")
 # The kinds of item a tool may attach, and the table each must exist in (for this chat).
-_ATTACHMENT_TABLES = {"image": "images", "run": "runs"}
+_ATTACHMENT_TABLES = {"image": "images", "run": "runs", "file": "chat_files"}
 
 _log = logging.getLogger(__name__)
 
@@ -555,8 +555,8 @@ class AgentLoop:
         return bool(result.ok)
 
     def _attachments(self, turn: _Turn, data: object) -> list[dict]:
-        """The valid attachment items of a tool result: images and runs of this chat, each
-        once. Anything else is dropped silently."""
+        """The valid attachment items of a tool result: images, runs and files of this chat,
+        each once. Anything else is dropped silently."""
         items = data.get("attachments") if isinstance(data, dict) else None
         if not isinstance(items, list):
             return []

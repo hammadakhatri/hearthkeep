@@ -173,6 +173,14 @@ MIGRATIONS: dict[int, str] = {
     );
     CREATE INDEX IF NOT EXISTS number_checks_chat ON number_checks(chat_id);
     """,
+    6: """
+    CREATE TABLE IF NOT EXISTS allowed_folders (
+        id TEXT PRIMARY KEY,
+        path TEXT UNIQUE,
+        label TEXT UNIQUE,
+        created_at TEXT
+    );
+    """,
 }
 
 

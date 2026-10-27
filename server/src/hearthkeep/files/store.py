@@ -11,7 +11,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from secrets import token_urlsafe
-from typing import Literal
+from typing import BinaryIO, Literal
 
 from hearthkeep import db
 from hearthkeep.files.checks import FILE_KINDS, MAX_FILE_BYTES, FileCheck, FileRefused
@@ -123,10 +123,18 @@ class ChatFileStore:
     def stage_copy(self, chat_id: str, src: Path, max_bytes: int = MAX_FILE_BYTES) -> StagedFile:
         """Step 1 for a file copied from disk, stopped (FileRefused "too_large") as soon as it
         is over `max_bytes`."""
+        with open(src, "rb") as source:
+            return self.stage_stream(chat_id, source, max_bytes)
+
+    def stage_stream(
+        self, chat_id: str, source: BinaryIO, max_bytes: int = MAX_FILE_BYTES
+    ) -> StagedFile:
+        """Step 1 for a file read from an already open handle (a file in the owner's folders,
+        opened and checked without following links: it is never reopened by path)."""
         staged = self._new_tmp(chat_id)
         copied = 0
         try:
-            with open(src, "rb") as source, open(staged.tmp, "wb") as target:
+            with open(staged.tmp, "wb") as target:
                 while chunk := source.read(_COPY_CHUNK):
                     copied += len(chunk)
                     if copied > max_bytes:

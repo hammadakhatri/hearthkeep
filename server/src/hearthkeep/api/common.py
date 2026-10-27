@@ -24,6 +24,7 @@ from hearthkeep.auth.sessions import Session, SessionStore, StepUp, public_id
 from hearthkeep.auth.webauthn import ChallengeStore, Verifier
 from hearthkeep.config import LOOPBACK_HOSTS, Settings
 from hearthkeep.files.store import ChatFileStore
+from hearthkeep.folders import FolderStore
 from hearthkeep.images import ImageStore
 from hearthkeep.models.cards import CardError, ModelCard
 from hearthkeep.numbercheck import NumberChecker
@@ -137,6 +138,7 @@ class Services:
     runs: RunStore | None = None
     inspector: Inspector | None = None
     checker: NumberChecker | None = None
+    folders: FolderStore | None = None  # the owner's allowed folders
     health_cache: tuple[float, bool] | None = None
     health_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 

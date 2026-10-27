@@ -148,3 +148,26 @@ class Inspector:
         except (_Unusable, OSError) as exc:
             _log.info("file not inspected: %s", exc if isinstance(exc, _Unusable) else "OSError")
             return None
+
+
+async def inspect_recorded(
+    inspector: Inspector | None, store: ChatFileStore, saved: ChatFile
+) -> ChatFile:
+    """Inspect a file just recorded as "pending" (while pending, no turn lists or mounts it).
+    Shared by every way a file reaches a chat (attached, or brought from a folder).
+
+    - Checked: "ready", with its summary.
+    - Couldn't be checked (no Docker, a timeout, a sandbox error): "unchecked", still attached.
+    - Password-protected or unreadable: removed (row and bytes), and FileRefused is raised.
+    - Cancelled part way (the request or the server stopping): removed too, so nothing is
+      left half-checked; the owner never got its id and attaches it again.
+    """
+    if inspector is None:
+        store.set_status(saved.id, "unchecked", None)
+        return store.get(saved.id) or saved
+    try:
+        await inspector.inspect(saved)
+    except BaseException:
+        store.remove(saved.id)  # refused, or cancelled part way: keep nothing half-checked
+        raise
+    return store.get(saved.id) or saved
