@@ -27,6 +27,7 @@ from hearthkeep.files.store import ChatFileStore
 from hearthkeep.images import ImageStore
 from hearthkeep.models.cards import CardError, ModelCard
 from hearthkeep.runtime.gpu import GpuScheduler
+from hearthkeep.sandbox.runner import SandboxRunner
 from hearthkeep.tools.base import ToolRegistry
 
 SESSION_COOKIE = "hk_session"
@@ -129,6 +130,7 @@ class Services:
     managed: frozenset[str] = frozenset()  # card ids the GPU scheduler runs
     chat_model_id: str | None = None  # set when Hearthkeep runs the chat model itself
     monotonic: Callable[[], float] = time.monotonic
+    sandbox: SandboxRunner | None = None  # only when Docker is available
     health_cache: tuple[float, bool] | None = None
     health_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 

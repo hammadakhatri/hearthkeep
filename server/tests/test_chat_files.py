@@ -40,7 +40,7 @@ def files_dir(h, chat_id):
 
 def test_migration_3_adds_chat_files_and_upload_chats(tmp_path):
     conn = connect(tmp_path / "hk.db")
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert conn.execute("PRAGMA user_version").fetchone()[0] >= 3
     files = {r["name"] for r in conn.execute("PRAGMA table_info(chat_files)")}
     assert files == {
         "id", "chat_id", "name", "kind", "mime", "size", "status", "summary", "source",
@@ -51,7 +51,7 @@ def test_migration_3_adds_chat_files_and_upload_chats(tmp_path):
     conn.close()
     # Idempotent: opening again changes nothing.
     again = connect(tmp_path / "hk.db")
-    assert again.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert again.execute("PRAGMA user_version").fetchone()[0] >= 3
     again.close()
 
 

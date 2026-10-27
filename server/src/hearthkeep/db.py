@@ -131,6 +131,37 @@ MIGRATIONS: dict[int, str] = {
         chat_id TEXT
     );
     """,
+    4: """
+    CREATE TABLE IF NOT EXISTS runs (
+        id TEXT PRIMARY KEY,
+        chat_id TEXT,
+        turn_id TEXT,
+        purpose TEXT,
+        script TEXT,
+        stdout TEXT,
+        stdout_truncated INT,
+        status TEXT,
+        error TEXT,
+        duration_ms INT,
+        results TEXT,
+        problems TEXT,
+        created_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS runs_chat ON runs(chat_id);
+    CREATE TABLE IF NOT EXISTS outputs (
+        id TEXT PRIMARY KEY,
+        run_id TEXT,
+        chat_id TEXT,
+        kind TEXT,
+        name TEXT,
+        mime TEXT,
+        size INT,
+        data TEXT,
+        file_name TEXT,
+        created_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS outputs_run ON outputs(run_id);
+    """,
 }
 
 

@@ -50,6 +50,8 @@ from hearthkeep.config import LOOPBACK_HOSTS, Settings, detect_docker
 from hearthkeep.files.store import ChatFileStore
 from hearthkeep.images import ImageStore
 from hearthkeep.runtime.stack import ModelStack
+from hearthkeep.sandbox import image as sandbox_image
+from hearthkeep.sandbox.runner import SandboxRunner
 from hearthkeep.secrets import SecretStore
 from hearthkeep.tools.base import ToolRegistry
 
@@ -207,6 +209,19 @@ def _install_static(app: FastAPI, web_dist: Path) -> None:
         return error_response(404, "not_found")
 
 
+async def _start_sandbox(settings: Settings) -> SandboxRunner | None:
+    """The sandbox runner when Docker is available; containers a stopped Hearthkeep left
+    behind are removed first (none of this run's can exist yet)."""
+    if not settings.docker_available:
+        return None
+    sandbox = SandboxRunner(Path(settings.data_dir), image_tag=sandbox_image.image_tag())
+    try:
+        await sandbox.sweep()
+    except Exception as exc:
+        _log.warning("could not sweep sandbox containers: %s", type(exc).__name__)
+    return sandbox
+
+
 def create_app(
     settings: Settings,
     *,
@@ -244,6 +259,7 @@ def create_app(
             files = ChatFileStore(conn, settings.data_dir)
             # Uploads cut off by a stop leave temporary files behind; none can be live yet.
             files.sweep_temp()
+            sandbox = await _start_sandbox(settings)
             image_tool = stack.image_tool(gpu, images)
             if image_tool is not None and registry.get(image_tool.name) is None:
                 registry.register(image_tool)
@@ -275,6 +291,7 @@ def create_app(
                 managed=stack.managed,
                 chat_model_id=stack.chat_model_id,
                 monotonic=monotonic,
+                sandbox=sandbox,
             )
             yield
         finally:
