@@ -11,6 +11,7 @@ copied through a no-follow file descriptor whose size is fixed when it is opened
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import os
@@ -190,19 +191,30 @@ def run_pages(manifest: dict, out: Path) -> None:
         for n in args.get("pages") or []:
             if not isinstance(n, int) or not 1 <= n <= count:
                 continue
-            page = pdf[n - 1]
+            # A page that can't be rendered is left out (the host reports it); the others
+            # still come back.
+            target = pages_dir / f"{n}.png"
             try:
-                # Size the render so the longest side fits before any pixels exist.
-                longest = max(page.get_size()) or 1
-                scale = min(dpi / 72, (MAX_PAGE_SIDE - 1) / longest)
-                image = page.render(scale=scale).to_pil()
-            finally:
-                page.close()
-            if max(image.size) > MAX_PAGE_SIDE:
-                image.thumbnail((MAX_PAGE_SIDE, MAX_PAGE_SIDE))
-            image.save(pages_dir / f"{n}.png", format="PNG")
+                _render_page(pdf, n, dpi, target)
+            except Exception:
+                with contextlib.suppress(OSError):
+                    target.unlink()  # never a half-written image
     finally:
         pdf.close()
+
+
+def _render_page(pdf, n: int, dpi: int, target: Path) -> None:
+    page = pdf[n - 1]
+    try:
+        # Size the render so the longest side fits before any pixels exist.
+        longest = max(page.get_size()) or 1
+        scale = min(dpi / 72, (MAX_PAGE_SIDE - 1) / longest)
+        image = page.render(scale=scale).to_pil()
+    finally:
+        page.close()
+    if max(image.size) > MAX_PAGE_SIDE:
+        image.thumbnail((MAX_PAGE_SIDE, MAX_PAGE_SIDE))
+    image.save(target, format="PNG")
 
 
 class _Exact:

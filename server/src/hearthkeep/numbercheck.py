@@ -14,8 +14,9 @@ a wrong one through. So:
   unrelated numbers, almost any number finds a match by chance.
 - Named values match within the precision written ("3" covers [2.5, 3.5)). When a side has
   more than BIG_POOL named values, integers with at most 2 significant digits and every
-  percent match only exactly. Vision table cells match only exactly, or within the precision
-  written when 3 or more significant digits are written, and never as 100·v.
+  percent match only exactly. Vision table cells (and a vision run's numeric values, which
+  are those cells with their page) match only exactly, or within the precision written when
+  3 or more significant digits are written, and never as 100·v.
 - A written sign (`+`, `−`) must match the value's sign; an unsigned number may state a size.
 - A percent matches `100·v` only for ratio-like values (|v| ≤ 10), and `v` itself only when the
   value's unit is a percent.
@@ -486,11 +487,17 @@ def _reported_from(loaded: Loaded) -> Iterator[Reported]:
     of analysis runs are left out: only named results confirm a number."""
     for run, tables in loaded:
         read = run.purpose == "vision"
+        paged: set[float] = set()  # a vision run's numbers already given with their page
         for v in run.values:
             kind: Kind = "document" if read or v.kind == "document" else "computed"
             percent = "%" in (v.unit or "")
             found = _number_or_date(v.value, kind, v.page, percent)
             if found is not None:
+                if read and found.value is not None:
+                    # A vision run's values are the table cells it read (read_pages), with
+                    # their page: they are matched as strictly as cells.
+                    found.cell = True
+                    paged.add(found.value)
                 yield found
             elif isinstance(v.value, str):
                 yield from _from_mentions(_scan(v.value), kind, v.page)
@@ -499,7 +506,7 @@ def _reported_from(loaded: Loaded) -> Iterator[Reported]:
             for row in rows if isinstance(rows, list) else ():
                 for cell in row if isinstance(row, list) else ():
                     found = _number_or_date(cell, "document", None)
-                    if found is not None:
+                    if found is not None and found.value not in paged:
                         found.cell = True
                         yield found
 

@@ -214,6 +214,26 @@ def test_entry_pages_clamps_dpi_and_scales_huge_pages(job, monkeypatch):
     assert scales[-1][0] == 50 / 72  # dpi clamped to 50
 
 
+def test_entry_pages_render_error_skips_only_that_page(job, monkeypatch):
+    import pypdfium2
+
+    real_render = pypdfium2.PdfPage.render
+    calls = []
+
+    def flaky(self, *args, **kwargs):
+        calls.append(1)
+        if len(calls) == 2:
+            raise pypdfium2.PdfiumError("cannot render")
+        return real_render(self, *args, **kwargs)
+
+    monkeypatch.setattr(pypdfium2.PdfPage, "render", flaky)
+    pdf = merge_pdfs(text_pdf(["One"]), text_pdf(["Two"]), text_pdf(["Three"]))
+    fid = job.add("three.pdf", "pdf", pdf)
+    status, contents = run(job, "pages", args={"file": fid, "pages": [1, 2, 3], "dpi": 72})
+    assert status["exit_code"] == 0
+    assert sorted(n for n in contents if n.startswith("pages/")) == ["pages/1.png", "pages/3.png"]
+
+
 def test_entry_tar_is_plain_ustar_and_skips_names_ustar_cannot_hold(job):
     # Plain ustar only (the host refuses PAX and GNU headers). A name ustar can't hold is
     # left out, and the files after it still come through.

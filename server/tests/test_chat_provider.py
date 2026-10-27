@@ -118,6 +118,16 @@ async def test_omits_tools_when_empty():
     assert body["chat_template_kwargs"] == {"enable_thinking": False}
 
 
+async def test_temperature_sent_only_when_given():
+    seen: list[httpx.Request] = []
+    client = make_client(sse_handler("sse_text.txt", seen))
+    await collect(client)
+    assert "temperature" not in json.loads(seen[0].content)
+    events = [e async for e in client.stream([], [], False, temperature=0)]
+    assert events[-1] == StreamDone("stop")
+    assert json.loads(seen[1].content)["temperature"] == 0
+
+
 @pytest.mark.parametrize("status", [401, 403])
 async def test_http_auth_failure_raises_provider_error(status):
     client = make_client(lambda r: httpx.Response(status, text="nope"))

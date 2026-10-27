@@ -60,6 +60,7 @@ from hearthkeep.sandbox.runs import RunStore
 from hearthkeep.secrets import SecretStore
 from hearthkeep.tools.base import ToolRegistry
 from hearthkeep.tools.python import PythonTool, analysis_context
+from hearthkeep.tools.read_pages import ReadPagesTool
 
 DB_FILE = "hearthkeep.db"
 DEFAULT_WEB_DIST = Path(__file__).resolve().parents[4] / "web" / "dist"
@@ -294,7 +295,11 @@ def create_app(
                 registry.register(image_tool)
             if registry.get(PythonTool.name) is None:
                 registry.register(PythonTool(handle, files, runs))
+            # The chat client the turns use (the scheduled one when Hearthkeep runs the model):
+            # read_pages asks the same model to read each page, with its own GPU lease.
             chat = stack.chat_client(chat_client, gpu)
+            if registry.get(ReadPagesTool.name) is None:
+                registry.register(ReadPagesTool(handle, files, runs, chat))
             checker = NumberChecker(conn, runs, files)
             loop = AgentLoop(
                 chat,

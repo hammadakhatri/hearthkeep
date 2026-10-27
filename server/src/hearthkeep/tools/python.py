@@ -10,11 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import csv
-import io
 import json
 import logging
-import unicodedata
 from pathlib import Path
 
 from hearthkeep.files.store import ChatFile, ChatFileStore
@@ -33,6 +30,7 @@ from hearthkeep.sandbox.runner import (
 )
 from hearthkeep.sandbox.runs import OutputRecord, RunRecord, RunStore
 from hearthkeep.tools.base import ToolContext, ToolResult
+from hearthkeep.tools.text import CONTENT_BUDGET, assemble, csv_line, fenced, one_line
 
 PYTHON_LEVEL_KEY = "python"
 SCRIPT_MAX_CHARS = 20000
@@ -49,11 +47,9 @@ TIMEOUT = "The script ran for over 120 seconds and was stopped."
 RESULTS_UNREADABLE = "results.jsonl could not be read"
 RESULTS_FAILED = "Hearthkeep couldn't read the results."
 PRINTED_CUT = "(printed output cut)"
-# What the model is told about one run is bounded: items per section, and characters overall.
-CONTENT_BUDGET = 20000
+# What the model is told about one run is bounded: items per section, and characters overall
+# (CONTENT_BUDGET, in tools.text).
 CAPS = {"values": 50, "tables": 5, "charts": 20, "files": 20, "cleaning": 20, "problems": 20}
-MORE = "… {n} more (see the run)."
-_MORE_ROOM = len(MORE.format(n=10**9)) + 1
 
 ANALYSIS_PROMPT = (
     "This chat has files the owner attached:\n{files}\n\nTo answer questions about them, use "
@@ -96,11 +92,6 @@ DESCRIPTION = (
 # ---- the chat's files, for the model ------------------------------------------------------------
 
 _log = logging.getLogger(__name__)
-
-
-def one_line(text: str) -> str:
-    """Control characters (line breaks included) and line/paragraph separators as spaces."""
-    return "".join(" " if unicodedata.category(ch) in ("Cc", "Zl", "Zp") else ch for ch in text)
 
 
 def _quoted(text: object) -> str:
@@ -181,25 +172,6 @@ def _value_text(value: object) -> str:
     return "no value" if value is None else one_line(str(value))
 
 
-def _fenced(text: str) -> str:
-    """`text` in a backtick fence longer than any run of backticks inside it, so nothing the
-    script printed can close the block."""
-    longest = run = 0
-    for ch in text:
-        run = run + 1 if ch == "`" else 0
-        longest = max(longest, run)
-    fence = "`" * max(3, longest + 1)
-    return f"{fence}\n{text}\n{fence}"
-
-
-def _csv_line(cells: list) -> str:
-    out = io.StringIO()
-    csv.writer(out, lineterminator="").writerow(
-        ["" if c is None else one_line(c) if isinstance(c, str) else c for c in cells]
-    )
-    return out.getvalue()
-
-
 def _csv_rows(columns: list, rows: list, numbers: list) -> str:
     """The header and rows as CSV, whole lines only, stopping at TABLE_CHARS."""
     lines: list[str] = []
@@ -208,7 +180,7 @@ def _csv_rows(columns: list, rows: list, numbers: list) -> str:
     for index, row in enumerate([header, *rows]):
         if index > 0 and numbers:
             row = [numbers[index - 1], *row]
-        line = _csv_line(row)
+        line = csv_line(row)
         if size + len(line) + 1 > TABLE_CHARS:
             break
         lines.append(line)
@@ -243,38 +215,13 @@ def _section(header: str, items: list[str], cap: int) -> tuple[str, list[str], i
     return header, items[:cap], max(len(items) - cap, 0)
 
 
-def _assemble(head: str, sections: list[tuple[str, list[str], int]], budget: int) -> str:
-    """The sections after `head`, within `budget` characters. A section cut short (by its cap
-    or by the budget) ends with a "more" line; once the budget is hit, nothing more is added."""
-    text = head
-    for header, items, hidden in sections:
-        if not items:
-            continue
-        start = f"\n\n{header}:"
-        if len(text) + len(start) + 1 + _MORE_ROOM > budget:
-            break
-        size = len(text) + len(start)
-        kept: list[str] = []
-        for item in items:
-            if size + 1 + len(item) + 1 + _MORE_ROOM > budget:
-                break
-            kept.append(item)
-            size += 1 + len(item)
-        more = hidden + len(items) - len(kept)
-        lines = kept + ([MORE.format(n=more)] if more else [])
-        text += start + "\n" + "\n".join(lines)
-        if len(kept) < len(items):
-            break
-    return text
-
-
 def format_run_for_model(rec: RunRecord, outputs: list[OutputRecord]) -> str:
     """What the model is told about a run: at most CONTENT_BUDGET characters, each section
     capped, and nothing a script wrote can pass for the prompt's own text."""
     head = f"Run {rec.status} in {rec.duration_ms / 1000:.1f} s."
     sections: list[tuple[str, list[str], int]] = []
     if rec.stdout:
-        printed = _fenced(rec.stdout[:PRINTED_CHARS].rstrip("\n"))
+        printed = fenced(rec.stdout[:PRINTED_CHARS].rstrip("\n"))
         if len(rec.stdout) > PRINTED_CHARS or rec.stdout_truncated:
             printed += "\n" + PRINTED_CUT
         sections.append(("Printed output", [printed], 0))
@@ -292,7 +239,7 @@ def format_run_for_model(rec: RunRecord, outputs: list[OutputRecord]) -> str:
     sections.append(_section("Problems", problems, CAPS["problems"]))
     # The error is a fixed, short message: room is kept for it whatever else is cut.
     tail = f"\n\nError:\n{one_line(rec.error)}" if rec.error else ""
-    return _assemble(head, sections, CONTENT_BUDGET - len(tail)) + tail
+    return assemble(head, sections, CONTENT_BUDGET - len(tail)) + tail
 
 
 def unavailable_message(exc: SandboxUnavailable) -> str:

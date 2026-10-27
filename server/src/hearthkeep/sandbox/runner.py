@@ -60,7 +60,7 @@ _log = logging.getLogger(__name__)
 # Exactly these names, and nothing else, may come back (ASCII only: no Unicode digits).
 MEMBER_NAME = re.compile(
     r"status\.json|stdout\.txt|results\.jsonl|inspect\.json"
-    r"|files/[A-Za-z0-9][A-Za-z0-9._ -]{0,99}|pages/[0-9]{1,3}\.png",
+    r"|files/[A-Za-z0-9][A-Za-z0-9._ -]{0,99}|pages/[0-9]{1,4}\.png",
     re.ASCII,
 )
 # The PAX keys a plain member may carry (the entry writes nothing more exotic).

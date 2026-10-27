@@ -1285,6 +1285,14 @@ def test_file_names_are_at_most_a_hundred_characters():
     assert results.MAX_FILE_NAME == 100
 
 
+def test_page_images_up_to_page_2000_may_come_back():
+    # read_pages asks for pages 1 to 2000.
+    assert runner_mod.MEMBER_NAME.fullmatch("pages/1.png")
+    assert runner_mod.MEMBER_NAME.fullmatch("pages/2000.png")
+    assert not runner_mod.MEMBER_NAME.fullmatch("pages/20000.png")
+    assert not runner_mod.MEMBER_NAME.fullmatch("pages/x.png")
+
+
 def test_redact_finds_the_real_path_behind_a_junction(tmp_path):
     real = tmp_path / "real data place"
     real.mkdir()

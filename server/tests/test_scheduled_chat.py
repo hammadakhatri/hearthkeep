@@ -163,3 +163,17 @@ async def test_a_turn_that_makes_an_image_does_not_deadlock(tmp_path):
         ("load", "chat"), ("unload", "chat"), ("load", "z-image-turbo"),
         ("unload", "z-image-turbo"), ("load", "chat"),
     ]  # fmt: skip
+
+
+async def test_temperature_passed_through_only_when_given():
+    seen = []
+
+    class Inner(FakeInner):
+        async def stream(self, messages, tools, think, temperature=None):
+            seen.append(temperature)
+            yield StreamDone("stop")
+
+    client, gpu, backend, inner = make(Inner())
+    assert [e async for e in client.stream([], [], False, temperature=0)] == [StreamDone("stop")]
+    await collect(client)
+    assert seen == [0, None]

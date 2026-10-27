@@ -87,8 +87,13 @@ class OpenAIChatClient:
         self._transport = transport
 
     async def stream(
-        self, messages: list[dict], tools: list[dict], think: bool
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        think: bool,
+        temperature: float | None = None,
     ) -> AsyncIterator[Event]:
+        """`temperature`: sent only when given (the server's own default otherwise)."""
         body: dict = {
             "model": self._model,
             "messages": messages,
@@ -97,6 +102,8 @@ class OpenAIChatClient:
         }
         if tools:
             body["tools"] = tools
+        if temperature is not None:
+            body["temperature"] = temperature
         # No key configured (a local server without --api-key): send no Authorization at all.
         headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
 
