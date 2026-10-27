@@ -25,12 +25,8 @@ CHAT = "c" * 32
 D = datetime.date
 
 
-def num(value, kind="computed", page=None, source="value", percent=False):
-    return Reported(float(value), None, kind, page, source, percent)
-
-
-def cell(value):
-    return num(value, source="table")
+def num(value, kind="computed", page=None, percent=False):
+    return Reported(float(value), None, kind, page, percent)
 
 
 def day(iso, kind="computed", page=None):
@@ -276,7 +272,7 @@ def test_reply_text_joins_like_the_web_app():
 # ---- reported values ---------------------------------------------------------------------------
 
 
-def test_reported_values_from_values_tables_and_printed_output(conn, runs):
+def test_reported_values_are_named_results_and_read_values_only(conn, runs):
     add_run(
         conn,
         values=[
@@ -295,23 +291,15 @@ def test_reported_values_from_values_tables_and_printed_output(conn, runs):
             tables=[{"columns": ["v"], "rows": [[44]]}])  # fmt: skip
     got = reported_values(runs, CHAT)
     numbers = {(r.value, r.kind, r.page) for r in got if r.value is not None}
-    sources = {(r.value, r.source) for r in got if r.value is not None}
-    assert (1187.0, "value") in sources
-    assert (4210.0, "printed") in sources
-    assert (7.0, "table") in sources
     dates = {(r.date, r.kind) for r in got if r.date is not None}
-    assert (1187.0, "computed", None) in numbers
-    assert (1200.0, "document", 2) in numbers
-    assert (4210.0, "computed", None) in numbers
-    assert (2.5, "computed", None) in numbers
-    assert (7.0, "computed", None) in numbers
-    assert (8.5, "computed", None) in numbers
-    assert (31.5, "document", None) in numbers  # a vision run's value is read, not computed
-    assert (44.0, "document", None) in numbers
-    assert (D(2024, 3, 12), "computed") in dates
-    assert (D(2024, 3, 24), "computed") in dates
-    assert (D(2024, 3, 25), "computed") in dates
-    assert not any(r.value in (0.0, 1.0, 30.0) for r in got)  # no bool, no duration parts
+    assert numbers == {
+        (1187.0, "computed", None),
+        (1200.0, "document", 2),
+        (31.5, "document", None),  # a vision run's value is read, not computed
+        (44.0, "document", None),  # and so are its table cells
+    }
+    # An analysis run's table cells and printed numbers are never evidence.
+    assert dates == {(D(2024, 3, 12), "computed")}
 
 
 def test_reported_values_newest_first_and_capped(conn, runs, monkeypatch):
@@ -410,13 +398,16 @@ def kinds(reply, reported, exempt=(), file_names=()):
     return [(m.text, m.kind) for m in marks]
 
 
-def test_table_cells_and_printed_numbers_need_exact_or_precise_matches():
-    assert kinds("3 items", [cell(2.6)]) == [("3", "unverified")]
-    assert kinds("3 items", [num(2.6)]) == [("3", "computed")]
-    assert kinds("4,210 rows", [cell(4209.6)]) == [("4,210", "computed")]
-    assert kinds("3 items", [cell(3)]) == [("3", "computed")]
-    assert kinds("3 items", [num(2.6, source="printed")]) == [("3", "unverified")]
-    assert kinds("12.5 kg", [num(12.46, source="printed")]) == [("12.5", "computed")]
+def test_only_named_results_confirm_numbers(conn, runs, files):
+    add_file(conn, "orders.csv")
+    add_run(conn, values=[value("mean", 2.6)], stdout="rows 3\ntotal 4,209.6\n",
+            tables=[{"columns": ["a"], "rows": [[3], [4209.6], [12.46]]}])  # fmt: skip
+    marks = NumberChecker(conn, runs, files).marks_for(CHAT, "3 items, 4,210 rows, 12.5 kg")
+    assert [(m.text, m.kind) for m in marks] == [
+        ("3", "computed"),  # the named result 2.6, within the precision written
+        ("4,210", "unverified"),
+        ("12.5", "unverified"),
+    ]
 
 
 DESCRIBE = """       amount
@@ -482,6 +473,8 @@ async def test_non_finite_values_are_dropped(conn, runs, files):
         tables=[{"columns": ["a"], "rows": [[10**400]]}],
         stdout="1" + "0" * 400 + "\n",
     )
+    add_run(conn, purpose="vision", values=[value("read", 10**400)],
+            tables=[{"columns": ["a"], "rows": [[10**400], ["9" * 400]]}])  # fmt: skip
     got = reported_values(runs, CHAT)
     assert all(r.value is None or math.isfinite(r.value) for r in got)
     checker = NumberChecker(conn, runs, files)
@@ -507,7 +500,6 @@ def test_percent_candidates():
     assert kinds("31%", [num(31)]) == [("31%", "unverified")]
     assert kinds("31%", [num(0.31)]) == [("31%", "computed")]
     assert kinds("31%", [num(31, percent=True)]) == [("31%", "computed")]
-    assert kinds("31%", [num(31, source="printed")]) == [("31%", "unverified")]
 
 
 def test_slash_dates_read_day_first():
@@ -590,3 +582,75 @@ async def test_check_runs_in_a_worker_thread(conn, runs, files, monkeypatch):
 def test_document_mark_with_unknown_page_has_null_page():
     marks = check_reply("31.5 units", [num(31.5, kind="document")], [])
     assert [(m.kind, m.page) for m in marks] == [("document", None)]
+
+
+# ---- fix round 2: only named results confirm numbers ------------------------------------------
+
+
+DESCRIBE_TABLE = {
+    "columns": ["stat", "amount"],
+    "rows": [["count", 8.0], ["mean", 42.5], ["std", 12.247449], ["min", 20.0], ["25%", 35.0],
+             ["50%", 45.0], ["75%", 50.0], ["max", 60.0]],
+}  # fmt: skip
+
+
+def test_i1_describe_as_a_table_confirms_nothing(conn, runs, files):
+    add_file(conn, "orders.csv")
+    add_run(conn, tables=[DESCRIBE_TABLE], stdout=DESCRIBE)
+    marks = NumberChecker(conn, runs, files).marks_for(CHAT, "50% were cheap, 75% had a discount.")
+    assert [(m.text, m.kind) for m in marks] == [("50%", "unverified"), ("75%", "unverified")]
+
+
+def test_i2_small_cells_confirm_no_percents(conn, runs, files):
+    add_file(conn, "orders.csv")
+    rows = [[i % 4] for i in range(500)]
+    add_run(conn, tables=[{"columns": ["n"], "rows": rows}], stdout="0\n1\n2\n3\n")
+    marks = NumberChecker(conn, runs, files).marks_for(CHAT, "0%, 100% and 200% of them.")
+    assert [(m.text, m.kind) for m in marks] == [
+        ("0%", "unverified"),
+        ("100%", "unverified"),
+        ("200%", "unverified"),
+    ]
+
+
+def test_i3_bare_years_match_dates_or_an_equal_named_value(conn, runs, files):
+    add_file(conn, "orders.csv")
+    add_run(conn, tables=[{"columns": ["y"], "rows": [[2024.4]]}])
+    checker = NumberChecker(conn, runs, files)
+    assert [(m.text, m.kind) for m in checker.marks_for(CHAT, "in 2024")] == [
+        ("2024", "unverified")
+    ]
+    assert kinds("in 2024", [num(2024)]) == [("2024", "computed")]
+    assert kinds("in 2024", [num(2024.4)]) == [("2024", "unverified")]  # not equal
+    assert kinds("in 2024", [day("2024-06-30")]) == [("2024", "computed")]
+
+
+def test_i4_large_tables_confirm_nothing(conn, runs, files):
+    import random
+
+    rng = random.Random(7)
+    add_file(conn, "prices.csv")
+    rows = [[round(rng.lognormvariate(3, 1), 2)] for _ in range(5000)]
+    add_run(conn, tables=[{"columns": ["price"], "rows": rows[:500]}] * 10,
+            stdout="\n".join(str(r[0]) for r in rows))  # fmt: skip
+    words = [f"{rng.randint(100, 999)}" if i % 2 else f"{rng.uniform(10, 99):.1f}"
+             for i in range(300)]  # fmt: skip
+    reply = ", ".join(words) + "."
+    marks = NumberChecker(conn, runs, files).marks_for(CHAT, reply)
+    assert len(marks) == 300
+    assert [m.kind for m in marks if m.kind != "unverified"] == []
+
+
+def test_invalid_slash_dates_are_unmarked_text():
+    assert [m.text for m in extract_mentions("on 13/13/2024 and 31/02/2024 we had 5")] == ["5"]
+
+
+def test_named_document_values_still_give_a_page(conn, runs, files):
+    add_file(conn, "statement.pdf")
+    add_run(conn, values=[value("opening", 1200, kind="document", page=2)])
+    add_run(conn, purpose="vision", tables=[{"columns": ["v"], "rows": [[0.5]]}])
+    marks = NumberChecker(conn, runs, files).marks_for(CHAT, "1,200 opening, 50% read")
+    assert [(m.text, m.kind, m.page) for m in marks] == [
+        ("1,200", "document", 2),
+        ("50%", "document", None),
+    ]

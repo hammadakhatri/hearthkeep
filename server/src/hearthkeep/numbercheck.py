@@ -7,16 +7,18 @@ Mentions that also appear in the owner's question of that turn or in a file name
 no mark. When in doubt a mention is `unverified`: flagging a right number is better than letting
 a wrong one through. So:
 
-- Named run values (`hk.result`, `hk.document`) match within the precision written ("3" covers
-  [2.5, 3.5)). Table cells and printed numbers are many and unnamed: they match only exactly,
-  or within the written precision when at least 3 significant digits are written.
+- Only named results confirm a number: the `hk.result` values of analysis runs give
+  `computed`; `hk.document` values and everything a vision run read (values and table cells)
+  give `document`. Both match within the precision written ("3" covers [2.5, 3.5)). Table cells
+  and printed output of analysis runs are never evidence: thousands of unnamed numbers would
+  confirm almost any number by chance.
 - A written sign (`+`, `−`) must match the value's sign; an unsigned number may state a size.
 - A percent matches `100·v` only for ratio-like values (|v| ≤ 10), and `v` itself only when the
   value's unit is a percent.
 - Durations, times, fractions, short-year dates, phone numbers, URLs and code are never matched.
 
 Work is bounded: at most MAX_REPORTED reported values, MAX_REPLY_CHARS characters of a reply
-(or of an exempt text), MAX_PRINTED_CHARS characters of printed output in all; matching is a
+(or of an exempt text); matching is a
 binary search per mention. Offsets are code points inside; the web gets UTF-16 offsets.
 """
 
@@ -44,15 +46,12 @@ from hearthkeep.sandbox.runs import RunRecord, RunStore
 UNVERIFIED_NOTE = "Not found in any result from this chat's analysis."
 MAX_REPORTED = 50_000
 MAX_REPLY_CHARS = 20_000
-MAX_PRINTED_CHARS = 1_000_000  # printed output scanned for numbers, over all runs
 MAX_RUNS = 200
 MAX_ABS = 2.0**63  # larger run values are dropped (results.py stores them as null too)
-PRECISE_DIGITS = 3  # significant digits that let a table cell or printed number match roughly
 
 _log = logging.getLogger(__name__)
 
 Kind = Literal["computed", "document"]
-Source = Literal["value", "table", "printed"]
 
 
 @dataclass
@@ -72,7 +71,6 @@ class Mention:
     month_year: bool = False  # "March 2024": matches any day of that month
     signed: bool = False  # a "+" or "−" was written
     ordinal: bool = False  # "12th"
-    digits: int = 0  # significant digits written
 
 
 @dataclass
@@ -81,7 +79,6 @@ class Reported:
     date: datetime.date | None
     kind: Kind
     page: int | None
-    source: Source = "value"  # a named run value, a table cell or printed output
     percent: bool = False  # the value's unit is a percent
 
 
@@ -281,6 +278,7 @@ _SKIPS = {_skip, _phone}
 _PASSES = (
     (_ISO, _iso),
     (_SLASH, _slash),
+    (_SLASH, _skip),  # what is left is not a real date ("13/13/2024"): unmarked text
     (_SHORT_YEAR_DATE, _skip),
     (_FRACTION, _skip),
     (_TIME, _skip),
@@ -359,7 +357,6 @@ def _number(m: re.Match, work: str, text: str) -> Mention | None:
         return _plain_mention(begin, stop, text)  # too big to compare: always unverified
     if sign in _MINUS and sign:
         number = -number
-    digits = len((whole + fraction).lstrip("0"))
     plain = begin == start and stop == end
     if (
         plain
@@ -367,11 +364,10 @@ def _number(m: re.Match, work: str, text: str) -> Mention | None:
         and 1900 <= number <= 2100
         and _YEAR_WORD.search(work, max(0, start - 24), start)
     ):
-        return _plain_mention(start, end, text, value=number, digits=digits,
+        return _plain_mention(start, end, text, value=number,
                               date=datetime.date(int(number), 1, 1), year_only=True)  # fmt: skip
     return Mention(begin, stop, text[begin:stop], number, len(fraction), scale, percent, None,
-                   None, False, False, signed=bool(sign), ordinal=ordinal,
-                   digits=digits)  # fmt: skip
+                   None, False, False, signed=bool(sign), ordinal=ordinal)  # fmt: skip
 
 
 def _scan(text: str) -> list[Mention]:
@@ -421,7 +417,7 @@ def _usable(number: float) -> bool:
 
 
 def _number_or_date(
-    raw: object, kind: Kind, page: int | None, source: Source, percent: bool = False
+    raw: object, kind: Kind, page: int | None, percent: bool = False
 ) -> Reported | None:
     """A number, or a whole-string ISO date or number; None for anything else."""
     if isinstance(raw, bool) or raw is None:
@@ -429,73 +425,71 @@ def _number_or_date(
     if isinstance(raw, int):
         if abs(raw) >= MAX_ABS:
             return None
-        return Reported(float(raw), None, kind, page, source, percent)
+        return Reported(float(raw), None, kind, page, percent)
     if isinstance(raw, float):
-        return Reported(raw, None, kind, page, source, percent) if _usable(raw) else None
+        return Reported(raw, None, kind, page, percent) if _usable(raw) else None
     if not isinstance(raw, str):
         return None
     if m := _ISO_TEXT.fullmatch(raw):
         when = _date(int(m[1]), int(m[2]), int(m[3]))
-        return Reported(None, when, kind, page, source) if when else None
+        return Reported(None, when, kind, page) if when else None
     if m := _NUMBER_TEXT.fullmatch(raw):
         number = float(m[3].replace(",", "") + (m[4] or ""))
         if not _usable(number):
             return None
         number = -number if (m[1] or m[2]) else number
-        return Reported(number, None, kind, page, source, percent or bool(m[5]))
+        return Reported(number, None, kind, page, percent or bool(m[5]))
     return None
 
 
-def _from_mentions(
-    mentions: Iterable[Mention], kind: Kind, page: int | None, source: Source
-) -> Iterator[Reported]:
+def _from_mentions(mentions: Iterable[Mention], kind: Kind, page: int | None) -> Iterator[Reported]:
+    """The numbers and full dates written in a named value's text."""
     for m in mentions:
         if m.value is not None:
             number = m.value * m.scale
             if _usable(number):
-                yield Reported(number, None, kind, page, source, source == "value" and m.percent)
+                yield Reported(number, None, kind, page, m.percent)
         elif m.date is not None and not (m.month_day_only or m.month_year):
-            yield Reported(None, m.date, kind, page, source)
+            yield Reported(None, m.date, kind, page)
             if m.date_end is not None:
-                yield Reported(None, m.date_end, kind, page, source)
+                yield Reported(None, m.date_end, kind, page)
 
 
 Loaded = list[tuple[RunRecord, list[dict]]]
 
 
 def _load(runs: RunStore, chat_id: str) -> Loaded:
-    """The chat's runs (newest first) with their table outputs' data, read from the database."""
+    """The chat's runs (newest first), read from the database, with the table outputs' data of
+    vision runs (what was read from a document; analysis tables are never evidence)."""
     loaded: Loaded = []
     for run in runs.runs_for_chat(chat_id, MAX_RUNS):
-        tables = [o.data for o in runs.outputs(run.id) if o.kind == "table"]
+        tables: list = []
+        if run.purpose == "vision":
+            tables = [o.data for o in runs.outputs(run.id) if o.kind == "table"]
         loaded.append((run, [t for t in tables if isinstance(t, dict)]))
     return loaded
 
 
 def _reported_from(loaded: Loaded) -> Iterator[Reported]:
-    printed_left = MAX_PRINTED_CHARS
+    """Named results (computed) and read values (document). Printed output and the table cells
+    of analysis runs are left out: only named results confirm a number."""
     for run, tables in loaded:
         read = run.purpose == "vision"
         for v in run.values:
             kind: Kind = "document" if read or v.kind == "document" else "computed"
             percent = "%" in (v.unit or "")
-            found = _number_or_date(v.value, kind, v.page, "value", percent)
+            found = _number_or_date(v.value, kind, v.page, percent)
             if found is not None:
                 yield found
             elif isinstance(v.value, str):
-                yield from _from_mentions(_scan(v.value), kind, v.page, "value")
-        kind = "document" if read else "computed"
-        for table in tables:
+                yield from _from_mentions(_scan(v.value), kind, v.page)
+        for table in tables if read else ():
             rows = table.get("rows")
             for row in rows if isinstance(rows, list) else ():
                 for cell in row if isinstance(row, list) else ():
-                    found = _number_or_date(cell, kind, None, "table")
+                    found = _number_or_date(cell, "document", None)
                     if found is not None:
                         yield found
-        if printed_left > 0 and run.stdout:
-            printed = run.stdout[:printed_left]
-            printed_left -= len(printed)
-            yield from _from_mentions(_scan(printed), "computed", None, "printed")
 
 
 def _capped(loaded: Loaded) -> list[Reported]:
@@ -509,7 +503,7 @@ def reported_values(runs: RunStore, chat_id: str) -> list[Reported]:
 
 # ---- matching ------------------------------------------------------------------------------------
 
-# Number lists per (rough?, form). Forms: "v" the value, "a" |v| of a negative value, "pv"/"pa"
+# Number lists per form. Forms: "v" the value, "a" |v| of a negative value, "pv"/"pa"
 # the same for values whose unit is a percent, "h"/"ha" 100·v and 100·|v| for |v| ≤ 10.
 _FORMS = ("v", "a", "pv", "pa", "h", "ha")
 
@@ -518,8 +512,8 @@ _FORMS = ("v", "a", "pv", "pa", "h", "ha")
 class _Side:
     """The values of one kind (computed or document), indexed for lookups."""
 
-    numbers: dict[tuple[bool, str], list[tuple[float, int]]] = field(
-        default_factory=lambda: {(s, f): [] for s in (False, True) for f in _FORMS}
+    numbers: dict[str, list[tuple[float, int]]] = field(
+        default_factory=lambda: {f: [] for f in _FORMS}
     )
     dates: dict[datetime.date, int | None] = field(default_factory=dict)
     month_days: dict[tuple[int, int], int | None] = field(default_factory=dict)
@@ -529,7 +523,7 @@ class _Side:
     def add(self, r: Reported) -> None:
         page = r.page or 0
         if r.value is not None:
-            strict, v = r.source != "value", r.value
+            v = r.value
             forms = [("v", v)]
             if r.percent:
                 forms.append(("pv", v))
@@ -542,7 +536,7 @@ class _Side:
                 if abs(v) <= 10:
                     forms.append(("ha", -v * 100))
             for form, number in forms:
-                self.numbers[(strict, form)].append((number, page))
+                self.numbers[form].append((number, page))
         if r.date is not None:
             d = r.date
             self.dates.setdefault(d, r.page)
@@ -554,23 +548,23 @@ class _Side:
         for values in self.numbers.values():
             values.sort()
 
-    def number(self, m: Mention) -> tuple[bool, int | None]:
+    def number(self, m: Mention, exact: bool = False) -> tuple[bool, int | None]:
+        """Within the precision written, half-open: [m - t, m + t). `exact`: equal only."""
         target = m.value * m.scale  # type: ignore[operator]
-        tolerance = 0.5 * 10.0 ** (-m.decimals) * m.scale
         slack = 1e-9 * max(1.0, abs(target))
+        if exact:
+            low, high, closed = target - slack, target + slack, True
+        else:
+            tolerance = 0.5 * 10.0 ** (-m.decimals) * m.scale
+            low, high, closed = target - tolerance - slack, target + tolerance, False
         forms = ["pv", "h"] if m.percent else ["v"]
         if not m.signed:
             forms += ["pa", "ha"] if m.percent else ["a"]
-        for strict in (False, True):
-            if strict and m.digits < PRECISE_DIGITS:
-                low, high, closed = target - slack, target + slack, True  # exact only
-            else:
-                low, high, closed = target - tolerance - slack, target + tolerance, False
-            for form in forms:
-                values = self.numbers[(strict, form)]
-                i = bisect.bisect_left(values, (low, -1))
-                if i < len(values) and (values[i][0] <= high if closed else values[i][0] < high):
-                    return True, values[i][1] or None
+        for form in forms:
+            values = self.numbers[form]
+            i = bisect.bisect_left(values, (low, -1))
+            if i < len(values) and (values[i][0] <= high if closed else values[i][0] < high):
+                return True, values[i][1] or None
         return False, None
 
     def day(self, m: Mention, when: datetime.date) -> tuple[bool, int | None]:
@@ -606,7 +600,7 @@ def _resolve(m: Mention, sides: tuple[_Side, _Side]) -> tuple[str, int | None] |
         return _best(sides, lambda s: s.number(m))
     if m.year_only:
         by_year = _best(sides, lambda s: s.day(m, m.date))  # type: ignore[arg-type]
-        by_value = _best(sides, lambda s: s.number(m))
+        by_value = _best(sides, lambda s: s.number(m, exact=True))  # an equal value only
         found = [r for r in (by_year, by_value) if r is not None]
         return max(found, key=lambda r: _RANK[r[0]]) if found else None
     ends = [m.date] if m.date_end is None else [m.date, m.date_end]

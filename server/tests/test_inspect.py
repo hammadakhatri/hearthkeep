@@ -267,6 +267,12 @@ def test_analysis_context_lines(store):
 
 
 def test_analysis_prompt_is_exact():
+    # The number-check sentence comes first after "Rules:"; the rest is unchanged.
+    assert (
+        "\nRules: Report every number you will mention with hk.result, even ones you can read "
+        "from a table; numbers that weren't reported this way show as unverified. never "
+        "compute, estimate or round a number yourself." in ANALYSIS_PROMPT
+    )
     assert ANALYSIS_PROMPT.startswith(
         "This chat has files the owner attached:\n{files}\n\nTo answer questions about them, "
         "use the python tool."
