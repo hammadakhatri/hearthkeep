@@ -53,6 +53,7 @@ export function FileChips({
   onRemove,
   onDelete,
   className,
+  label = 'Attached files',
 }: {
   files: FileChipItem[]
   /** Takes a not-yet-sent file out of the message (composer). */
@@ -60,10 +61,12 @@ export function FileChips({
   /** Deletes a stored file (file lists). */
   onDelete?: (key: string) => void
   className?: string
+  /** Names the list; give each list on a page its own. */
+  label?: string
 }) {
   if (!files.length) return null
   return (
-    <ul className={className ? `file-chips ${className}` : 'file-chips'} aria-label="Attached files">
+    <ul className={className ? `file-chips ${className}` : 'file-chips'} aria-label={label}>
       {files.map((file) => (
         <li key={file.key} className="file-chip" data-state={file.state}>
           {file.state === 'uploading' ? (
@@ -74,7 +77,9 @@ export function FileChips({
             <FileIcon className="file-chip-icon" />
           )}
           <span className="file-chip-main">
-            <span className="file-chip-name">{file.name}</span>
+            <span className="file-chip-name">
+              <bdi>{file.name}</bdi>
+            </span>
             <span className="file-chip-meta">
               {file.state === 'uploading' && <span>Uploading…</span>}
               {file.state === 'failed' && <span className="file-chip-error">{file.message}</span>}
@@ -200,9 +205,9 @@ export function useChatFiles() {
     [update],
   )
 
-  /** Drop the stored files once they are sent; failed ones stay until removed. */
-  const sent = useCallback(() => {
-    update((all) => all.filter((f) => f.state === 'failed'))
+  /** Drop the files that were sent; anything else (failed, picked or uploading since) stays. */
+  const sent = useCallback((ids: string[]) => {
+    update((all) => all.filter((f) => !(f.id && ids.includes(f.id))))
     setLimitNotice(null)
     setAnnouncement('')
   }, [update])
@@ -236,12 +241,13 @@ export function AttachedFiles({ attach }: { attach: ReturnType<typeof useChatFil
   return (
     <>
       {attach.limitNotice && (
-        <div className="note error composer-notice" role="alert">
+        // Announced once through the live region (see announcement); not an alert as well.
+        <div className="note error composer-notice">
           <AlertIcon />
           <span>{attach.limitNotice}</span>
         </div>
       )}
-      <FileChips files={attach.files} onRemove={attach.remove} />
+      <FileChips files={attach.files} onRemove={attach.remove} label="Files attached to this message" />
     </>
   )
 }

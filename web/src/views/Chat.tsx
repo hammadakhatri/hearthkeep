@@ -50,8 +50,8 @@ function titleFor(text: string, firstFileName?: string): string {
 }
 
 /** A chip for a stored file the thread mentions; a placeholder until the file list has its name. */
-function chipFor(id: string, known: Record<string, ChatFileInfo>): FileChipItem {
-  const info = known[id]
+function chipFor(id: string, known: ReadonlyMap<string, ChatFileInfo>): FileChipItem {
+  const info = known.get(id)
   return info ? chipFromInfo(info) : { key: id, id, name: 'Attached file', state: 'ready' }
 }
 
@@ -72,9 +72,11 @@ export function Chat({ model }: { model?: string | null }) {
   const [sheetOpen, setSheetOpen] = useState(false)
   const attach = usePhoto()
   const files = useChatFiles()
+  const clearFiles = files.clear
   // What the thread knows about stored files (names, types, sizes), by file id.
-  const [known, setKnown] = useState<Record<string, ChatFileInfo>>({})
+  const [known, setKnown] = useState<ReadonlyMap<string, ChatFileInfo>>(() => new Map())
   const creating = useRef<Promise<string> | null>(null)
+  const shown = useRef<string | null>(null)
   const listed = useRef(new Set<string>())
   const asked = useRef(new Set<string>())
   const opening = useRef(0)
@@ -89,14 +91,19 @@ export function Chat({ model }: { model?: string | null }) {
     listed.current.add(chatId)
     try {
       const list = await listChatFiles(chatId)
-      setKnown((all) => ({ ...all, ...Object.fromEntries(list.map((f) => [f.id, f])) }))
+      setKnown((all) => new Map([...all, ...list.map((f): [string, ChatFileInfo] => [f.id, f])]))
     } catch {
-      listed.current.delete(chatId) // try again the next time it is needed
+      // Try again the next time it is needed.
+      listed.current.delete(chatId)
+      asked.current.clear()
     }
   }, [])
 
   const open = useCallback(async (chat: ChatSummary, keepNotice = false) => {
     const token = ++opening.current
+    // Files picked for one chat never follow the owner into another, however it was opened.
+    if (shown.current !== chat.id) clearFiles()
+    shown.current = chat.id
     setCurrent(chat.id)
     setLive(null)
     setItems([])
@@ -125,7 +132,7 @@ export function Chat({ model }: { model?: string | null }) {
       if (token === opening.current) setNotice("This chat couldn't be opened. Try again.")
     }
     if (token === opening.current) setLoading(false)
-  }, [])
+  }, [clearFiles, learnFiles])
 
   const loadChats = useCallback(async () => {
     setListFailed(false)
@@ -158,7 +165,7 @@ export function Chat({ model }: { model?: string | null }) {
     if (!current) return
     const unknown = items
       .flatMap((it) => (it.kind === 'assistant' ? it.steps.flatMap((st) => st.files ?? []) : []))
-      .filter((id) => !known[id] && !asked.current.has(id))
+      .filter((id) => !known.has(id) && !asked.current.has(id))
     if (!unknown.length) return
     for (const id of unknown) asked.current.add(id)
     listed.current.delete(current)
@@ -208,6 +215,9 @@ export function Chat({ model }: { model?: string | null }) {
   function newChat() {
     attach.clear()
     files.clear()
+    // A pick after this must start its own chat, not join one still being made for the old draft.
+    creating.current = null
+    shown.current = null
     opening.current += 1
     setCurrent(null)
     setItems([])
@@ -224,6 +234,7 @@ export function Chat({ model }: { model?: string | null }) {
     // The owner moved on (New chat, another chat) while it was being made: don't pull them back.
     if (stamp !== opening.current) throw new Error('superseded')
     opening.current += 1
+    shown.current = chat.id
     setCurrent(chat.id)
     setChats((all) => [chat, ...(all ?? [])])
     return chat.id
@@ -232,10 +243,13 @@ export function Chat({ model }: { model?: string | null }) {
   /** Where an upload goes: the open chat, or a new one made first (once, however many files). */
   function chatForUpload(): Promise<string> {
     if (current !== null) return Promise.resolve(current)
-    creating.current ??= startChat().finally(() => {
-      creating.current = null
+    if (creating.current) return creating.current
+    const made: Promise<string> = startChat().finally(() => {
+      // Only if it is still the one in flight: New chat may have started another.
+      if (creating.current === made) creating.current = null
     })
-    return creating.current
+    creating.current = made
+    return made
   }
 
   /** One paperclip for both: photos keep the photo path, everything else is a chat file. */
@@ -245,7 +259,7 @@ export function Chat({ model }: { model?: string | null }) {
       return
     }
     void files.add(file, chatForUpload).then((info) => {
-      if (info) setKnown((all) => ({ ...all, [info.id]: info }))
+      if (info) setKnown((all) => new Map(all).set(info.id, info))
     })
   }
 
@@ -268,13 +282,13 @@ export function Chat({ model }: { model?: string | null }) {
       setItems((all) => [...all, { kind: 'user', key: `u-${turn_id}`, text }, liveTurn(turn_id, Date.now())])
       setLive({ chatId, turnId: turn_id })
       if (photoId) attach.clear()
-      if (fileIds.length) files.sent()
+      if (fileIds.length) files.sent(fileIds)
       const id = chatId
       setChats(
         (all) =>
           all?.map((c) =>
             c.id === id
-              ? { ...c, active_turn: turn_id, title: c.title || titleFor(text, known[fileIds[0]]?.name) }
+              ? { ...c, active_turn: turn_id, title: c.title || titleFor(text, known.get(fileIds[0])?.name) }
               : c,
           ) ?? null,
       )
@@ -301,10 +315,7 @@ export function Chat({ model }: { model?: string | null }) {
       current={current}
       onOpen={(c) => {
         // A photo or file picked for one chat doesn't follow the owner into another.
-        if (c.id !== current) {
-          attach.clear()
-          files.clear()
-        }
+        if (c.id !== current) attach.clear()
         void open(c)
       }}
       onNew={newChat}
@@ -331,14 +342,15 @@ export function Chat({ model }: { model?: string | null }) {
         <div className="chat-scroll" ref={scroller} onScroll={onScroll}>
           <div className="thread" aria-busy={loading || undefined}>
             {items.length === 0 && !loading && <EmptyChat />}
-            {items.map((item) =>
+            {items.map((item, index) =>
               item.kind === 'user' ? (
-                <UserBubble key={item.key} text={item.text} known={known} />
+                <UserBubble key={item.key} text={item.text} known={known} n={index + 1} />
               ) : (
                 <AssistantTurn
                   key={item.key}
                   item={item}
                   known={known}
+                  n={index + 1}
                   onResolved={(id, status) => resolved(item.key, id, status)}
                 />
               ),
@@ -373,14 +385,18 @@ export function Chat({ model }: { model?: string | null }) {
 }
 
 /** The owner's message: any attached photos, then the words, without the attachment lines. */
-function UserBubble({ text, known }: { text: string; known: Record<string, ChatFileInfo> }) {
+function UserBubble({ text, known, n }: { text: string; known: ReadonlyMap<string, ChatFileInfo>; n: number }) {
   const { photos, files: fileIds, text: words } = splitAttachments(text)
   return (
     <div className="me" data-photos={photos.length || undefined}>
       {photos.map((id, i) => (
         <img key={`${id}-${i}`} className="me-photo" src={uploadUrl(id)} alt="Your photo" loading="lazy" />
       ))}
-      <FileChips className="me-files" files={fileIds.map((id) => chipFor(id, known))} />
+      <FileChips
+        className="me-files"
+        label={`Files you sent in message ${n}`}
+        files={fileIds.map((id) => chipFor(id, known))}
+      />
       {words}
     </div>
   )
@@ -399,10 +415,12 @@ function EmptyChat() {
 function AssistantTurn({
   item,
   known,
+  n,
   onResolved,
 }: {
   item: AssistantItem
-  known: Record<string, ChatFileInfo>
+  known: ReadonlyMap<string, ChatFileInfo>
+  n: number
   onResolved: (approvalId: string, status: ApprovalStatus) => void
 }) {
   const streaming = item.state === 'streaming'
@@ -417,7 +435,7 @@ function AssistantTurn({
       )}
       <WorkedSteps steps={item.steps} workedMs={item.workedMs} running={streaming} />
       <StepImages steps={item.steps} />
-      <StepFiles steps={item.steps} known={known} />
+      <StepFiles steps={item.steps} known={known} n={n} />
       {item.approvals.map(({ request, status }) => (
         <ApprovalCard
           key={request.approval_id}
@@ -449,10 +467,14 @@ function AssistantTurn({
 }
 
 /** The files a turn's steps brought into the chat or made, under the steps. */
-function StepFiles({ steps, known }: { steps: Step[]; known: Record<string, ChatFileInfo> }) {
+function StepFiles({ steps, known, n }: { steps: Step[]; known: ReadonlyMap<string, ChatFileInfo>; n: number }) {
   const ids = [...new Set(steps.flatMap((step) => step.files ?? []))]
   if (!ids.length) return null
-  return <FileChips className="turn-files" files={ids.map((id) => chipFor(id, known))} />
+  return <FileChips
+      className="turn-files"
+      label={`Files from reply ${n}`}
+      files={ids.map((id) => chipFor(id, known))}
+    />
 }
 
 /** The images a turn's steps made: a grid under the steps, opening into the shared viewer. */

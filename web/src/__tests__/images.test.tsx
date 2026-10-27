@@ -310,7 +310,7 @@ describe('photos', () => {
       'POST /api/chats/c1/messages': { status: 202, body: { turn_id: 't1' } },
     })
     render(<Chat model="Local model 12B" />)
-    const clip = await screen.findByRole('button', { name: 'Attach a photo' })
+    const clip = await screen.findByRole('button', { name: 'Attach a photo or file' })
     expect(clip).toBeEnabled()
     // One paperclip for photos and files; a photo is still routed down the photo path.
     expect(fileInput().accept.split(',')).toEqual(
@@ -359,7 +359,7 @@ describe('photos', () => {
       'POST /api/chats/c1/messages': { status: 202, body: { turn_id: 't1' } },
     })
     render(<Chat model="Local model 12B" />)
-    await screen.findByRole('button', { name: 'Attach a photo' })
+    await screen.findByRole('button', { name: 'Attach a photo or file' })
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
 
     pickPhoto()
@@ -410,7 +410,7 @@ describe('photos', () => {
       'POST /api/uploads': { status: 413, body: { reason: 'too_large', message } },
     })
     render(<Chat model="Local model 12B" />)
-    await screen.findByRole('button', { name: 'Attach a photo' })
+    await screen.findByRole('button', { name: 'Attach a photo or file' })
     pickPhoto()
     expect(await screen.findByRole('alert')).toHaveTextContent(message)
     expect(chip()).toBeNull()

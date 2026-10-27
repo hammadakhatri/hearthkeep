@@ -92,7 +92,7 @@ export function Composer({ onSend, busy, think, onThinkChange, thinkLocked, mode
         {onPickFile && (
           <PhotoButton
             className="chipbtn opt attach"
-            label="Attach a photo"
+            label="Attach a photo or file"
             accept={FILE_ACCEPT}
             multiple
             onPick={onPickFile}

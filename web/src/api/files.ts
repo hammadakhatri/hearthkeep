@@ -40,7 +40,8 @@ export function attachedFileLine(id: string): string {
 export function splitAttachments(text: string): { photos: string[]; files: string[]; text: string } {
   const photos: string[] = []
   const files: string[] = []
-  const kept = text.split('\n').filter((line) => {
+  // The server stores LF; a CRLF or CR line end must not hide an attachment line.
+  const kept = text.replace(/\r\n?/g, '\n').split('\n').filter((line) => {
     const photo = ATTACHED_PHOTO.exec(line)
     if (photo) {
       photos.push(photo[1])
