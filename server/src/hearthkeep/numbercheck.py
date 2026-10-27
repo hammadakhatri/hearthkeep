@@ -5,15 +5,24 @@ Each mention is marked `computed` (it matches a value a run computed), `document
 only a value read from a document, with that value's page) or `unverified` (it matches nothing).
 Mentions that also appear in the owner's question of that turn or in a file name of the chat get
 no mark. When in doubt a mention is `unverified`: flagging a right number is better than letting
-a wrong one through.
+a wrong one through. So:
+
+- Named run values (`hk.result`, `hk.document`) match within the precision written ("3" covers
+  [2.5, 3.5)). Table cells and printed numbers are many and unnamed: they match only exactly,
+  or within the written precision when at least 3 significant digits are written.
+- A written sign (`+`, `−`) must match the value's sign; an unsigned number may state a size.
+- A percent matches `100·v` only for ratio-like values (|v| ≤ 10), and `v` itself only when the
+  value's unit is a percent.
+- Durations, times, fractions, short-year dates, phone numbers, URLs and code are never matched.
 
 Work is bounded: at most MAX_REPORTED reported values, MAX_REPLY_CHARS characters of a reply
 (or of an exempt text), MAX_PRINTED_CHARS characters of printed output in all; matching is a
-binary search per mention.
+binary search per mention. Offsets are code points inside; the web gets UTF-16 offsets.
 """
 
 from __future__ import annotations
 
+import asyncio
 import bisect
 import dataclasses
 import datetime
@@ -23,24 +32,27 @@ import logging
 import math
 import re
 import sqlite3
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
 from hearthkeep import db
 from hearthkeep.files.store import ATTACHED_FILE_LINE, ChatFileStore
 from hearthkeep.images import ATTACHED_PHOTO_LINE, normalize_newlines
-from hearthkeep.sandbox.runs import RunStore
+from hearthkeep.sandbox.runs import RunRecord, RunStore
 
 UNVERIFIED_NOTE = "Not found in any result from this chat's analysis."
 MAX_REPORTED = 50_000
 MAX_REPLY_CHARS = 20_000
 MAX_PRINTED_CHARS = 1_000_000  # printed output scanned for numbers, over all runs
 MAX_RUNS = 200
+MAX_ABS = 2.0**63  # larger run values are dropped (results.py stores them as null too)
+PRECISE_DIGITS = 3  # significant digits that let a table cell or printed number match roughly
 
 _log = logging.getLogger(__name__)
 
 Kind = Literal["computed", "document"]
+Source = Literal["value", "table", "printed"]
 
 
 @dataclass
@@ -55,10 +67,12 @@ class Mention:
     date: datetime.date | None
     date_end: datetime.date | None  # the end of a range ("12–24 March")
     month_day_only: bool  # no year written: the year is ignored
-    year_only: bool  # a bare year; `value` holds it too
-    # Additions: the other reading of a D/M/YYYY date, and "March 2024" (a month match).
-    alt_date: datetime.date | None = None
-    month_year: bool = False
+    year_only: bool  # a bare year after "in", "since", ...; `value` holds it too
+    # Additions to the brief's fields:
+    month_year: bool = False  # "March 2024": matches any day of that month
+    signed: bool = False  # a "+" or "−" was written
+    ordinal: bool = False  # "12th"
+    digits: int = 0  # significant digits written
 
 
 @dataclass
@@ -67,6 +81,8 @@ class Reported:
     date: datetime.date | None
     kind: Kind
     page: int | None
+    source: Source = "value"  # a named run value, a table cell or printed output
+    percent: bool = False  # the value's unit is a percent
 
 
 @dataclass
@@ -84,6 +100,19 @@ def reply_text(parts: list[str]) -> str:
     return "\n\n".join(p for p in parts if p.strip())
 
 
+def reply_spans(parts: list[str], unchecked: set[int]) -> list[tuple[int, int]]:
+    """Where the parts with these indexes sit in `reply_text(parts)` (code points)."""
+    spans: list[tuple[int, int]] = []
+    position = 0
+    for index, part in enumerate(parts):
+        if not part.strip():
+            continue
+        if index in unchecked:
+            spans.append((position, position + len(part)))
+        position += len(part) + 2
+    return spans
+
+
 # ---- extraction ----------------------------------------------------------------------------------
 
 _MONTHS = {
@@ -99,16 +128,17 @@ _MONTHS = {
     )
     for name in names
 }  # fmt: skip
-_MONTH = (
-    r"(?<![A-Za-z])(?P<mon>(?:January|February|March|April|May|June|July|August|September"
-    r"|October|November|December)|(?:Sept|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\.?)"
-    r"(?![A-Za-z])"
+_MONTH_NAMES = (
+    r"(?:January|February|March|April|May|June|July|August|September|October|November|December)"
+    r"|(?:Sept|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\.?"
 )
+_MONTH = rf"(?<![A-Za-z])(?P<mon>{_MONTH_NAMES})(?![A-Za-z])"
 _ORD = r"(?:st|nd|rd|th)?"
 _END = r"(?![A-Za-z0-9_])(?![.,]\d)"  # a number ends here: no letter, digit or decimal part
 _YEAR_OPT = rf"(?:,?\s+(?P<y>\d{{4}}){_END})?"
 _DASH = r"\s*[-–—]\s*"
-_SIGNS = "-−–"
+_SIGNS = "-−–+"
+_MINUS = "-−–"
 _CURRENCY = "£$€¥₹"
 
 _ISO = re.compile(
@@ -129,7 +159,23 @@ _MONTH_YEAR = re.compile(rf"{_MONTH},?\s+(?P<y>\d{{4}}){_END}")
 _UNIT = r"(?:ms|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s|days?|d)"
 _PART = rf"\d+(?:\.\d+)?\s?{_UNIT}(?![A-Za-z])"
 _DURATION = re.compile(rf"(?<![\w.,]){_PART}(?:\s*,?\s*{_PART})+")
+_WORD_DURATION = re.compile(
+    r"(?<![\w.,])\d+(?:\.\d+)?\s?(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?"
+    r"|months?|years?)(?![A-Za-z])"
+)
 _SHORT_DURATION = re.compile(r"(?<![\w.,])\d+(?:\.\d+)?(?:ms|hrs?|h|mins?|secs?|s|d)(?![\w])")
+# Shapes that are never matched and get no mark at all.
+_SHORT_YEAR_DATE = re.compile(r"(?<![\w/.,])\d{1,2}/\d{1,2}/\d{2}(?![\w/])")
+_FRACTION = re.compile(r"(?<![\w/.,])\d+/\d+(?![\w/])")
+_TIME = re.compile(
+    r"(?<![\w:.,])\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:\s?[AaPp]\.?[Mm]\.?(?![A-Za-z]))?(?![\w:])"
+)
+_PHONE = re.compile(
+    r"(?<![\w.,+])(?:\+\s?)?\(?\d{1,5}\)?(?:[ .-]\(?\d{1,5}\)?){2,}(?![\w])(?![.,]\d)"
+)
+_PHONE_SEPARATORS = re.compile(r"\d\)?([ .-])\(?(?=\d)")
+_URL = re.compile(r"(?:\b(?:https?|ftp)://|\bwww\.)[^\s<>\]]+")
+_LINK_TARGET = re.compile(r"\]\([^)\n]*\)")
 _TOKEN = re.compile(r"(?<![\w])\d[\d,.]*\d|(?<![\w])\d")
 _NUMBER = re.compile(r"(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?")
 _SUFFIX = re.compile(
@@ -137,9 +183,15 @@ _SUFFIX = re.compile(
     r"|\s(?P<word>thousand|million|billion)(?![A-Za-z])"
 )
 _PERCENT = re.compile(r"\s?%|\s?percent(?![A-Za-z])")
+_YEAR_WORD = re.compile(
+    rf"(?:(?<![A-Za-z])(?i:in|since|during|of|from|by|until|before|after|through)"
+    rf"|(?<![A-Za-z])(?:{_MONTH_NAMES}),?)[ \t]+$"
+)
 _SCALES = {"k": 1e3, "K": 1e3, "thousand": 1e3, "m": 1e6, "M": 1e6, "million": 1e6,
            "bn": 1e9, "B": 1e9, "billion": 1e9}  # fmt: skip
-_FENCE = re.compile(r"^[ \t]*(`{3,}|~{3,})[^\n]*\n.*?(?:^[ \t]*\1[ \t]*$|\Z)", re.M | re.S)
+_FENCE = re.compile(
+    r"^[ \t]*(?P<f>(?P<c>[`~])(?P=c){2,})[^\n]*\n.*?^[ \t]*(?P=f)(?P=c)*[ \t]*$", re.M | re.S
+)
 _INLINE_CODE = re.compile(r"(`+)[^\n]*?\1")
 _LIST_MARKER = re.compile(r"^[ \t]*(\d+[.)])(?=\s)", re.M)
 _MASK = "\x00"
@@ -156,8 +208,8 @@ def _month(name: str) -> int:
     return _MONTHS[name.rstrip(".").lower()]
 
 
-def _date_mention(start: int, end: int, source: str, **fields) -> Mention:
-    """A mention of source[start:end]; a date, or (without fields) a shape never matched."""
+def _plain_mention(start: int, end: int, source: str, **fields) -> Mention:
+    """A mention of source[start:end]: a date, or (without fields) a shape never matched."""
     values = dict(value=None, decimals=0, scale=1.0, percent=False, date=None, date_end=None,
                   month_day_only=False, year_only=False)  # fmt: skip
     values.update(fields)
@@ -166,53 +218,77 @@ def _date_mention(start: int, end: int, source: str, **fields) -> Mention:
 
 def _iso(m: re.Match, text: str) -> Mention | None:
     when = _date(int(m["y"]), int(m["m"]), int(m["d"]))
-    return _date_mention(m.start(), m.end(), text, date=when) if when else None
+    return _plain_mention(m.start(), m.end(), text, date=when) if when else None
 
 
 def _slash(m: re.Match, text: str) -> Mention | None:
+    """Day first (the owner's locale); month first only when the second number can't be one."""
     a, b, year = int(m["a"]), int(m["b"]), int(m["y"])
-    readings = [d for d in (_date(year, b, a), _date(year, a, b)) if d is not None]
-    if not readings:
-        return None
-    alt = readings[1] if len(readings) == 2 and readings[1] != readings[0] else None
-    return _date_mention(m.start(), m.end(), text, date=readings[0], alt_date=alt)
+    when = _date(year, b, a) if b <= 12 else _date(year, a, b)
+    return _plain_mention(m.start(), m.end(), text, date=when) if when else None
 
 
-def _day_month(m: re.Match, text: str, ranged: bool) -> Mention | None:
+def _day_month(m: re.Match, text: str, ranged: bool, day_first: bool) -> Mention | None:
     month = _month(m["mon"])
+    if day_first and month == 5 and not m["y"]:
+        return None  # "12 May" may be "12 may …": May is a month only before a day or year
     year = int(m["y"]) if m["y"] else 2000  # a leap year: 29 February stays valid
     first = _date(year, month, int(m["d1"]))
     last = _date(year, month, int(m["d2"])) if ranged else None
     if first is None or (ranged and (last is None or last < first)):
         return None
-    return _date_mention(m.start(), m.end(), text, date=first, date_end=last,
-                         month_day_only=not m["y"])  # fmt: skip
+    return _plain_mention(m.start(), m.end(), text, date=first, date_end=last,
+                          month_day_only=not m["y"])  # fmt: skip
 
 
 def _month_year(m: re.Match, text: str) -> Mention | None:
     when = _date(int(m["y"]), _month(m["mon"]), 1)
-    return _date_mention(m.start(), m.end(), text, date=when, month_year=True) if when else None
+    return _plain_mention(m.start(), m.end(), text, date=when, month_year=True) if when else None
 
 
-def _duration(m: re.Match, text: str) -> Mention:
-    return _date_mention(m.start(), m.end(), text)  # never matched: no value, no date
+def _never(m: re.Match, text: str) -> Mention:
+    return _plain_mention(m.start(), m.end(), text)  # no value, no date: always unverified
 
 
-_DATE_PASSES = (
+def _skip(m: re.Match, text: str) -> bool:
+    return True  # masked, no mention
+
+
+def _phone(m: re.Match, text: str) -> bool:
+    span = m.group()
+    if sum(c.isdigit() for c in span) < 9:
+        return False
+    separators = set(_PHONE_SEPARATORS.findall(span))
+    first = span.lstrip("+( ")
+    return (
+        "+" in span
+        or "(" in span
+        or separators in ({"-"}, {"."})
+        or (separators == {" "} and first.startswith("0"))
+    )
+
+
+_SKIPS = {_skip, _phone}
+_PASSES = (
     (_ISO, _iso),
     (_SLASH, _slash),
-    (_DAY_RANGE, lambda m, t: _day_month(m, t, True)),
-    (_MONTH_RANGE, lambda m, t: _day_month(m, t, True)),
-    (_DAY_MONTH, lambda m, t: _day_month(m, t, False)),
-    (_MONTH_DAY, lambda m, t: _day_month(m, t, False)),
+    (_SHORT_YEAR_DATE, _skip),
+    (_FRACTION, _skip),
+    (_TIME, _skip),
+    (_PHONE, _phone),
+    (_DAY_RANGE, lambda m, t: _day_month(m, t, True, True)),
+    (_MONTH_RANGE, lambda m, t: _day_month(m, t, True, False)),
+    (_DAY_MONTH, lambda m, t: _day_month(m, t, False, True)),
+    (_MONTH_DAY, lambda m, t: _day_month(m, t, False, False)),
     (_MONTH_YEAR, _month_year),
-    (_DURATION, _duration),
-    (_SHORT_DURATION, _duration),
+    (_DURATION, _never),
+    (_WORD_DURATION, _never),
+    (_SHORT_DURATION, _never),
 )
 
 
 def _masked(text: str) -> str:
-    """The text with code and list markers blanked out, offsets unchanged."""
+    """The text with code, links and list markers blanked out, offsets unchanged."""
     chars = list(text)
 
     def blank(start: int, end: int) -> None:
@@ -220,11 +296,10 @@ def _masked(text: str) -> str:
             if chars[i] != "\n":
                 chars[i] = _MASK
 
-    for m in _FENCE.finditer(text):
-        blank(m.start(), m.end())
-    work = "".join(chars)
-    for m in _INLINE_CODE.finditer(work):
-        blank(m.start(), m.end())
+    for pattern in (_FENCE, _INLINE_CODE, _LINK_TARGET, _URL):
+        work = "".join(chars)
+        for m in pattern.finditer(work):
+            blank(m.start(), m.end())
     work = "".join(chars)
     for m in _LIST_MARKER.finditer(work):
         blank(m.start(1), m.end(1))
@@ -242,15 +317,15 @@ def _number(m: re.Match, work: str, text: str) -> Mention | None:
     if start > 0 and work[start - 1] in ".,":  # ".5": not a shape we read
         if not _boundary(work, start - 1):
             return None
-        return _date_mention(start - 1, end, text)
+        return _plain_mention(start - 1, end, text)
     # Prefix: a sign directly before the digits (or before the currency sign), a currency sign.
-    begin, negative = start, False
+    begin, sign = start, ""
     if begin > 0 and work[begin - 1] in _SIGNS and _boundary(work, begin - 1):
-        negative, begin = True, begin - 1
+        sign, begin = work[begin - 1], begin - 1
     if begin > 0 and work[begin - 1] in _CURRENCY:
         begin -= 1
-        if not negative and begin > 0 and work[begin - 1] in _SIGNS and _boundary(work, begin - 1):
-            negative, begin = True, begin - 1
+        if not sign and begin > 0 and work[begin - 1] in _SIGNS and _boundary(work, begin - 1):
+            sign, begin = work[begin - 1], begin - 1
     parsed = _NUMBER.fullmatch(token)
     scale, percent, ordinal = 1.0, False, False
     stop = end
@@ -268,25 +343,38 @@ def _number(m: re.Match, work: str, text: str) -> Mention | None:
     if stop < len(work) and (work[stop].isalnum() or work[stop] == "_"):
         return None  # digits touching letters: an identifier such as "5kg" or "2O"
     if parsed is None or (ordinal and parsed.group(2)):
-        return _date_mention(begin, stop, text)  # "1.2.3", "1,23": unread shape
-    decimals = len(parsed.group(2) or "")
-    number = float(parsed.group(1).replace(",", "") + (f".{parsed.group(2)}" if decimals else ""))
-    if negative:
+        return _plain_mention(begin, stop, text)  # "1.2.3", "1,23": a shape we don't read
+    whole, fraction = parsed.group(1).replace(",", ""), parsed.group(2) or ""
+    number = float(whole + (f".{fraction}" if fraction else ""))
+    if not math.isfinite(number) or not math.isfinite(number * scale):
+        return _plain_mention(begin, stop, text)  # too big to compare: always unverified
+    if sign in _MINUS and sign:
         number = -number
+    digits = len((whole + fraction).lstrip("0"))
     plain = begin == start and stop == end
-    if plain and len(token) == 4 and 1900 <= number <= 2100:
-        return _date_mention(start, end, text, value=number,
-                             date=datetime.date(int(number), 1, 1), year_only=True)  # fmt: skip
-    return Mention(begin, stop, text[begin:stop], number, decimals, scale, percent, None, None,
-                   False, False)  # fmt: skip
+    if (
+        plain
+        and len(token) == 4
+        and 1900 <= number <= 2100
+        and _YEAR_WORD.search(work, max(0, start - 24), start)
+    ):
+        return _plain_mention(start, end, text, value=number, digits=digits,
+                              date=datetime.date(int(number), 1, 1), year_only=True)  # fmt: skip
+    return Mention(begin, stop, text[begin:stop], number, len(fraction), scale, percent, None,
+                   None, False, False, signed=bool(sign), ordinal=ordinal,
+                   digits=digits)  # fmt: skip
 
 
 def _scan(text: str) -> list[Mention]:
     work = _masked(text)
     found: list[Mention] = []
-    for pattern, build in _DATE_PASSES:
+    for pattern, build in _PASSES:
         taken: list[tuple[int, int]] = []
         for m in pattern.finditer(work):
+            if build in _SKIPS:
+                if build(m, text):
+                    taken.append((m.start(), m.end()))
+                continue
             mention = build(m, text)
             if mention is not None:
                 found.append(mention)
@@ -315,82 +403,115 @@ _ISO_TEXT = re.compile(
     r"\s*(\d{4})-(\d{2})-(\d{2})(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?\s*"
 )
 _NUMBER_TEXT = re.compile(
-    r"\s*([-−–])?\s*[£$€¥₹]?\s*([-−–])?(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?\s*%?\s*"
+    r"\s*([-−–])?\s*[£$€¥₹]?\s*([-−–])?(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?\s*(%)?\s*"
 )
 
 
-def _number_or_date(raw: object, kind: Kind, page: int | None) -> Reported | None:
+def _usable(number: float) -> bool:
+    return math.isfinite(number) and abs(number) < MAX_ABS
+
+
+def _number_or_date(
+    raw: object, kind: Kind, page: int | None, source: Source, percent: bool = False
+) -> Reported | None:
     """A number, or a whole-string ISO date or number; None for anything else."""
     if isinstance(raw, bool) or raw is None:
         return None
-    if isinstance(raw, int | float):
-        number = float(raw)
-        return Reported(number, None, kind, page) if math.isfinite(number) else None
+    if isinstance(raw, int):
+        if abs(raw) >= MAX_ABS:
+            return None
+        return Reported(float(raw), None, kind, page, source, percent)
+    if isinstance(raw, float):
+        return Reported(raw, None, kind, page, source, percent) if _usable(raw) else None
     if not isinstance(raw, str):
         return None
     if m := _ISO_TEXT.fullmatch(raw):
         when = _date(int(m[1]), int(m[2]), int(m[3]))
-        return Reported(None, when, kind, page) if when else None
+        return Reported(None, when, kind, page, source) if when else None
     if m := _NUMBER_TEXT.fullmatch(raw):
         number = float(m[3].replace(",", "") + (m[4] or ""))
-        return Reported(-number if (m[1] or m[2]) else number, None, kind, page)
+        if not _usable(number):
+            return None
+        number = -number if (m[1] or m[2]) else number
+        return Reported(number, None, kind, page, source, percent or bool(m[5]))
     return None
 
 
-def _from_mentions(mentions: Iterable[Mention], kind: Kind, page: int | None) -> Iterator[Reported]:
+def _from_mentions(
+    mentions: Iterable[Mention], kind: Kind, page: int | None, source: Source
+) -> Iterator[Reported]:
     for m in mentions:
         if m.value is not None:
-            yield Reported(m.value * m.scale, None, kind, page)
-        elif m.date is not None and not (m.month_day_only or m.month_year or m.alt_date):
-            yield Reported(None, m.date, kind, page)
+            number = m.value * m.scale
+            if _usable(number):
+                yield Reported(number, None, kind, page, source, source == "value" and m.percent)
+        elif m.date is not None and not (m.month_day_only or m.month_year):
+            yield Reported(None, m.date, kind, page, source)
             if m.date_end is not None:
-                yield Reported(None, m.date_end, kind, page)
+                yield Reported(None, m.date_end, kind, page, source)
 
 
-def _all_reported(runs: RunStore, chat_id: str) -> Iterator[Reported]:
-    printed_left = MAX_PRINTED_CHARS
+Loaded = list[tuple[RunRecord, list[dict]]]
+
+
+def _load(runs: RunStore, chat_id: str) -> Loaded:
+    """The chat's runs (newest first) with their table outputs' data, read from the database."""
+    loaded: Loaded = []
     for run in runs.runs_for_chat(chat_id, MAX_RUNS):
+        tables = [o.data for o in runs.outputs(run.id) if o.kind == "table"]
+        loaded.append((run, [t for t in tables if isinstance(t, dict)]))
+    return loaded
+
+
+def _reported_from(loaded: Loaded) -> Iterator[Reported]:
+    printed_left = MAX_PRINTED_CHARS
+    for run, tables in loaded:
         read = run.purpose == "vision"
         for v in run.values:
             kind: Kind = "document" if read or v.kind == "document" else "computed"
-            found = _number_or_date(v.value, kind, v.page)
+            percent = "%" in (v.unit or "")
+            found = _number_or_date(v.value, kind, v.page, "value", percent)
             if found is not None:
                 yield found
             elif isinstance(v.value, str):
-                yield from _from_mentions(_scan(v.value), kind, v.page)
-        for output in runs.outputs(run.id):
-            data = output.data
-            if output.kind != "table" or not isinstance(data, dict):
-                continue
-            rows = data.get("rows")
-            if not isinstance(rows, list):
-                continue
-            kind = "document" if read else "computed"
-            for row in rows:
+                yield from _from_mentions(_scan(v.value), kind, v.page, "value")
+        kind = "document" if read else "computed"
+        for table in tables:
+            rows = table.get("rows")
+            for row in rows if isinstance(rows, list) else ():
                 for cell in row if isinstance(row, list) else ():
-                    found = _number_or_date(cell, kind, None)
+                    found = _number_or_date(cell, kind, None, "table")
                     if found is not None:
                         yield found
         if printed_left > 0 and run.stdout:
             printed = run.stdout[:printed_left]
             printed_left -= len(printed)
-            yield from _from_mentions(_scan(printed), "computed", None)
+            yield from _from_mentions(_scan(printed), "computed", None, "printed")
+
+
+def _capped(loaded: Loaded) -> list[Reported]:
+    return list(itertools.islice(_reported_from(loaded), MAX_REPORTED))
 
 
 def reported_values(runs: RunStore, chat_id: str) -> list[Reported]:
     """The values this chat's runs reported, newest runs first, at most MAX_REPORTED."""
-    return list(itertools.islice(_all_reported(runs, chat_id), MAX_REPORTED))
+    return _capped(_load(runs, chat_id))
 
 
 # ---- matching ------------------------------------------------------------------------------------
+
+# Number lists per (rough?, form). Forms: "v" the value, "a" |v| of a negative value, "pv"/"pa"
+# the same for values whose unit is a percent, "h"/"ha" 100·v and 100·|v| for |v| ≤ 10.
+_FORMS = ("v", "a", "pv", "pa", "h", "ha")
 
 
 @dataclass
 class _Side:
     """The values of one kind (computed or document), indexed for lookups."""
 
-    plain: list[tuple[float, int]] = field(default_factory=list)  # (value, page or 0)
-    hundred: list[tuple[float, int]] = field(default_factory=list)  # 100·v, for percents
+    numbers: dict[tuple[bool, str], list[tuple[float, int]]] = field(
+        default_factory=lambda: {(s, f): [] for s in (False, True) for f in _FORMS}
+    )
     dates: dict[datetime.date, int | None] = field(default_factory=dict)
     month_days: dict[tuple[int, int], int | None] = field(default_factory=dict)
     months: dict[tuple[int, int], int | None] = field(default_factory=dict)
@@ -399,9 +520,20 @@ class _Side:
     def add(self, r: Reported) -> None:
         page = r.page or 0
         if r.value is not None:
-            for v in {r.value, abs(r.value)}:
-                self.plain.append((v, page))
-                self.hundred.append((v * 100, page))
+            strict, v = r.source != "value", r.value
+            forms = [("v", v)]
+            if r.percent:
+                forms.append(("pv", v))
+            if abs(v) <= 10:
+                forms.append(("h", v * 100))
+            if v < 0:
+                forms.append(("a", -v))
+                if r.percent:
+                    forms.append(("pa", -v))
+                if abs(v) <= 10:
+                    forms.append(("ha", -v * 100))
+            for form, number in forms:
+                self.numbers[(strict, form)].append((number, page))
         if r.date is not None:
             d = r.date
             self.dates.setdefault(d, r.page)
@@ -410,17 +542,26 @@ class _Side:
             self.years.setdefault(d.year, r.page)
 
     def finish(self) -> None:
-        self.plain.sort()
-        self.hundred.sort()
+        for values in self.numbers.values():
+            values.sort()
 
     def number(self, m: Mention) -> tuple[bool, int | None]:
         target = m.value * m.scale  # type: ignore[operator]
-        tolerance = 0.5 * 10.0 ** (-m.decimals) * m.scale + 1e-9 * max(1.0, abs(target))
-        lists = (self.plain, self.hundred) if m.percent else (self.plain,)
-        for values in lists:
-            i = bisect.bisect_left(values, (target - tolerance, -1))
-            if i < len(values) and values[i][0] <= target + tolerance:
-                return True, values[i][1] or None
+        tolerance = 0.5 * 10.0 ** (-m.decimals) * m.scale
+        slack = 1e-9 * max(1.0, abs(target))
+        forms = ["pv", "h"] if m.percent else ["v"]
+        if not m.signed:
+            forms += ["pa", "ha"] if m.percent else ["a"]
+        for strict in (False, True):
+            if strict and m.digits < PRECISE_DIGITS:
+                low, high, closed = target - slack, target + slack, True  # exact only
+            else:
+                low, high, closed = target - tolerance - slack, target + tolerance, False
+            for form in forms:
+                values = self.numbers[(strict, form)]
+                i = bisect.bisect_left(values, (low, -1))
+                if i < len(values) and (values[i][0] <= high if closed else values[i][0] < high):
+                    return True, values[i][1] or None
         return False, None
 
     def day(self, m: Mention, when: datetime.date) -> tuple[bool, int | None]:
@@ -460,32 +601,33 @@ def _resolve(m: Mention, sides: tuple[_Side, _Side]) -> tuple[str, int | None] |
         found = [r for r in (by_year, by_value) if r is not None]
         return max(found, key=lambda r: _RANK[r[0]]) if found else None
     ends = [m.date] if m.date_end is None else [m.date, m.date_end]
-    readings = [ends] if m.alt_date is None else [ends, [m.alt_date]]
-    results = []
-    for reading in readings:
-        per_end = [_best(sides, lambda s, d=d: s.day(m, d)) for d in reading]
-        if all(per_end):
-            if all(r[0] == "computed" for r in per_end):  # type: ignore[index]
-                results.append(("computed", None))
-            else:
-                results.append(next(r for r in per_end if r[0] == "document"))  # type: ignore[index]
-    return max(results, key=lambda r: _RANK[r[0]]) if results else None
+    per_end = [_best(sides, lambda s, d=d: s.day(m, d)) for d in ends]
+    if not all(per_end):
+        return None
+    if all(r[0] == "computed" for r in per_end):  # type: ignore[index]
+        return "computed", None
+    return next(r for r in per_end if r[0] == "document")  # type: ignore[index]
 
 
 def _value_key(m: Mention) -> tuple | None:
-    return ("n", round(m.value * m.scale, 6)) if m.value is not None else None
+    """The same number in the same form: "5", "5%" and "5th" are different keys."""
+    if m.value is None:
+        return None
+    return ("n", round(m.value * m.scale, 6), m.percent, m.ordinal)
 
 
-def _exempt_keys(mentions: Iterable[Mention]) -> set[tuple]:
+def _exempt_keys(mentions: Iterable[Mention], by_value: bool) -> set[tuple]:
+    """Keys for exempt mentions. `by_value` False (file names): a number counts by value only
+    when it has at least two digits; any mention still counts as its identical text."""
     keys: set[tuple] = set()
     for m in mentions:
-        if (key := _value_key(m)) is not None:
+        keys.add(("t", m.text))
+        key = _value_key(m)
+        if key is not None and (by_value or sum(c.isdigit() for c in m.text) >= 2):
             keys.add(key)
         if m.date is None:
-            if m.value is None:
-                keys.add(("t", m.text))
             continue
-        for d in (m.date, m.date_end, m.alt_date):
+        for d in (m.date, m.date_end):
             if d is None:
                 continue
             if m.month_day_only:
@@ -505,9 +647,10 @@ def _exempt_keys(mentions: Iterable[Mention]) -> set[tuple]:
 def _is_exempt(m: Mention, keys: set[tuple]) -> bool:
     if not keys:
         return False
+    if ("t", m.text) in keys:
+        return True
     if m.date is None:
-        key = _value_key(m) or ("t", m.text)
-        return key in keys
+        return _value_key(m) in keys
     if m.year_only:
         return ("y", m.date.year) in keys or _value_key(m) in keys
 
@@ -519,22 +662,32 @@ def _is_exempt(m: Mention, keys: set[tuple]) -> bool:
         return ("d", d)
 
     ends = [m.date] if m.date_end is None else [m.date, m.date_end]
-    if all(date_key(d) in keys for d in ends):
-        return True
-    return m.alt_date is not None and date_key(m.alt_date) in keys
+    return all(date_key(d) in keys for d in ends)
 
 
-def check_reply(reply: str, reported: list[Reported], exempt: list[str]) -> list[Mark]:
-    """A mark for every mention in the reply that is not also in an exempt text."""
+def check_reply(
+    reply: str,
+    reported: list[Reported],
+    exempt: list[str],
+    excluded: Sequence[tuple[int, int]] = (),
+    file_names: Sequence[str] = (),
+) -> list[Mark]:
+    """A mark for every mention in the reply that is not exempt or inside an excluded span
+    (code points). `exempt` texts (the owner's question) exempt the same number in the same
+    form; `file_names` exempt numbers of two or more digits, or the identical token."""
     sides = (_Side(), _Side())
     for r in reported:
         sides[0 if r.kind == "computed" else 1].add(r)
     for side in sides:
         side.finish()
-    keys = _exempt_keys(itertools.chain.from_iterable(extract_mentions(t) for t in exempt))
+    keys: set[tuple] = set()
+    for text in exempt:
+        keys |= _exempt_keys(extract_mentions(text), by_value=True)
+    for name in file_names:
+        keys |= _exempt_keys(extract_mentions(name), by_value=False)
     marks: list[Mark] = []
     for m in extract_mentions(reply):
-        if _is_exempt(m, keys):
+        if any(m.start < b and m.end > a for a, b in excluded) or _is_exempt(m, keys):
             continue
         result = _resolve(m, sides)
         if result is None:
@@ -557,38 +710,80 @@ def without_attachment_lines(text: str) -> str:
     )
 
 
+def _web_marks(text: str, marks: list[Mark]) -> list[dict]:
+    """Mark dicts with UTF-16 offsets (what JavaScript strings index by)."""
+    if not marks:
+        return []
+    limit = max(m.end for m in marks)
+    offsets = [0] * (limit + 1)
+    units = 0
+    for i, ch in enumerate(text[:limit]):
+        offsets[i] = units
+        units += 2 if ord(ch) > 0xFFFF else 1
+    offsets[limit] = units
+    return [
+        {**dataclasses.asdict(m), "start": offsets[m.start], "end": offsets[m.end]} for m in marks
+    ]
+
+
 class NumberChecker:
     def __init__(self, conn: sqlite3.Connection, runs: RunStore, files: ChatFileStore) -> None:
         self._conn = conn
         self._runs = runs
         self._files = files
 
-    def marks_for(self, chat_id: str, text: str, question: str = "") -> list[Mark] | None:
-        """The reply's marks, or None when the chat has no files (nothing to check against)."""
+    def _inputs(self, chat_id: str, question: str) -> tuple[Loaded, list[str], list[str]] | None:
         chat_files = self._files.list(chat_id)
         if not chat_files:
             return None
-        exempt = [without_attachment_lines(question), *(f.name for f in chat_files)]
-        return check_reply(text, reported_values(self._runs, chat_id), exempt)
+        names = [f.name for f in chat_files]
+        return _load(self._runs, chat_id), [without_attachment_lines(question)], names
 
-    def check(
-        self, chat_id: str, turn_id: str, message_id: int, question: str, reply: str
+    def marks_for(
+        self,
+        chat_id: str,
+        text: str,
+        question: str = "",
+        excluded: Sequence[tuple[int, int]] = (),
+    ) -> list[Mark] | None:
+        """The reply's marks (code-point offsets), or None when the chat has no files."""
+        inputs = self._inputs(chat_id, question)
+        if inputs is None:
+            return None
+        loaded, exempt, names = inputs
+        return check_reply(text, _capped(loaded), exempt, excluded, names)
+
+    async def check(
+        self,
+        chat_id: str,
+        turn_id: str,
+        message_id: int,
+        question: str,
+        reply: str,
+        excluded: Sequence[tuple[int, int]] = (),
     ) -> dict | None:
         """Check the reply, store the result for the message (once: a re-check replaces it) and
-        return `{"text", "marks"}`. None when the chat has no files or anything goes wrong:
-        the check never stops a reply."""
+        return `{"text", "marks"}` with UTF-16 offsets. None when the chat has no files or
+        anything goes wrong: the check never stops a reply. The database is read here (its
+        connection belongs to this thread); the matching runs in a worker thread."""
         try:
-            marks = self.marks_for(chat_id, reply, question)
-            if marks is None:
+            inputs = self._inputs(chat_id, question)
+            if inputs is None:
                 return None
-            result = {"text": reply, "marks": [dataclasses.asdict(m) for m in marks]}
+            loaded, exempt, names = inputs
+
+            def work() -> list[dict]:
+                marks = check_reply(reply, _capped(loaded), exempt, excluded, names)
+                return _web_marks(reply, marks)
+
+            marks = await asyncio.to_thread(work)
             self._conn.execute(
                 "INSERT OR REPLACE INTO number_checks"
                 " (message_id, chat_id, turn_id, text, marks, created_at)"
                 " VALUES (?, ?, ?, ?, ?, ?)",
-                (message_id, chat_id, turn_id, reply, json.dumps(result["marks"]), db.utcnow()),
+                (message_id, chat_id, turn_id, reply, json.dumps(marks), db.utcnow()),
             )
-            return result
+            return {"text": reply, "marks": marks}
         except Exception as exc:
             # Only the type: the message could carry the owner's numbers or file contents.
             _log.warning("number check failed (%s)", type(exc).__name__)

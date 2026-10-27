@@ -909,7 +909,10 @@ async def test_number_check_covers_plain_followup_reply(
 
 async def test_number_check_after_step_limit_message(conn, settings, approvals, registry, tmp_path):
     checker = _number_checker(conn, tmp_path)
-    scripts = [[call("clock", {}, f"c{i}"), StreamDone("tool_calls")] for i in range(3)]
+    scripts = [
+        [TextDelta("Found 5 rows."), call("clock", {}, "c0"), StreamDone("tool_calls")],
+        [call("clock", {}, "c1"), StreamDone("tool_calls")],
+    ]
     loop = AgentLoop(
         FakeChatClient(scripts), registry, approvals, conn, replace(settings, max_agent_steps=1),
         reply_checker=checker,
@@ -917,8 +920,8 @@ async def test_number_check_after_step_limit_message(conn, settings, approvals, 
     events = await drain_chat(loop, user("go"), FILE_CHAT)
     assert types(events)[-2:] == ["number_check", "turn_done"]
     assert "step limit" in events[-2]["text"]
-    # "1 tool steps": the limit is Hearthkeep's own number, not from a run.
-    assert [m["text"] for m in events[-2]["marks"]] == ["1"]
+    # Hearthkeep's own step-limit message ("1 tool steps") is never marked.
+    assert [(m["text"], m["kind"]) for m in events[-2]["marks"]] == [("5", "computed")]
     row = conn.execute("SELECT message_id FROM number_checks").fetchone()
     assert row["message_id"] == _assistant_ids(conn, FILE_CHAT)[-1]
 
@@ -933,7 +936,7 @@ async def test_no_number_check_without_files(conn, settings, approvals, registry
 
 async def test_checker_failure_never_breaks_the_turn(conn, settings, approvals, registry, caplog):
     class Broken:
-        def check(self, *args, **kwargs):
+        async def check(self, *args, **kwargs):
             raise ValueError("private 1234")
 
     client = FakeChatClient([[TextDelta("5 rows."), StreamDone("stop")]])
@@ -955,7 +958,7 @@ def test_save_message_returns_the_row_id(conn):
 
 async def test_malformed_checker_result_never_breaks_the_turn(conn, settings, approvals, registry):
     class Odd:
-        def check(self, *args, **kwargs):
+        async def check(self, *args, **kwargs):
             return {"marks": []}  # no text
 
     client = FakeChatClient([[TextDelta("5 rows."), StreamDone("stop")]])

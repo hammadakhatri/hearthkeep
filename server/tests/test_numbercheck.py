@@ -1,6 +1,7 @@
 import datetime
 import json
 import logging
+import math
 import time
 
 import pytest
@@ -14,6 +15,7 @@ from hearthkeep.numbercheck import (
     Reported,
     check_reply,
     extract_mentions,
+    reply_spans,
     reply_text,
     reported_values,
 )
@@ -23,8 +25,12 @@ CHAT = "c" * 32
 D = datetime.date
 
 
-def num(value, kind="computed", page=None):
-    return Reported(float(value), None, kind, page)
+def num(value, kind="computed", page=None, source="value", percent=False):
+    return Reported(float(value), None, kind, page, source, percent)
+
+
+def cell(value):
+    return num(value, source="table")
 
 
 def day(iso, kind="computed", page=None):
@@ -118,7 +124,7 @@ def test_formats_match_reported_values():
 
 
 def test_rounding_tolerance_follows_written_precision():
-    reported = [num(31.12), num(2.6)]
+    reported = [num(31.12, percent=True), num(2.6)]
     assert [m.kind for m in check_reply("31.1%", reported, [])] == ["computed"]
     assert [m.kind for m in check_reply("31.2%", reported, [])] == ["unverified"]
     assert [m.kind for m in check_reply("about 3 items", reported, [])] == ["computed"]
@@ -152,9 +158,10 @@ def test_scales_and_percent_words():
 def test_exempt_numbers_from_question_and_file_names():
     reported = [num(1)]
     marks = check_reply(
-        "In March 2024 the 2024 total was 7; sales-2023.csv covers 2023.",
+        "In March 2024 the total in 2024 was 7; sales-2023.csv covers 2023.",
         reported,
-        ["what happened in March 2024?", "sales-2023.csv"],
+        ["what happened in March 2024?"],
+        file_names=["sales-2023.csv"],
     )
     texts = [m.text for m in marks]
     assert "2024" not in texts and "March 2024" not in texts
@@ -227,9 +234,9 @@ def test_counts_and_dates_are_numbers():
     assert all(m.kind == "computed" for m in marks.values()), [
         (m.text, m.kind) for m in marks.values()
     ]
-    # Either reading of a slash date may match.
-    assert check_reply("on 3/4/2024", [day("2024-03-04")], [])[0].kind == "computed"
-    assert check_reply("on 3/4/2024", [day("2024-05-04")], [])[0].kind == "unverified"
+    # Slash dates are read day first.
+    assert check_reply("on 3/4/2024", [day("2024-04-03")], [])[0].kind == "computed"
+    assert check_reply("on 3/4/2024", [day("2024-03-04")], [])[0].kind == "unverified"
     # A month-day date ignores the year; month and year dates match any day in them.
     assert check_reply("on 12 March", [day("2019-03-12")], [])[0].kind == "computed"
     assert check_reply("in March 2024", [day("2023-03-01")], [])[0].kind == "unverified"
@@ -240,13 +247,20 @@ def test_counts_and_dates_are_numbers():
     assert check_reply("12–24 March", [day("2024-03-12")], [])[0].kind == "unverified"
 
 
-def test_durations_are_unverified_unless_a_plain_number_matches():
-    reported = [num(90)]
-    marks = check_reply("It took 1h 30m, or 90 minutes; another took 45min.", reported, [])
+def test_durations_are_always_unverified():
+    reported = [num(90), num(2), num(1), num(3)]
+    marks = check_reply(
+        "It took 1h 30m, or 90 minutes; another took 45min, then 2 weeks, 1 year and 3 days.",
+        reported,
+        [],
+    )
     assert [(m.text, m.kind) for m in marks] == [
         ("1h 30m", "unverified"),
-        ("90", "computed"),
+        ("90 minutes", "unverified"),
         ("45min", "unverified"),
+        ("2 weeks", "unverified"),
+        ("1 year", "unverified"),
+        ("3 days", "unverified"),
     ]
 
 
@@ -281,6 +295,10 @@ def test_reported_values_from_values_tables_and_printed_output(conn, runs):
             tables=[{"columns": ["v"], "rows": [[44]]}])  # fmt: skip
     got = reported_values(runs, CHAT)
     numbers = {(r.value, r.kind, r.page) for r in got if r.value is not None}
+    sources = {(r.value, r.source) for r in got if r.value is not None}
+    assert (1187.0, "value") in sources
+    assert (4210.0, "printed") in sources
+    assert (7.0, "table") in sources
     dates = {(r.date, r.kind) for r in got if r.date is not None}
     assert (1187.0, "computed", None) in numbers
     assert (1200.0, "document", 2) in numbers
@@ -315,35 +333,38 @@ def test_extract_mentions_reads_at_most_twenty_thousand_characters():
     assert extract_mentions(text) == []
 
 
-def test_matching_is_fast_for_large_inputs():
-    reported = [num(i * 1.37) for i in range(49_000)]
-    reported += [day((D(2000, 1, 1) + datetime.timedelta(days=i)).isoformat())
-                 for i in range(1000)]  # fmt: skip
+async def test_whole_check_is_fast_for_large_inputs(conn, runs, files):
+    add_file(conn, "sales.csv")
+    numbers = [value(f"v{i}", i * 1.37) for i in range(49_000)]
+    dates = [value(f"d{i}", (D(2000, 1, 1) + datetime.timedelta(days=i)).isoformat(),
+                   is_date=True) for i in range(1000)]  # fmt: skip
+    add_run(conn, values=numbers + dates, stdout="mean 4.5\n" * 20_000)
     chunk = "Totals 1,234.56 and 98.6% on 2024-03-12, 12–24 March, 3/4/2024 and 7 rows. "
     reply = (chunk * (20_000 // len(chunk) + 1))[:20_000]
+    checker = NumberChecker(conn, runs, files)
     started = time.perf_counter()
-    marks = check_reply(reply, reported, ["what about 2024?"])
+    result = await checker.check(CHAT, "t1", 1, "what about 2024?", reply)
     elapsed = time.perf_counter() - started
-    assert marks
-    assert elapsed < 1.0, elapsed
+    assert result is not None and result["marks"]
+    assert elapsed < 3.0, elapsed
 
 
 # ---- the checker ----------------------------------------------------------------------------
 
 
-def test_no_check_without_files(conn, runs, files):
+async def test_no_check_without_files(conn, runs, files):
     add_run(conn, values=[value("total", 5)])
     checker = NumberChecker(conn, runs, files)
     assert checker.marks_for(CHAT, "5 rows") is None
-    assert checker.check(CHAT, "t1", 1, "q", "5 rows") is None
+    assert await checker.check(CHAT, "t1", 1, "q", "5 rows") is None
     assert conn.execute("SELECT COUNT(*) FROM number_checks").fetchone()[0] == 0
 
 
-def test_check_stores_one_row_per_message(conn, runs, files):
+async def test_check_stores_one_row_per_message(conn, runs, files):
     add_file(conn, "sales.csv")
     add_run(conn, values=[value("total", 5)])
     checker = NumberChecker(conn, runs, files)
-    first = checker.check(CHAT, "t1", 7, "how many?", "5 rows and 6 columns")
+    first = await checker.check(CHAT, "t1", 7, "how many?", "5 rows and 6 columns")
     assert first == {
         "text": "5 rows and 6 columns",
         "marks": [
@@ -352,7 +373,7 @@ def test_check_stores_one_row_per_message(conn, runs, files):
              "note": UNVERIFIED_NOTE},
         ],
     }  # fmt: skip
-    again = checker.check(CHAT, "t1", 7, "how many?", "5 rows")
+    again = await checker.check(CHAT, "t1", 7, "how many?", "5 rows")
     rows = conn.execute("SELECT message_id, chat_id, turn_id, text, marks FROM number_checks")
     rows = rows.fetchall()
     assert len(rows) == 1
@@ -360,7 +381,7 @@ def test_check_stores_one_row_per_message(conn, runs, files):
     assert json.loads(rows[0]["marks"]) == again["marks"]
 
 
-def test_checker_errors_never_raise(conn, files, caplog):
+async def test_checker_errors_never_raise(conn, files, caplog):
     add_file(conn, "sales.csv")
 
     class BrokenRuns:
@@ -369,7 +390,7 @@ def test_checker_errors_never_raise(conn, files, caplog):
 
     checker = NumberChecker(conn, BrokenRuns(), files)
     with caplog.at_level(logging.WARNING):
-        assert checker.check(CHAT, "t1", 1, "q", "5 rows") is None
+        assert await checker.check(CHAT, "t1", 1, "q", "5 rows") is None
     assert "RuntimeError" in caplog.text
     assert "secret detail" not in caplog.text
     assert conn.execute("SELECT COUNT(*) FROM number_checks").fetchone()[0] == 0
@@ -379,3 +400,182 @@ def test_migration_5_creates_number_checks(conn):
     assert conn.execute("PRAGMA user_version").fetchone()[0] >= 5
     columns = [r["name"] for r in conn.execute("PRAGMA table_info(number_checks)")]
     assert columns == ["message_id", "chat_id", "turn_id", "text", "marks", "created_at"]
+
+
+# ---- fix round 1 -----------------------------------------------------------------------------
+
+
+def kinds(reply, reported, exempt=(), file_names=()):
+    marks = check_reply(reply, reported, list(exempt), file_names=list(file_names))
+    return [(m.text, m.kind) for m in marks]
+
+
+def test_table_cells_and_printed_numbers_need_exact_or_precise_matches():
+    assert kinds("3 items", [cell(2.6)]) == [("3", "unverified")]
+    assert kinds("3 items", [num(2.6)]) == [("3", "computed")]
+    assert kinds("4,210 rows", [cell(4209.6)]) == [("4,210", "computed")]
+    assert kinds("3 items", [cell(3)]) == [("3", "computed")]
+    assert kinds("3 items", [num(2.6, source="printed")]) == [("3", "unverified")]
+    assert kinds("12.5 kg", [num(12.46, source="printed")]) == [("12.5", "computed")]
+
+
+DESCRIBE = """       amount
+count    8.000000
+mean    42.500000
+std     12.247449
+min     20.000000
+25%     35.000000
+50%     45.000000
+75%     50.000000
+max     60.000000
+"""
+
+
+def test_describe_output_does_not_confirm_unrelated_numbers(conn, runs, files):
+    add_file(conn, "orders.csv")
+    add_run(conn, stdout=DESCRIBE)
+    checker = NumberChecker(conn, runs, files)
+    marks = checker.marks_for(CHAT, "Half of orders (50%) were cheap, and 2 had 75% off.")
+    assert [(m.text, m.kind) for m in marks] == [
+        ("50%", "unverified"),
+        ("2", "unverified"),
+        ("75%", "unverified"),
+    ]
+
+
+def test_excluded_spans_get_no_marks():
+    reply = "Found 5 rows.\n\nI stopped (1 tool steps)."
+    start = reply.index("I stopped")
+    marks = check_reply(reply, [num(5)], [], excluded=[(start, len(reply))])
+    assert [(m.text, m.kind) for m in marks] == [("5", "computed")]
+
+
+def test_reply_spans_follow_the_join():
+    parts = ["Found 5.", "  ", "Stopped (1 step)."]
+    text = reply_text(parts)
+    spans = reply_spans(parts, {2})
+    assert [text[a:b] for a, b in spans] == ["Stopped (1 step)."]
+
+
+async def test_offsets_sent_to_the_web_are_utf16(conn, runs, files):
+    add_file(conn, "sales.csv")
+    add_run(conn, values=[value("growth", 0.31)])
+    checker = NumberChecker(conn, runs, files)
+    result = await checker.check(CHAT, "t1", 1, "", "📈 Sales 31%")
+    assert [(m["start"], m["end"], m["text"]) for m in result["marks"]] == [(9, 12, "31%")]
+    # Internally the offsets are code points.
+    assert [(m.start, m.end) for m in check_reply("📈 Sales 31%", [num(0.31)], [])] == [(8, 11)]
+
+
+def test_explicit_sign_never_matches_the_size_of_a_value():
+    assert kinds("+3 items", [num(-3)]) == [("+3", "unverified")]
+    assert kinds("+3 items", [num(3)]) == [("+3", "computed")]
+    assert kinds("−3 items", [num(3)]) == [("−3", "unverified")]
+    assert kinds("+31%", [num(-0.31)]) == [("+31%", "unverified")]
+
+
+async def test_non_finite_values_are_dropped(conn, runs, files):
+    add_file(conn, "sales.csv")
+    add_run(
+        conn,
+        values=[value("huge", 10**400), value("big text", "9" * 400), value("n", 5)],
+        tables=[{"columns": ["a"], "rows": [[10**400]]}],
+        stdout="1" + "0" * 400 + "\n",
+    )
+    got = reported_values(runs, CHAT)
+    assert all(r.value is None or math.isfinite(r.value) for r in got)
+    checker = NumberChecker(conn, runs, files)
+    huge = "1" + "0" * 400
+    result = await checker.check(CHAT, "t1", 1, "", f"5 rows and {huge} more")
+    assert [(m["text"], m["kind"]) for m in result["marks"]] == [
+        ("5", "computed"),
+        (huge, "unverified"),
+    ]
+
+
+def test_bare_years_are_dates_only_after_a_date_word():
+    reported = [day("2024-05-01")]
+    assert kinds("2024 orders", reported) == [("2024", "unverified")]
+    assert kinds("in 2024", reported) == [("2024", "computed")]
+    assert kinds("Since 2024", reported) == [("2024", "computed")]
+    assert kinds("2024 orders", [num(2024)]) == [("2024", "computed")]
+    assert not extract_mentions("2024 orders")[0].year_only
+
+
+def test_percent_candidates():
+    assert kinds("0.31%", [num(0.31)]) == [("0.31%", "unverified")]
+    assert kinds("31%", [num(31)]) == [("31%", "unverified")]
+    assert kinds("31%", [num(0.31)]) == [("31%", "computed")]
+    assert kinds("31%", [num(31, percent=True)]) == [("31%", "computed")]
+    assert kinds("31%", [num(31, source="printed")]) == [("31%", "unverified")]
+
+
+def test_slash_dates_read_day_first():
+    assert kinds("on 3/12/2024", [day("2024-03-12")]) == [("3/12/2024", "unverified")]
+    assert kinds("on 3/12/2024", [day("2024-12-03")]) == [("3/12/2024", "computed")]
+    # Only when no month could be second is it read month first.
+    assert kinds("on 3/25/2024", [day("2024-03-25")]) == [("3/25/2024", "computed")]
+
+
+def test_exemption_matches_the_same_form_only():
+    assert kinds("5 rows", [num(1)], ["top 5?"]) == []
+    assert kinds("5% of rows", [num(1)], ["top 5?"]) == [("5%", "unverified")]
+    assert kinds("the 5th row", [num(1)], ["top 5?"]) == [("5th", "unverified")]
+
+
+def test_file_names_exempt_longer_numbers_or_identical_tokens():
+    names = ["budget 2023 (3).csv"]
+    assert kinds("in 2023", [num(1)], file_names=names) == []
+    assert kinds("3 rows", [num(1)], file_names=names) == []  # the identical token
+    assert kinds("3.0 rows", [num(1)], file_names=names) == [("3.0", "unverified")]
+    assert kinds("2,023 rows", [num(1)], file_names=names) == []  # 4 digits: by value
+
+
+def test_tolerance_is_half_open():
+    assert kinds("3 items", [num(2.5)]) == [("3", "computed")]
+    assert kinds("3 items", [num(3.5)]) == [("3", "unverified")]
+    assert kinds("3 items", [num(3.4999)]) == [("3", "computed")]
+
+
+def test_fences_close_with_a_longer_fence_and_unclosed_fences_mask_nothing():
+    closed = "```\nprint(42)\n`````\nThen 8 rows."
+    assert [m.text for m in extract_mentions(closed)] == ["8"]
+    unclosed = "```\nprint(42)\nThen 8 rows."
+    assert [m.text for m in extract_mentions(unclosed)] == ["42", "8"]
+
+
+def test_urls_and_link_targets_skipped():
+    text = "See [the 2 charts](https://example.org/a/2024/7) or https://x.example/p?id=55 for 9."
+    assert [m.text for m in extract_mentions(text)] == ["2", "9"]
+
+
+def test_times_fractions_short_dates_and_phone_numbers_skipped():
+    text = "At 10:30, 1/3 of rows, on 3/12/24, call +44 20 7946 0958 or 555-123-4567; 6 left."
+    assert [m.text for m in extract_mentions(text)] == ["6"]
+
+
+def test_may_is_a_month_only_before_a_day_or_year():
+    assert [m.text for m in extract_mentions("May 12 and May 2024")] == ["May 12", "May 2024"]
+    assert [m.text for m in extract_mentions("12 May")] == ["12"]
+    assert [m.text for m in extract_mentions("12 May 2024")] == ["12 May 2024"]
+    assert [m.text for m in extract_mentions("12 March")] == ["12 March"]
+
+
+async def test_check_runs_in_a_worker_thread(conn, runs, files, monkeypatch):
+    add_file(conn, "sales.csv")
+    add_run(conn, values=[value("n", 5)])
+    called = []
+    real = numbercheck.asyncio.to_thread
+
+    async def spy(fn, *args, **kwargs):
+        called.append(fn)
+        return await real(fn, *args, **kwargs)
+
+    monkeypatch.setattr(numbercheck.asyncio, "to_thread", spy)
+    result = await NumberChecker(conn, runs, files).check(CHAT, "t1", 1, "", "5 rows")
+    assert called and result["marks"][0]["kind"] == "computed"
+
+
+def test_document_mark_with_unknown_page_has_null_page():
+    marks = check_reply("31.5 units", [num(31.5, kind="document")], [])
+    assert [(m.kind, m.page) for m in marks] == [("document", None)]

@@ -23,7 +23,7 @@ import jsonschema
 from hearthkeep import audit, db
 from hearthkeep.approvals import ApprovalStore
 from hearthkeep.config import Settings, detect_docker
-from hearthkeep.numbercheck import reply_text
+from hearthkeep.numbercheck import reply_spans, reply_text
 from hearthkeep.permissions import (
     ActionClass,
     Decision,
@@ -74,8 +74,14 @@ _log = logging.getLogger(__name__)
 
 
 class ReplyChecker(Protocol):
-    def check(
-        self, chat_id: str, turn_id: str, message_id: int, question: str, reply: str
+    async def check(
+        self,
+        chat_id: str,
+        turn_id: str,
+        message_id: int,
+        question: str,
+        reply: str,
+        excluded: list[tuple[int, int]] = ...,
     ) -> dict | None: ...
 
 
@@ -195,6 +201,7 @@ class _Turn:
     seq: int = 0
     question: str = ""  # the owner's message this turn answers
     reply_parts: list[str] = field(default_factory=list)  # saved assistant texts, in order
+    unchecked: set[int] = field(default_factory=set)  # indexes of Hearthkeep's own texts
     last_assistant_id: int | None = None
 
 
@@ -311,7 +318,7 @@ class AgentLoop:
             if not requests:
                 if text:
                     self._save(turn, {"role": "assistant", "content": text})
-                for event in self._number_check(turn):
+                for event in await self._number_check(turn):
                     yield event
                 yield self._emit(turn, "turn_done")
                 return
@@ -372,8 +379,9 @@ class AgentLoop:
             if hit_limit:
                 final = STEP_LIMIT_MESSAGE.format(limit=limit)
                 yield self._emit(turn, "text_delta", text=final)
-                self._save(turn, {"role": "assistant", "content": final})
-                for event in self._number_check(turn):
+                # Hearthkeep's own words: never number-checked.
+                self._save(turn, {"role": "assistant", "content": final}, checked=False)
+                for event in await self._number_check(turn):
                     yield event
                 yield self._emit(turn, "turn_done")
                 return
@@ -590,15 +598,17 @@ class AgentLoop:
         )
         return {"type": type_, "seq": turn.seq, **data}
 
-    def _save(self, turn: _Turn, message: dict) -> None:
+    def _save(self, turn: _Turn, message: dict, checked: bool = True) -> None:
         message_id = save_message(self._conn, turn.chat_id, message, turn.secrets)
         if message["role"] == "assistant":
             turn.last_assistant_id = message_id
             content = redact(message.get("content") or "", turn.secrets)
             if content.strip():
+                if not checked:
+                    turn.unchecked.add(len(turn.reply_parts))
                 turn.reply_parts.append(content)
 
-    def _number_check(self, turn: _Turn) -> list[dict]:
+    async def _number_check(self, turn: _Turn) -> list[dict]:
         """The `number_check` event for the finished reply, if any. Never raises: on any
         failure only the exception type is logged and the turn ends without one."""
         if self._reply_checker is None or turn.last_assistant_id is None:
@@ -607,8 +617,13 @@ class AgentLoop:
         if not reply:
             return []
         try:
-            result = self._reply_checker.check(
-                turn.chat_id, turn.turn_id, turn.last_assistant_id, turn.question, reply
+            result = await self._reply_checker.check(
+                turn.chat_id,
+                turn.turn_id,
+                turn.last_assistant_id,
+                turn.question,
+                reply,
+                excluded=reply_spans(turn.reply_parts, turn.unchecked),
             )
             if result is None:
                 return []
