@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from hk._dates import FORMATS_ATTR, numeric_dates, parse_dates
+from hk._dates import FORMATS_ATTR, auto_dates
 from hk._results import ROW_INDEX, note_once
 
 DELIMITERS = (",", ";", "\t", "|")
@@ -194,10 +194,10 @@ def _text_column(
     numbers = pd.to_numeric(stripped, errors="coerce")
     if numbers.notna().sum() == len(present):
         return numbers
-    if numeric_dates(texts):
-        # YYYY-MM-DD, DD/MM/YYYY and the like, even mixed: never dayfirst on ISO dates.
-        return parse_dates(stripped.rename(values.name), notes)
-    return stripped
+    # Whole dates (YYYY-MM-DD, DD/MM/YYYY and the like, even mixed; never dayfirst on ISO
+    # dates), only when every value parses: anything else stays text exactly as it was.
+    dated = auto_dates(stripped.rename(values.name), notes)
+    return stripped if dated is None else dated
 
 
 def _cell_column(values: pd.Series) -> pd.Series:

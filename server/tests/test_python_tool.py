@@ -655,3 +655,38 @@ async def test_long_purpose_is_accepted_and_cut_in_the_summary(env):
     assert env.tool.summarize(args(purpose="two\nlines")) == "Run Python: two lines"
     result = await env.tool.run(long, env.ctx)
     assert result.ok is True
+
+
+@pytest.mark.docker
+def test_at_a_glance_profile_tells_the_model_about_the_north_gap(harness, sandbox_image):
+    # Files without a question: the model runs hk.profile, and the gap reaches it as a
+    # cleaning line and as results, without the model asking for gaps.
+    from smoke_e2e import make_analysis_csv
+
+    from hearthkeep.sandbox.runner import SandboxRunner
+
+    sandbox = SandboxRunner(harness.data, image_tag=sandbox_image)
+    client = signed_in(harness, sandbox=sandbox)
+    chat_id = new_chat(client)
+    attached = client.post(
+        f"/api/chats/{chat_id}/files",
+        files={"file": ("sales.csv", make_analysis_csv(), "text/csv")},
+        headers=CSRF,
+    )
+    file_id = attached.json()["id"]
+    script = f"import hk\nhk.profile({file_id!r})\n"
+    harness.chat.scripts = [
+        [ToolCallRequest("c1", "python", json.dumps({"script": script, "purpose": "At a glance"})),
+         StreamDone("tool_calls")],
+        [TextDelta("Here it is at a glance."), StreamDone("stop")],
+    ]  # fmt: skip
+    turn = say(client, chat_id, f"Attached file: {file_id}").json()
+    read_events(client, chat_id, turn["turn_id"])
+    seen = harness.chat.calls[1]["messages"][-1]["content"]
+    assert seen.startswith("Run ok in ")
+    assert (
+        "- North has no rows from 2025-03-12 to 2025-03-24 (13 days), while other region "
+        "values do." in seen
+    )
+    assert "- North: first missing day = 2025-03-12" in seen
+    assert "- North: missing days = 13 days" in seen

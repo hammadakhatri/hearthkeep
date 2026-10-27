@@ -235,3 +235,16 @@ def test_docker_probes_and_build_open_no_window_and_no_stdin(monkeypatch):
     for kwargs in calls:
         assert kwargs["stdin"] == subprocess.DEVNULL
         assert kwargs["creationflags"] == getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def test_entry_takes_back_exactly_the_names_the_host_accepts():
+    import importlib.util
+
+    from hearthkeep.sandbox import runner
+
+    path = image.IMAGE_DIR / "hk_entry.py"
+    spec = importlib.util.spec_from_file_location("hk_entry_for_test", path)
+    entry = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(entry)
+    assert entry.MEMBER_NAME.pattern == runner.MEMBER_NAME.pattern
+    assert entry.MEMBER_NAME.flags == runner.MEMBER_NAME.flags

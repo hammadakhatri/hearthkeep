@@ -561,6 +561,11 @@ def smoke_sales_csv() -> bytes:
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
+NORTH_GAP_LINE = (
+    "North has no rows from 2025-03-12 to 2025-03-24 (13 days), while other region values do."
+)
+
+
 def test_read_mixed_iso_and_day_first_dates_keeps_every_month(job):
     df = hk.read(job.add("sales.csv", "csv", smoke_sales_csv()))
     assert pd.api.types.is_datetime64_any_dtype(df["date"])
@@ -578,26 +583,45 @@ def test_read_mixed_iso_and_day_first_dates_keeps_every_month(job):
 def test_gaps_finds_the_north_gap(job):
     df = hk.read(job.add("sales.csv", "csv", smoke_sales_csv()))
     found = hk.gaps(df, "date", by="region")
+    # Each group runs from the file's first date to its last: East stops on 9 March.
     assert found.to_dict("records") == [
+        {
+            "group": "East",
+            "last_before": dt.date(2025, 3, 9),
+            "first_missing": dt.date(2025, 3, 10),
+            "last_missing": dt.date(2025, 3, 31),
+            "days": 22,
+        },
         {
             "group": "North",
             "last_before": dt.date(2025, 3, 11),
             "first_missing": dt.date(2025, 3, 12),
             "last_missing": dt.date(2025, 3, 24),
             "days": 13,
-        }
+        },
     ]
     records = job.results()
     tables = {t["name"]: t for t in by_type(records, "table")}
     gap_table = tables["Gaps in date by region"]
     assert gap_table["columns"] == ["group", "last_before", "first_missing", "last_missing", "days"]
-    assert gap_table["rows"] == [["North", "2025-03-11", "2025-03-12", "2025-03-24", 13]]
+    assert gap_table["rows"] == [
+        ["East", "2025-03-09", "2025-03-10", "2025-03-31", 22],
+        ["North", "2025-03-11", "2025-03-12", "2025-03-24", 13],
+    ]
+    assert "a gap at either end runs to that date" in gap_table["note"]
+    notes = [r["note"] for r in by_type(records, "cleaning")]
+    assert NORTH_GAP_LINE in notes
+    assert (
+        "East has no rows from 2025-03-10 to 2025-03-31 (22 days, to the end of the file), "
+        "while other region values do." in notes
+    )
     values = {r["name"]: r for r in by_type(records, "value")}
     assert values["North: first missing day"]["value"] == "2025-03-12"
     assert values["North: first missing day"]["is_date"] is True
     assert values["North: last missing day"]["value"] == "2025-03-24"
     assert values["North: missing days"]["value"] == 13
-    assert values["Gaps found"]["value"] == 1
+    assert values["Gaps found"]["value"] == 2
+    assert values["East: missing days"]["value"] == 22
 
 
 def test_gaps_reads_text_dates_and_caps_results(job):
@@ -628,7 +652,7 @@ def test_dates_decides_day_or_month_first_from_the_column(job):
         "(no part is over 12, so day first was assumed).",
         "Column d3 has dates written day first (e.g. 25/03/2025) and month first "
         "(e.g. 03/25/2025), so it was left as text.",
-        "Read 2 dates in column d4 written DD/MM/YYYY (e.g. 31/02/2025) as day/month/year.",
+        "Read 1 date in column d4 written DD/MM/YYYY (e.g. 28/02/2025) as day/month/year.",
         "1 value in column d4 could not be read as a date (e.g. 31/02/2025) and was left empty.",
     ]
 
@@ -652,3 +676,78 @@ def test_reading_the_same_file_twice_notes_once(job):
     hk.read(fid)
     hk.read(fid)
     assert len(by_type(job.results(), "cleaning")) == 1
+
+
+def test_read_leaves_codes_versions_and_dates_with_words_as_text(job):
+    data = (
+        "code,version,when,day\n"
+        "10-20-3000,1.2.10,12/03/2025 x,2025-03-01\n"
+        "12-34-5678,3.4.15,13/03/2025,2025-03-02\n"
+        "10-20-3000,2.0.11,14/03/2025,2025-03-03\n"
+    )
+    df = hk.read(job.add("codes.csv", "csv", data.encode()))
+    assert df["code"].tolist() == ["10-20-3000", "12-34-5678", "10-20-3000"]
+    assert df["version"].tolist() == ["1.2.10", "3.4.15", "2.0.11"]
+    assert df["when"].tolist() == ["12/03/2025 x", "13/03/2025", "14/03/2025"]
+    assert pd.api.types.is_datetime64_any_dtype(df["day"])
+    assert by_type(job.results(), "cleaning") == []  # nothing was read as a date
+
+
+def test_read_leaves_dates_that_do_not_all_parse_as_text(job):
+    data = "a,b\n31/02/2025,1.2.2010\n28/02/2025,3.4.2011\n"
+    df = hk.read(job.add("odd.csv", "csv", data.encode()))
+    assert df["a"].tolist() == ["31/02/2025", "28/02/2025"]  # 31 February: kept as written
+    assert pd.api.types.is_datetime64_any_dtype(df["b"])  # whole dates with a 4-digit year
+
+
+def test_dates_note_never_says_yy_for_a_three_digit_year(job):
+    out = hk.dates(pd.Series(["01/02/025", "13/02/2025"], name="d"))
+    assert out.isna().tolist() == [True, False]
+    notes = [r["note"] for r in by_type(job.results(), "cleaning")]
+    assert notes == [
+        "Read 1 date in column d written DD/MM/YYYY (e.g. 13/02/2025) as day/month/year.",
+        "1 value in column d could not be read as a date (e.g. 01/02/025) and was left empty.",
+    ]
+
+
+def test_profile_finds_the_north_gap_by_itself(job):
+    hk.profile(job.add("sales.csv", "csv", smoke_sales_csv()))
+    records = job.results()
+    notes = [r["note"] for r in by_type(records, "cleaning")]
+    assert NORTH_GAP_LINE in notes
+    values = {r["name"]: r["value"] for r in by_type(records, "value")}
+    assert values["North: first missing day"] == "2025-03-12"
+    assert values["North: last missing day"] == "2025-03-24"
+    assert values["North: missing days"] == 13
+    tables = {t["name"] for t in by_type(records, "table")}
+    assert "Gaps in date by region" in tables
+
+
+def _region_csv(stops: dict[str, int]) -> bytes:
+    lines = ["date,region,amount"]
+    for day in range(1, 32):
+        for region in ("North", "East"):
+            if day <= stops.get(region, 31):
+                lines.append(f"2025-03-{day:02d},{region},{day}.50")
+    return ("\n".join(lines) + "\n").encode()
+
+
+def test_profile_reports_a_group_that_stops_early(job):
+    hk.profile(job.add("east.csv", "csv", _region_csv({"East": 19})))
+    records = job.results()
+    notes = [r["note"] for r in by_type(records, "cleaning")]
+    assert (
+        "East has no rows from 2025-03-20 to 2025-03-31 (12 days, to the end of the file), "
+        "while other region values do." in notes
+    )
+    values = {r["name"]: r["value"] for r in by_type(records, "value")}
+    assert values["East: first missing day"] == "2025-03-20"
+    assert values["East: missing days"] == 12
+
+
+def test_profile_reports_no_gaps_when_there_are_none(job):
+    hk.profile(job.add("full.csv", "csv", _region_csv({})))
+    records = job.results()
+    assert not any("has no rows" in r["note"] for r in by_type(records, "cleaning"))
+    assert not any(t["name"].startswith("Gaps in") for t in by_type(records, "table"))
+    assert not any("missing day" in r["name"] for r in by_type(records, "value"))

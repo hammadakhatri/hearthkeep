@@ -7,7 +7,7 @@ from collections import Counter
 
 import pandas as pd
 
-from hk._dates import FORMATS_ATTR
+from hk._dates import FORMATS_ATTR, MAX_GAP_RESULTS, find_gaps, report_gaps
 from hk._dates import date_format as _date_format
 from hk._read import read
 from hk._results import cleaned, result, section, table
@@ -64,10 +64,37 @@ def _numbers_as_text(df: pd.DataFrame, col) -> None:
         )
 
 
+GAP_GROUP_VALUES = (2, 20)  # a text column with this many distinct values groups the rows
+GAP_GROUP_COLUMNS = 3
+GAP_MIN_DAYS = 3
+
+
+def _date_gaps(df: pd.DataFrame) -> None:
+    """Gaps in the first date column, per value of each small text column (at most 3),
+    reported only when there are some, so a small model sees them without being asked."""
+    dated = [c for c in df.columns if pd.api.types.is_datetime64_any_dtype(df[c])]
+    if not dated:
+        return
+    groups = []
+    for col in df.columns:
+        series = df[col]
+        if series.dtype != object or not series.dropna().map(lambda v: isinstance(v, str)).all():
+            continue
+        if GAP_GROUP_VALUES[0] <= series.nunique() <= GAP_GROUP_VALUES[1]:
+            groups.append(col)
+    left = MAX_GAP_RESULTS
+    days = df[dated[0]].dt.normalize()
+    for col in groups[:GAP_GROUP_COLUMNS]:
+        rows = find_gaps(days, df[col], GAP_MIN_DAYS)
+        if rows:
+            left -= report_gaps(rows, str(dated[0]), str(col), GAP_MIN_DAYS, results_left=left)
+
+
 def profile(file: str, *, sheet: str | int | None = None) -> None:
     """At a glance: rows, columns, missing values, and notes on dates, numbers stored as
-    text, thousands separators, a header below line 1, negative amounts and duplicate
-    rows (problem rows reported as tables)."""
+    text, thousands separators, a header below line 1, negative amounts, duplicate rows
+    and gaps of 3 or more days in dated rows per group (problem rows reported as
+    tables)."""
     df = read(file, sheet=sheet)
     section("glance")
     result("rows", len(df))
@@ -102,3 +129,5 @@ def profile(file: str, *, sheet: str | int | None = None) -> None:
         copies = "row is an exact copy" if count == 1 else "rows are exact copies"
         cleaned(f"{count} {copies} of an earlier row.")
         table("Duplicate rows", df[duplicated])
+
+    _date_gaps(df)

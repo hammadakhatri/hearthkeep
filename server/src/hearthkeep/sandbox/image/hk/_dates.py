@@ -10,7 +10,7 @@ from collections import Counter
 import numpy as np
 import pandas as pd
 
-from hk._results import note_once, result, table
+from hk._results import cleaned, note_once, result, table
 
 ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?)?")
 # day/month/year or month/day/year with "/", "." or "-" between the parts (and maybe a time)
@@ -24,10 +24,17 @@ DATE_FORMATS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("D Month YYYY", re.compile(r"\d{1,2}[ -][A-Za-z]{3,9}\.?[ ,-]+\d{2,4}")),
     ("Month D, YYYY", re.compile(r"[A-Za-z]{3,9}\.? \d{1,2},? \d{4}")),
 )
-# The shapes made only of digits and separators: a text column of these is read as dates.
-NUMERIC_DATE_FORMATS = DATE_FORMATS[:5]
+# What hk.read turns into dates by itself: whole values only (a time is allowed, any other
+# trailing text is not), with a four-digit year, so codes and version numbers stay text.
+AUTO_DATE_SHAPES: tuple[re.Pattern[str], ...] = (
+    ISO_DATE,
+    re.compile(r"\d{1,2}([/.-])\d{1,2}\1\d{4}( \d{1,2}:\d{2}(:\d{2})?)?"),
+    re.compile(r"\d{4}([/-])\d{1,2}\1\d{1,2}"),
+)
+AUTO_YEARS = (1900, 2100)  # a column that parses to years outside this stays text
 FORMATS_ATTR = "hk_date_formats"  # Series.attrs key: which rows were written another way
 MAX_GAP_RESULTS = 10
+GAP_COLUMNS = ["group", "last_before", "first_missing", "last_missing", "days"]
 
 
 def date_format(value: str) -> str | None:
@@ -35,11 +42,6 @@ def date_format(value: str) -> str | None:
         if pattern.fullmatch(value):
             return name
     return None
-
-
-def numeric_dates(texts: pd.Series) -> bool:
-    """Every value has one of the all-digit date shapes (YYYY-MM-DD, DD/MM/YYYY, ...)."""
-    return bool(texts.map(lambda s: any(p.fullmatch(s) for _, p in NUMERIC_DATE_FORMATS)).all())
 
 
 def _blank(value) -> bool:
@@ -58,8 +60,9 @@ def _naive(parsed: pd.Series) -> pd.Series:
 
 def parse_dates(values: pd.Series, notes: list[str] | None = None) -> pd.Series:
     """`values` as dates: YYYY-MM-DD read as ISO, and day/month/year (or month/day/year)
-    decided by the column's own values. What was assumed is added to `notes`. A column
-    whose values say both day first and month first comes back as text."""
+    decided by the column's own values. What was assumed is added to `notes`; values that
+    don't parse stay NaT and are counted in a note. A column whose values say both day first
+    and month first comes back as text."""
     if pd.api.types.is_datetime64_any_dtype(values):
         return values
     series = values if isinstance(values, pd.Series) else pd.Series(values)
@@ -106,25 +109,27 @@ def parse_dates(values: pd.Series, notes: list[str] | None = None) -> pd.Series:
             except (TypeError, ValueError, OverflowError):
                 pass  # those values stay NaT and are counted below
 
-    if dmy.any():
-        first = matches[dmy].iloc[0]
-        sep, year = first.group(2), "YYYY" if len(first.group(4)) == 4 else "YY"
+    failed = present & out.isna()
+    dmy_read = dmy & out.notna()
+    if dmy_read.any():  # only the dates that were read; failures get their own note
+        first = matches[dmy_read].iloc[0]
+        sep, year = first.group(2), "Y" * len(first.group(4))
         shape = f"DD{sep}MM{sep}{year}" if dayfirst else f"MM{sep}DD{sep}{year}"
         order = "day/month/year" if dayfirst else "month/day/year"
         note = (
-            f"Read {_plural(int(dmy.sum()), 'date', 'dates')} in {where} written {shape} "
-            f"(e.g. {texts[dmy].iloc[0]}) as {order}"
+            f"Read {_plural(int(dmy_read.sum()), 'date', 'dates')} in {where} written {shape} "
+            f"(e.g. {texts[dmy_read].iloc[0]}) as {order}"
         )
         if not (day_first_seen or month_first_seen):
             note += " (no part is over 12, so day first was assumed)"
-        if iso.any():
+        iso_read = iso & out.notna()
+        if iso_read.any():
             note += (
                 "; the others are YYYY-MM-DD"
-                if not (other.any() or is_date.any())
-                else f"; {int(iso.sum())} are YYYY-MM-DD"
+                if not (other.any() or is_date.any() or failed.any())
+                else f"; {int(iso_read.sum())} are YYYY-MM-DD"
             )
         said.append(note + ".")
-    failed = present & out.isna()
     if failed.any():
         n = int(failed.sum())
         said.append(
@@ -143,10 +148,35 @@ def parse_dates(values: pd.Series, notes: list[str] | None = None) -> pd.Series:
     return out
 
 
+def auto_dates(values: pd.Series, notes: list[str] | None = None) -> pd.Series | None:
+    """`values` as dates when hk.read may decide that by itself: every present value is a
+    whole date (AUTO_DATE_SHAPES), every one parses and every year is plausible. Otherwise
+    None, and the column stays text exactly as it was (codes, version numbers, a date with
+    words after it)."""
+    texts = values.dropna()
+    if texts.empty or not texts.map(lambda v: isinstance(v, str)).all():
+        return None
+    if not texts.map(lambda s: any(p.fullmatch(s) for p in AUTO_DATE_SHAPES)).all():
+        return None
+    said: list[str] = []
+    parsed = parse_dates(values, said)
+    if not pd.api.types.is_datetime64_any_dtype(parsed):
+        return None
+    if parsed[values.notna()].isna().any():
+        return None
+    years = parsed.dropna().dt.year
+    if ((years < AUTO_YEARS[0]) | (years > AUTO_YEARS[1])).any():
+        return None
+    if notes is not None:
+        notes.extend(said)
+    return parsed
+
+
 def dates(values) -> pd.Series:
     """A column of dates written as text, read as dates: YYYY-MM-DD as ISO, and
     DD/MM/YYYY (or MM/DD/YYYY, DD.MM.YYYY, DD-MM-YYYY) day first or month first as the
-    column's own values show. What was assumed becomes a cleaning note. Use it as
+    column's own values show. What was assumed becomes a cleaning note; values that aren't
+    dates become empty (NaT) and are counted in a note. Use it as
     df["date"] = hk.dates(df["date"]); never pd.to_datetime(..., dayfirst=True)."""
     notes: list[str] = []
     out = parse_dates(values, notes)
@@ -156,17 +186,122 @@ def dates(values) -> pd.Series:
     return out
 
 
+# ---------------------------------------------------------------- gaps
+
+
 def _day(value) -> _dt.date:
     return pd.Timestamp(value).date()
+
+
+def _as_days(df: pd.DataFrame, date_col: str) -> pd.Series:
+    when = df[date_col]
+    if not pd.api.types.is_datetime64_any_dtype(when):
+        when = dates(when)
+        if not pd.api.types.is_datetime64_any_dtype(when):
+            raise ValueError(f"column {date_col} isn't dates; see the cleaning note")
+    return _naive(when).dt.normalize()
+
+
+def find_gaps(days: pd.Series, keys: pd.Series | None, min_days: int) -> list[dict]:
+    """Runs of at least `min_days` missing calendar days per group. Every group is bounded
+    by the whole file's first and last date, so a group that starts late or stops early has
+    a gap at that edge (its `last_before` is None when the gap starts the file)."""
+    present = days.dropna()
+    if present.empty:
+        return []
+    start, end = present.min(), present.max()
+    one_day = pd.Timedelta(days=1)
+    groups = [("all", days)] if keys is None else list(days.groupby(keys, sort=True))
+    by_group = {key: set(group_days.dropna()) for key, group_days in groups}
+    rows: list[dict] = []
+    for key, seen_set in by_group.items():
+        seen = sorted(seen_set)
+        if not seen:
+            continue
+        bounds = [start - one_day, *seen, end + one_day]  # the file's edges as sentinels
+        for before, after in zip(bounds, bounds[1:], strict=False):
+            missing = (after - before).days - 1
+            if missing < min_days:
+                continue
+            first, last = before + one_day, after - one_day
+            others = any(
+                any(first <= d <= last for d in other_days)
+                for other_key, other_days in by_group.items()
+                if other_key != key
+            )
+            rows.append(
+                {
+                    "group": key,
+                    "last_before": None if before < start else _day(before),
+                    "first_missing": _day(first),
+                    "last_missing": _day(last),
+                    "days": int(missing),
+                    "starts_file": before < start,
+                    "ends_file": after > end,
+                    "others_have_rows": others,
+                }
+            )
+    return rows
+
+
+def _gap_line(gap: dict, by: str | None) -> str:
+    edge = ""
+    if gap["starts_file"]:
+        edge = ", from the start of the file"
+    elif gap["ends_file"]:
+        edge = ", to the end of the file"
+    span = (
+        f"from {gap['first_missing'].isoformat()} to {gap['last_missing'].isoformat()} "
+        f"({_plural(gap['days'], 'day', 'days')}{edge})"
+    )
+    if by is None:
+        return f"There are no rows {span}."
+    tail = f", while other {by} values do" if gap["others_have_rows"] else ""
+    return f"{gap['group']} has no rows {span}{tail}."
+
+
+def report_gaps(
+    rows: list[dict], date_col: str, by: str | None, min_days: int, *, results_left: int
+) -> int:
+    """The gaps as a table, one plain line each, and (while `results_left` lasts) a result
+    for each gap's first missing day, last missing day and day count. Returns how many gaps
+    got results."""
+    title = f"Gaps in {date_col}" if by is None else f"Gaps in {date_col} by {by}"
+    found = pd.DataFrame([{c: r[c] for c in GAP_COLUMNS} for r in rows], columns=GAP_COLUMNS)
+    if not rows:
+        note = f"No runs of {min_days} or more missing days."
+    elif any(r["starts_file"] or r["ends_file"] for r in rows):
+        note = (
+            "Every group is checked from the file's first date to its last; a gap at either "
+            "end runs to that date, and last_before is empty when the gap starts the file."
+        )
+    else:
+        note = None
+    table(title, found, note=note)
+    for gap in rows:
+        cleaned(_gap_line(gap, by))
+    per_group = Counter(str(r["group"]) for r in rows)
+    numbered: Counter[str] = Counter()
+    reported = 0
+    for gap in rows[: max(results_left, 0)]:
+        group = str(gap["group"])
+        numbered[group] += 1
+        label = group if per_group[group] == 1 else f"{group} gap {numbered[group]}"
+        result(f"{label}: first missing day", gap["first_missing"])
+        result(f"{label}: last missing day", gap["last_missing"])
+        result(f"{label}: missing days", gap["days"], unit="days")
+        reported += 1
+    return reported
 
 
 def gaps(
     df: pd.DataFrame, date_col: str, *, by: str | None = None, min_days: int = 2
 ) -> pd.DataFrame:
     """Runs of missing calendar days in `date_col` (per value of `by`), at least `min_days`
-    long. Reported as the table "Gaps in <date_col> by <by>" (columns group, last_before,
-    first_missing, last_missing, days) and, for the first 10 gaps, a result for the first
-    missing day, the last missing day and the number of days. Returns the table."""
+    long, each group checked from the file's first date to its last. Reported as the table
+    "Gaps in <date_col> by <by>" (columns group, last_before, first_missing, last_missing,
+    days), one plain line per gap and, for the first 10 gaps, a result for the first missing
+    day, the last missing day and the number of days. Returns the table."""
     if not isinstance(df, pd.DataFrame):
         raise TypeError("hk.gaps takes a pandas DataFrame")
     for col in (date_col,) if by is None else (date_col, by):
@@ -174,42 +309,8 @@ def gaps(
             raise KeyError(f"no such column: {col!r}")
     if not isinstance(min_days, int) or isinstance(min_days, bool) or min_days < 1:
         raise ValueError("min_days must be a whole number of days (1 or more)")
-    when = df[date_col]
-    if not pd.api.types.is_datetime64_any_dtype(when):
-        when = dates(when)
-        if not pd.api.types.is_datetime64_any_dtype(when):
-            raise ValueError(f"column {date_col} isn't dates; see the cleaning note")
-    days = _naive(when).dt.normalize()
-    groups = [("all", days)] if by is None else list(days.groupby(df[by], sort=True))
-    columns = ["group", "last_before", "first_missing", "last_missing", "days"]
-    rows: list[dict] = []
-    one_day = pd.Timedelta(days=1)
-    for key, group_days in groups:
-        seen = sorted(set(group_days.dropna()))
-        for before, after in zip(seen, seen[1:], strict=False):
-            missing = (after - before).days - 1
-            if missing >= min_days:
-                rows.append(
-                    {
-                        "group": key,
-                        "last_before": _day(before),
-                        "first_missing": _day(before + one_day),
-                        "last_missing": _day(after - one_day),
-                        "days": int(missing),
-                    }
-                )
-    found = pd.DataFrame(rows, columns=columns)
-    title = f"Gaps in {date_col}" if by is None else f"Gaps in {date_col} by {by}"
-    note = None if rows else f"No runs of {min_days} or more missing days."
-    table(title, found, note=note)
+    days = _as_days(df, date_col)
+    rows = find_gaps(days, None if by is None else df[by], min_days)
+    report_gaps(rows, date_col, by, min_days, results_left=MAX_GAP_RESULTS)
     result("Gaps found", len(rows))
-    per_group = Counter(str(r["group"]) for r in rows)
-    numbered: Counter[str] = Counter()
-    for gap in rows[:MAX_GAP_RESULTS]:
-        group = str(gap["group"])
-        numbered[group] += 1
-        label = group if per_group[group] == 1 else f"{group} gap {numbered[group]}"
-        result(f"{label}: first missing day", gap["first_missing"])
-        result(f"{label}: last missing day", gap["last_missing"])
-        result(f"{label}: missing days", gap["days"], unit="days")
-    return found
+    return pd.DataFrame([{c: r[c] for c in GAP_COLUMNS} for r in rows], columns=GAP_COLUMNS)
