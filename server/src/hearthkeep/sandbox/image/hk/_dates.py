@@ -261,11 +261,17 @@ def _gap_line(gap: dict, by: str | None) -> str:
 
 
 def report_gaps(
-    rows: list[dict], date_col: str, by: str | None, min_days: int, *, results_left: int
-) -> int:
-    """The gaps as a table, one plain line each, and (while `results_left` lasts) a result
-    for each gap's first missing day, last missing day and day count. Returns how many gaps
-    got results."""
+    rows: list[dict],
+    date_col: str,
+    by: str | None,
+    min_days: int,
+    *,
+    results_left: int,
+    lines_left: int | None = None,
+) -> tuple[int, int]:
+    """The gaps as a table, one plain line each (while `lines_left` lasts; None means every
+    gap), and (while `results_left` lasts) a result for each gap's first missing day, last
+    missing day and day count. Returns (gaps given results, lines written)."""
     title = f"Gaps in {date_col}" if by is None else f"Gaps in {date_col} by {by}"
     found = pd.DataFrame([{c: r[c] for c in GAP_COLUMNS} for r in rows], columns=GAP_COLUMNS)
     if not rows:
@@ -278,7 +284,8 @@ def report_gaps(
     else:
         note = None
     table(title, found, note=note)
-    for gap in rows:
+    lined = rows if lines_left is None else rows[: max(lines_left, 0)]
+    for gap in lined:
         cleaned(_gap_line(gap, by))
     per_group = Counter(str(r["group"]) for r in rows)
     numbered: Counter[str] = Counter()
@@ -291,7 +298,7 @@ def report_gaps(
         result(f"{label}: last missing day", gap["last_missing"])
         result(f"{label}: missing days", gap["days"], unit="days")
         reported += 1
-    return reported
+    return reported, len(lined)
 
 
 def gaps(

@@ -67,13 +67,32 @@ def _numbers_as_text(df: pd.DataFrame, col) -> None:
 GAP_GROUP_VALUES = (2, 20)  # a text column with this many distinct values groups the rows
 GAP_GROUP_COLUMNS = 3
 GAP_MIN_DAYS = 3
+DAILY_COVERAGE = 0.8  # share of calendar days with rows for a file to count as daily
+MAX_GAPS_PER_GROUP = 2  # a group with more gaps than this is sparse, not missing days
+MAX_GAP_LINES = 10
+
+
+def _daily(days: pd.Series) -> bool:
+    """Rows on at least 80% of the calendar days from the first date to the last: only then
+    is a run of days without rows worth calling a gap (a bank statement's sparse events
+    are not)."""
+    present = days.dropna()
+    if present.empty:
+        return False
+    span = (present.max() - present.min()).days + 1
+    return present.nunique() >= DAILY_COVERAGE * span
 
 
 def _date_gaps(df: pd.DataFrame) -> None:
     """Gaps in the first date column, per value of each small text column (at most 3),
-    reported only when there are some, so a small model sees them without being asked."""
+    reported only for daily data and only for groups with at most 2 gaps, so a small model
+    sees a real gap without being asked and sparse data adds nothing. At most 10 lines and
+    results for 10 gaps; the table lists every gap reported."""
     dated = [c for c in df.columns if pd.api.types.is_datetime64_any_dtype(df[c])]
     if not dated:
+        return
+    days = df[dated[0]].dt.normalize()
+    if not _daily(days):
         return
     groups = []
     for col in df.columns:
@@ -82,12 +101,22 @@ def _date_gaps(df: pd.DataFrame) -> None:
             continue
         if GAP_GROUP_VALUES[0] <= series.nunique() <= GAP_GROUP_VALUES[1]:
             groups.append(col)
-    left = MAX_GAP_RESULTS
-    days = df[dated[0]].dt.normalize()
+    results_left, lines_left, unlined = MAX_GAP_RESULTS, MAX_GAP_LINES, 0
     for col in groups[:GAP_GROUP_COLUMNS]:
         rows = find_gaps(days, df[col], GAP_MIN_DAYS)
-        if rows:
-            left -= report_gaps(rows, str(dated[0]), str(col), GAP_MIN_DAYS, results_left=left)
+        per_group = Counter(str(r["group"]) for r in rows)
+        rows = [r for r in rows if per_group[str(r["group"])] <= MAX_GAPS_PER_GROUP]
+        if not rows:
+            continue
+        reported, lined = report_gaps(
+            rows, str(dated[0]), str(col), GAP_MIN_DAYS,
+            results_left=results_left, lines_left=lines_left,
+        )  # fmt: skip
+        results_left -= reported
+        lines_left -= lined
+        unlined += len(rows) - lined
+    if unlined:
+        cleaned(f"…and {unlined} more gap{'' if unlined == 1 else 's'} (see the table).")
 
 
 def profile(file: str, *, sheet: str | int | None = None) -> None:

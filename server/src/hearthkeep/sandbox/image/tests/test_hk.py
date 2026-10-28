@@ -751,3 +751,52 @@ def test_profile_reports_no_gaps_when_there_are_none(job):
     assert not any("has no rows" in r["note"] for r in by_type(records, "cleaning"))
     assert not any(t["name"].startswith("Gaps in") for t in by_type(records, "table"))
     assert not any("missing day" in r["name"] for r in by_type(records, "value"))
+
+
+def _bank_statement_csv() -> bytes:
+    """150 card and bank lines over a year: a few days a week, five transaction types."""
+    types = ["DEB", "CR", "DD", "SO", "FPI"]
+    start = dt.date(2025, 1, 1)
+    lines = ["Date,Type,Amount"]
+    for n in range(150):
+        day = start + dt.timedelta(days=(n * 12) // 5)  # rows on about 2 days in 5
+        lines.append(f"{day.isoformat()},{types[(n * 7) % 5]},{(n % 40) - 20}.15")
+    return ("\n".join(lines) + "\n").encode()
+
+
+def test_profile_reports_no_gaps_in_a_sparse_bank_statement(job):
+    hk.profile(job.add("statement.csv", "csv", _bank_statement_csv()))
+    records = job.results()
+    assert not any("has no rows" in r["note"] or "more gap" in r["note"]
+                   for r in by_type(records, "cleaning"))  # fmt: skip
+    assert not any("missing day" in r["name"] for r in by_type(records, "value"))
+    assert not any(t["name"].startswith("Gaps in") for t in by_type(records, "table"))
+
+
+def test_profile_still_reports_north_and_east_in_daily_sales(job):
+    hk.profile(job.add("sales.csv", "csv", smoke_sales_csv()))
+    notes = [r["note"] for r in by_type(job.results(), "cleaning")]
+    assert NORTH_GAP_LINE in notes
+    assert (
+        "East has no rows from 2025-03-10 to 2025-03-31 (22 days, to the end of the file), "
+        "while other region values do." in notes
+    )
+
+
+def test_profile_caps_gap_lines_at_ten(job):
+    # 12 shops, each closed for one 3-day spell at a different time; every day has rows.
+    lines = ["date,shop,amount"]
+    for day in range(1, 61):
+        for shop in range(12):
+            closed = 4 * shop + 3 <= day <= 4 * shop + 5
+            if not closed:
+                when = dt.date(2025, 4, 1) + dt.timedelta(days=day - 1)
+                lines.append(f"{when.isoformat()},Shop {shop:02d},1.00")
+    hk.profile(job.add("shops.csv", "csv", ("\n".join(lines) + "\n").encode()))
+    records = job.results()
+    gap_lines = [r["note"] for r in by_type(records, "cleaning") if "has no rows" in r["note"]]
+    assert len(gap_lines) == 10
+    assert "…and 2 more gaps (see the table)." in [r["note"] for r in by_type(records, "cleaning")]
+    [gap_table] = [t for t in by_type(records, "table") if t["name"] == "Gaps in date by shop"]
+    assert gap_table["total_rows"] == 12
+    assert len([r for r in by_type(records, "value") if r["name"].endswith("missing days")]) == 10
