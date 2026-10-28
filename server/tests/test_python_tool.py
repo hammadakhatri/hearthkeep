@@ -253,6 +253,7 @@ async def test_failed_and_timed_out_runs_are_saved_and_reported(env):
     assert failed.ok is False
     assert failed.content == (
         f"Run failed in 1.5 s.\n\nPrinted output:\n{PRINTED_NOTE}\n```\n{trace.rstrip()}\n```"
+        f"\n\n{RETRY}"  # no columns to list: the chat's file wasn't checked
     )
     first = env.runs.get(env.sandbox.calls[0]["run_id"])
     assert first.status == "failed"
@@ -690,3 +691,74 @@ def test_at_a_glance_profile_tells_the_model_about_the_north_gap(harness, sandbo
     )
     assert "- North: first missing day = 2025-03-12" in seen
     assert "- North: missing days = 13 days" in seen
+
+
+SALES_SUMMARY = {"kind": "csv", "pages": None, "scanned_pages": [], "sheets": [], "rows": 58,
+                 "columns": ["date", "region", "amount"], "encoding": "utf-8",
+                 "delimiter": ","}  # fmt: skip
+RETRY = "The script failed. Fix it and run python again before you answer."
+
+
+def test_prompt_lists_each_files_columns(env):
+    sales = env.add_file()
+    env.files.set_status(sales.id, "ready", SALES_SUMMARY)
+    wide = env.add_file(name="wide.csv")
+    env.files.set_status(
+        wide.id, "ready", {**SALES_SUMMARY, "columns": [f"c{i}" for i in range(35)]}
+    )
+    book = env.add_file(name="book.xlsx", kind="xlsx")
+    env.files.set_status(book.id, "ready", {
+        **SALES_SUMMARY, "kind": "xlsx", "columns": ["Month", "Total"],
+        "sheets": [{"name": "Summary", "rows": 12, "columns": 2},
+                   {"name": "Raw", "rows": 900, "columns": 9}],
+    })  # fmt: skip
+    prompt = analysis_context(env.files, CHAT)
+    line = f'- {sales.id}: "sales.csv" (CSV, 29 bytes); columns: "date", "region", "amount"\n'
+    assert line in prompt
+    assert '"c29", …and 5 more' in prompt and '"c30"' not in prompt
+    assert '; columns of the first sheet: "Month", "Total"' in prompt
+
+
+def _failed(stdout, script="import hk\n"):
+    from hearthkeep.sandbox.runs import RunRecord
+
+    return RunRecord(
+        id="r1", chat_id=CHAT, turn_id="t", purpose="analysis", script=script, stdout=stdout,
+        stdout_truncated=False, status="failed", error="The script failed.", duration_ms=250,
+        values=[], cleaning=[], sections=[], problems=[], created_at="now",
+    )  # fmt: skip
+
+
+def test_a_failed_run_asks_for_a_retry_and_an_ok_run_does_not():
+    trace = 'Traceback (most recent call last):\n  File "main.py", line 3\nZeroDivisionError: x\n'
+    text = format_run_for_model(_failed(trace), [])
+    assert text.endswith("\n\n" + RETRY)
+    assert RETRY not in format_run_for_model(_run_record(), [])
+
+
+def test_a_key_error_run_lists_the_real_columns():
+    trace = (
+        "Traceback (most recent call last):\n  File \"main.py\", line 3\n"
+        "KeyError: 'Region'\n"
+    )
+    columns = {"sales.csv": ["date", "region", "amount"]}
+    text = format_run_for_model(_failed(trace), [], columns=columns)
+    assert text.endswith(RETRY + ' The columns are: "date", "region", "amount".')
+    plain = format_run_for_model(_failed("Traceback...\nValueError: no\n"), [], columns=columns)
+    assert "The columns are" not in plain
+
+
+async def test_the_tool_gives_the_columns_of_the_files_the_script_read(env):
+    sales = env.add_file()
+    env.files.set_status(sales.id, "ready", SALES_SUMMARY)
+    other = env.add_file(name="other.csv")
+    env.files.set_status(other.id, "ready", {**SALES_SUMMARY, "columns": ["x", "y"]})
+    env.sandbox.queue_run(
+        {"stdout.txt": b"Traceback (most recent call last):\nKeyError: 'Region'\n"},
+        stdout="Traceback (most recent call last):\nKeyError: 'Region'\n",
+        status="failed", exit_code=1,
+    )  # fmt: skip
+    script = f"import hk\ndf = hk.read({sales.id!r})\nprint(df['Region'])\n"
+    result = await env.tool.run(args(script=script), env.ctx)
+    assert result.content.endswith(RETRY + ' The columns are: "date", "region", "amount".')
+    assert '"x"' not in result.content

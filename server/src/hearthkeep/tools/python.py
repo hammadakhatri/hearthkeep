@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 from pathlib import Path
 
 from hearthkeep.files.store import ChatFile, ChatFileStore
@@ -56,6 +57,11 @@ RESULTS_FAILED = "Hearthkeep couldn't read the results."
 PRINTED_CUT = "(printed output cut)"
 # What the model is told about one run is bounded: items per section, and characters overall
 # (CONTENT_BUDGET, in tools.text).
+COLUMNS_SHOWN = 30  # column names listed per file (the rest are counted)
+RETRY = "The script failed. Fix it and run python again before you answer."
+# The last line of a traceback for a missing key, e.g. KeyError: 'Region'.
+_KEY_ERROR = re.compile(r"KeyError: (?:\(|\[)?['\"]")
+_READ_CALL = re.compile(r"""hk\.read\(\s*(?:file\s*=\s*)?(['"])(.+?)\1""")
 CAPS = {"values": 50, "tables": 5, "charts": 20, "files": 20, "cleaning": 20, "problems": 20}
 
 ANALYSIS_PROMPT = """\
@@ -153,6 +159,33 @@ def _details(found: ChatFile) -> str:
     return ""
 
 
+def column_list(columns: list) -> str:
+    """Column names as JSON strings (owner data: one token each, on one line), the first 30
+    and then how many more."""
+    names = [_quoted(c) for c in columns[:COLUMNS_SHOWN]]
+    extra = len(columns) - COLUMNS_SHOWN
+    if extra > 0:
+        names.append(f"…and {extra} more")
+    return ", ".join(names)
+
+
+def file_columns(found: ChatFile) -> list[str]:
+    """The columns the attach-time check found (CSV, text, JSON, a workbook's first sheet);
+    none for a PDF or a file that wasn't checked."""
+    if found.kind == "pdf" or found.status != "ready" or not isinstance(found.summary, dict):
+        return []
+    columns = found.summary.get("columns")
+    return [str(c) for c in columns] if isinstance(columns, list) else []
+
+
+def _columns_text(found: ChatFile) -> str:
+    columns = file_columns(found)
+    if not columns:
+        return ""
+    where = "columns of the first sheet" if found.kind in ("xlsx", "xls") else "columns"
+    return f"; {where}: {column_list(columns)}"
+
+
 def analysis_context(files: ChatFileStore, chat_id: str) -> str:
     """The analysis prompt listing the chat's files, or "" for a chat without files. A file
     still being inspected is left out until it is settled."""
@@ -162,6 +195,7 @@ def analysis_context(files: ChatFileStore, chat_id: str) -> str:
     lines = [
         f"- {f.id}: {_quoted(f.name)} "
         f"({KIND_LABELS.get(f.kind, f.kind)}, {size_text(f.size)}){_details(f)}"
+        f"{_columns_text(f)}"
         for f in found
     ]
     return ANALYSIS_PROMPT.format(files="\n".join(lines))
@@ -242,9 +276,33 @@ def _section(header: str, items: list[str], cap: int) -> tuple[str, list[str], i
     return header, items[:cap], max(len(items) - cap, 0)
 
 
-def format_run_for_model(rec: RunRecord, outputs: list[OutputRecord]) -> str:
+def _key_error(stdout: str) -> bool:
+    """The traceback's last line is a KeyError (a column the script guessed, usually)."""
+    lines = [ln for ln in stdout.splitlines() if ln.strip()]
+    return bool(lines) and bool(_KEY_ERROR.match(lines[-1].strip()))
+
+
+def _retry_text(rec: RunRecord, columns: dict[str, list[str]] | None) -> str:
+    text = RETRY
+    if columns and _key_error(rec.stdout or ""):
+        if len(columns) == 1:
+            listed = column_list(next(iter(columns.values())))
+        else:
+            listed = "; ".join(f"in {_quoted(n)}: {column_list(c)}" for n, c in columns.items())
+        text += f" The columns are: {listed}."
+    return text
+
+
+def format_run_for_model(
+    rec: RunRecord,
+    outputs: list[OutputRecord],
+    *,
+    columns: dict[str, list[str]] | None = None,
+) -> str:
     """What the model is told about a run: at most CONTENT_BUDGET characters, each section
-    capped, and nothing a script wrote can pass for the prompt's own text."""
+    capped, and nothing a script wrote can pass for the prompt's own text. A failed run ends
+    by asking for a fixed run; after a KeyError it lists `columns` (file name -> the column
+    names the attach-time check found), never file contents."""
     head = f"Run {rec.status} in {rec.duration_ms / 1000:.1f} s."
     sections: list[tuple[str, list[str], int]] = []
     if rec.stdout:
@@ -266,6 +324,8 @@ def format_run_for_model(rec: RunRecord, outputs: list[OutputRecord]) -> str:
     sections.append(_section("Problems", problems, CAPS["problems"]))
     # The error is a fixed, short message: room is kept for it whatever else is cut.
     tail = f"\n\nError:\n{one_line(rec.error)}" if rec.error else ""
+    if rec.status == "failed":  # the script raised (or ran out of memory): never answer yet
+        tail += "\n\n" + _retry_text(rec, columns)
     if rec.status == "ok" and not any(v.kind in ("computed", "document") for v in rec.values):
         tail += f"\n\nNote:\n{NO_NUMBERS}"  # e.g. the model wrote hk.result in its reply
     return assemble(head, sections, CONTENT_BUDGET - len(tail)) + tail
@@ -348,12 +408,21 @@ class PythonTool:
             rec = await self._save(raw, run_id, ctx, script)
         finally:
             raw.cleanup()
-        content = format_run_for_model(rec, self._runs.outputs(rec.id))
+        columns = self._columns(ctx.chat_id, script) if rec.status == "failed" else None
+        content = format_run_for_model(rec, self._runs.outputs(rec.id), columns=columns)
         return ToolResult(
             ok=rec.status == "ok",
             content=content,
             data={"attachments": [{"kind": "run", "id": rec.id}]},
         )
+
+    def _columns(self, chat_id: str, script: str) -> dict[str, list[str]]:
+        """Column names of the files the script reads with hk.read (by id or name), else of
+        every file of the chat that has them."""
+        found = [f for f in self._files.list(chat_id) if file_columns(f)]
+        wanted = {m.group(2) for m in _READ_CALL.finditer(script)}
+        read = [f for f in found if f.id in wanted or f.name in wanted]
+        return {f.name: file_columns(f) for f in (read or found)}
 
     async def _save(self, raw: RawRun, run_id: str, ctx: ToolContext, script: str) -> RunRecord:
         """Parse the results off the event loop, then save the run. A cancellation while the
