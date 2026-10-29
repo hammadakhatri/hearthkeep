@@ -14,6 +14,8 @@ import numpy as np
 import pandas as pd
 
 MAX_TABLE_ROWS = 500
+MAX_ITEM_RESULTS = 20  # a dict or Series given to hk.result reports this many items at most
+_MANY = (dict, list, tuple, set, frozenset, pd.Series, pd.DataFrame, np.ndarray)
 # At most 100 characters, so `files/<name>` fits a plain ustar header (prefix + name).
 FILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,99}")
 NOT_A_NUMBER = "not a number"
@@ -117,16 +119,51 @@ def _value_record(name: str, value, *, unit, note, kind: str, page) -> dict:
     }
 
 
+def _report(name: str, value, *, unit, note, kind: str, page) -> None:
+    """One value, or one result per item of a dict or Series ("<name>: <key>", in order,
+    at most 20). Items that aren't single values are skipped with a note."""
+    if not isinstance(value, dict | pd.Series):
+        emit(_value_record(name, value, unit=unit, note=note, kind=kind, page=page))
+        return
+    if not isinstance(name, str):
+        _value_record(name, 0, unit=None, note=None, kind=kind, page=None)  # raises
+    items = list(value.items())
+    reported = 0
+    skipped: list[str] = []
+    for key, item in items:
+        if isinstance(_from_numpy(item), _MANY):
+            skipped.append(str(key))
+            continue
+        if reported < MAX_ITEM_RESULTS:
+            label = f"{name}: {key}"
+            emit(_value_record(label, item, unit=unit, note=note, kind=kind, page=page))
+            reported += 1
+    if skipped:
+        shown = ", ".join(skipped[:5]) + (", …" if len(skipped) > 5 else "")
+        cleaned(
+            f"Skipped {len(skipped)} value{'' if len(skipped) == 1 else 's'} for {name} that "
+            f"aren't single values ({shown}); use hk.table for them."
+        )
+    singles = len(items) - len(skipped)
+    if singles > MAX_ITEM_RESULTS:
+        cleaned(
+            f"Reported the first {MAX_ITEM_RESULTS} of {singles} values for {name}; "
+            "use hk.table for all of them."
+        )
+
+
 def result(name: str, value, *, unit: str | None = None, note: str | None = None) -> None:
-    """Report one computed value (a number, a count, a date or a short text)."""
-    emit(_value_record(name, value, unit=unit, note=note, kind="computed", page=None))
+    """Report one computed value (a number, a count, a date or a short text). A dict or a
+    Series reports one value per item, named "<name>: <key>" (the first 20)."""
+    _report(name, value, unit=unit, note=note, kind="computed", page=None)
 
 
 def document(name: str, value, *, page: int, unit: str | None = None) -> None:
-    """Report a value read straight from a document page, not computed."""
+    """Report a value read straight from a document page, not computed (a dict or Series:
+    one per item, as hk.result)."""
     if not isinstance(page, int) or isinstance(page, bool) or page < 1:
         raise ValueError("page must be a page number (1 or more)")
-    emit(_value_record(name, value, unit=unit, note=None, kind="document", page=page))
+    _report(name, value, unit=unit, note=None, kind="document", page=page)
 
 
 def table(

@@ -800,3 +800,48 @@ def test_profile_caps_gap_lines_at_ten(job):
     [gap_table] = [t for t in by_type(records, "table") if t["name"] == "Gaps in date by shop"]
     assert gap_table["total_rows"] == 12
     assert len([r for r in by_type(records, "value") if r["name"].endswith("missing days")]) == 10
+
+
+def test_result_takes_a_dict_one_result_per_item(job):
+    hk.result("Null counts", {"date": 0, "region": 2, "amount": np.int64(1)})
+    values = [(r["name"], r["value"]) for r in by_type(job.results(), "value")]
+    assert values == [("Null counts: date", 0), ("Null counts: region", 2),
+                      ("Null counts: amount", 1)]  # fmt: skip
+    assert by_type(job.results(), "cleaning") == []
+
+
+def test_result_and_document_take_a_series(job):
+    df = pd.DataFrame({"a": [1.0, None], "b": [None, None]})
+    hk.result("Missing", df.isnull().sum(), unit="rows")
+    hk.document("Totals", pd.Series({"Opening": "1,200.00", "Closing": "980.10"}), page=2)
+    records = by_type(job.results(), "value")
+    assert [(r["name"], r["value"], r["unit"]) for r in records[:2]] == [
+        ("Missing: a", 1, "rows"), ("Missing: b", 2, "rows"),
+    ]  # fmt: skip
+    assert [(r["name"], r["kind"], r["page"]) for r in records[2:]] == [
+        ("Totals: Opening", "document", 2), ("Totals: Closing", "document", 2),
+    ]  # fmt: skip
+
+
+def test_result_caps_a_big_dict_at_20_with_a_note(job):
+    hk.result("Per day", {f"d{i:02d}": i for i in range(25)})
+    names = [r["name"] for r in by_type(job.results(), "value")]
+    assert names == [f"Per day: d{i:02d}" for i in range(20)]
+    assert [r["note"] for r in by_type(job.results(), "cleaning")] == [
+        "Reported the first 20 of 25 values for Per day; use hk.table for all of them."
+    ]
+
+
+def test_result_skips_values_that_are_not_single_values(job):
+    hk.result("Mixed", {"ok": 3, "nested": {"x": 1}, "listed": [1, 2]})
+    assert [r["name"] for r in by_type(job.results(), "value")] == ["Mixed: ok"]
+    assert [r["note"] for r in by_type(job.results(), "cleaning")] == [
+        "Skipped 2 values for Mixed that aren't single values (nested, listed); "
+        "use hk.table for them."
+    ]
+
+
+def test_result_still_refuses_a_table_or_a_list(job):
+    for value in (pd.DataFrame({"a": [1]}), [1, 2]):
+        with pytest.raises(TypeError, match="use hk.table for many values"):
+            hk.result("Many", value)
