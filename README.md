@@ -9,8 +9,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg"></a>
-  <a href="../../actions/workflows/ci.yml"><img alt="CI" src="../../actions/workflows/ci.yml/badge.svg"></a>
-  <img alt="Runs on Windows 11" src="https://img.shields.io/badge/host-Windows%2011-0a84ff">
+  <a href="../../actions/workflows/ci.yml"><img alt="CI" src="../../actions/workflows/ci.yml/badge.svg"></a>  <img alt="Runs on Windows 11" src="https://img.shields.io/badge/host-Windows%2011-0a84ff">
   <img alt="Local models only" src="https://img.shields.io/badge/AI-local%20only-32d74b">
 </p>
 

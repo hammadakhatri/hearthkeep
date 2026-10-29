@@ -1,0 +1,41 @@
+# Weekly update proposals, as pull requests that CI checks. Security fixes arrive sooner,
+# through Dependabot security updates.
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /server
+    schedule:
+      interval: weekly
+    groups:
+      server:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    groups:
+      web:
+        patterns: ["*"]
+
+  # The sandbox image: its pinned base image (Dockerfile) and hash-pinned packages.
+  - package-ecosystem: docker
+    directory: /server/src/hearthkeep/sandbox/image
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: pip
+    directory: /server/src/hearthkeep/sandbox/image
+    schedule:
+      interval: weekly
+    groups:
+      sandbox:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
