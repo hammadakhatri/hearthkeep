@@ -62,20 +62,22 @@ def test_dockerfile_pins_base_digest_and_requirements():
         assert re.match(r"[A-Za-z0-9._-]+==[^ ]+ ", line), line
         assert "--hash=sha256:" in line, line
     pins = {ln.split("==")[0].lower(): ln.split("==")[1].split()[0] for ln in lines}
-    expected = {
-        "pandas": "2.3.1",
-        "numpy": "2.3.1",
-        "scipy": "1.16.0",
-        "openpyxl": "3.1.5",
-        "xlrd": "2.0.2",
-        "pdfplumber": "0.11.7",
-    }
-    for name, version in expected.items():
-        assert pins[name] == version
-    assert pins["pytest"].startswith("8.4.")
-    assert pins["pypdf"].startswith("5.0.")
-    for name in ("pypdfium2", "pdfminer-six", "pillow"):
-        assert name in pins
+    # Exact versions live in requirements.txt (Dependabot proposes updates, pip-audit in CI
+    # checks them); here, every package the image needs is there, pinned and hashed.
+    for name in (
+        "pandas",
+        "numpy",
+        "scipy",
+        "openpyxl",
+        "xlrd",
+        "pdfplumber",
+        "pytest",
+        "pypdf",
+        "pypdfium2",
+        "pdfminer-six",
+        "pillow",
+    ):
+        assert name in pins, name
 
 
 def test_cli_sandbox_status_without_docker(tmp_path, monkeypatch, capsys):
@@ -213,8 +215,7 @@ def test_entry_kills_escaped_processes_before_writing_status(sandbox_image, tmp_
     # The escaped writer's leftover file is not taken back; only a note says so.
     assert printed in (
         b"parent waiting\n",
-        b"parent waiting\n"
-        b"Ignored /out/status.json.tmp: save files with hk.file(name, data).\n",
+        b"parent waiting\nIgnored /out/status.json.tmp: save files with hk.file(name, data).\n",
     )
     # The script limit plus start-up; waiting on the escaped writer's pipe would add 5 s.
     assert elapsed < 3 + 4
