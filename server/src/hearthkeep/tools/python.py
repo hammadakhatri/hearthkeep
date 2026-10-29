@@ -58,6 +58,9 @@ PRINTED_CUT = "(printed output cut)"
 # What the model is told about one run is bounded: items per section, and characters overall
 # (CONTENT_BUDGET, in tools.text).
 COLUMNS_SHOWN = 30  # column names listed per file (the rest are counted)
+COLUMN_NAME_CHARS = 100  # a column name is cut to this length wherever it is listed
+KEY_ERROR_FILES = 3  # files whose columns follow a KeyError
+KEY_ERROR_CHARS = 2000  # and at most about this many characters of them
 RETRY = "The script failed. Fix it and run python again before you answer."
 # The last line of a traceback for a missing key, e.g. KeyError: 'Region'.
 _KEY_ERROR = re.compile(r"KeyError: (?:\(|\[)?['\"]")
@@ -162,7 +165,7 @@ def _details(found: ChatFile) -> str:
 def column_list(columns: list) -> str:
     """Column names as JSON strings (owner data: one token each, on one line), the first 30
     and then how many more."""
-    names = [_quoted(c) for c in columns[:COLUMNS_SHOWN]]
+    names = [_quoted(str(c)[:COLUMN_NAME_CHARS]) for c in columns[:COLUMNS_SHOWN]]
     extra = len(columns) - COLUMNS_SHOWN
     if extra > 0:
         names.append(f"…and {extra} more")
@@ -276,20 +279,50 @@ def _section(header: str, items: list[str], cap: int) -> tuple[str, list[str], i
     return header, items[:cap], max(len(items) - cap, 0)
 
 
+def _exception_line(stdout: str) -> str:
+    """The last traceback's exception line (the first unindented line after its frames), so
+    notes printed after it don't hide it; without a traceback, the last printed line."""
+    lines = stdout.splitlines()
+    start = max((i for i, ln in enumerate(lines) if ln.startswith("Traceback (")), default=None)
+    if start is not None:
+        for line in lines[start + 1 :]:
+            if line.strip() and not line[:1].isspace():
+                return line.strip()
+    filled = [ln for ln in lines if ln.strip()]
+    return filled[-1].strip() if filled else ""
+
+
 def _key_error(stdout: str) -> bool:
-    """The traceback's last line is a KeyError (a column the script guessed, usually)."""
-    lines = [ln for ln in stdout.splitlines() if ln.strip()]
-    return bool(lines) and bool(_KEY_ERROR.match(lines[-1].strip()))
+    """The script stopped on a KeyError (a column it guessed, usually)."""
+    return bool(_KEY_ERROR.match(_exception_line(stdout)))
+
+
+def _listed_columns(columns: dict[str, list[str]]) -> str:
+    """The columns of at most 3 files and about 2000 characters, then how many more files."""
+    if len(columns) == 1:
+        chunks = [column_list(next(iter(columns.values())))]
+    else:
+        chunks = [f"in {_quoted(n)}: {column_list(c)}" for n, c in columns.items()]
+    shown: list[str] = []
+    size = 0
+    for chunk in chunks[:KEY_ERROR_FILES]:
+        if shown and size + len(chunk) > KEY_ERROR_CHARS:
+            break
+        if len(chunk) > KEY_ERROR_CHARS:  # one file alone is too wide: cut at a name
+            chunk = chunk[:KEY_ERROR_CHARS].rsplit(", ", 1)[0] + ", …"
+        shown.append(chunk)
+        size += len(chunk) + 2
+    text = "; ".join(shown)
+    more = len(chunks) - len(shown)
+    if more:
+        text += f"; and {more} more file{'' if more == 1 else 's'}"
+    return text
 
 
 def _retry_text(rec: RunRecord, columns: dict[str, list[str]] | None) -> str:
     text = RETRY
     if columns and _key_error(rec.stdout or ""):
-        if len(columns) == 1:
-            listed = column_list(next(iter(columns.values())))
-        else:
-            listed = "; ".join(f"in {_quoted(n)}: {column_list(c)}" for n, c in columns.items())
-        text += f" The columns are: {listed}."
+        text += f" The columns are: {_listed_columns(columns)}."
     return text
 
 

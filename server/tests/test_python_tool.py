@@ -27,6 +27,7 @@ from hearthkeep.sandbox.charts import validate_chart_spec
 from hearthkeep.sandbox.runs import RunStore
 from hearthkeep.tools.base import ToolContext, ToolRegistry
 from hearthkeep.tools.python import (
+    ANALYSIS_PROMPT,
     NO_DOCKER,
     NO_IMAGE,
     TIMEOUT,
@@ -762,3 +763,35 @@ async def test_the_tool_gives_the_columns_of_the_files_the_script_read(env):
     result = await env.tool.run(args(script=script), env.ctx)
     assert result.content.endswith(RETRY + ' The columns are: "date", "region", "amount".')
     assert '"x"' not in result.content
+
+
+def test_a_key_error_is_found_under_trailing_printed_notes():
+    trace = (
+        "Traceback (most recent call last):\n  File \"main.py\", line 3, in <module>\n"
+        "    df['Region']\nKeyError: 'Region'\n"
+        "Ignored /out/plot.png: save files with hk.file(name, data).\n"
+    )
+    text = format_run_for_model(_failed(trace), [], columns={"sales.csv": ["region"]})
+    assert text.endswith(RETRY + ' The columns are: "region".')
+
+
+def test_the_key_error_column_list_is_capped():
+    many = {f"f{i}.csv": ["a", "b"] for i in range(5)}
+    text = format_run_for_model(_failed("KeyError: 'x'\n"), [], columns=many)
+    assert text.endswith(
+        ' The columns are: in "f0.csv": "a", "b"; in "f1.csv": "a", "b"; in "f2.csv": "a", "b"'
+        "; and 2 more files."
+    )
+    wide = {"w.csv": ["c" * 90 + str(i) for i in range(30)]}
+    tail = format_run_for_model(_failed("KeyError: 'x'\n"), [], columns=wide).split(RETRY)[-1]
+    assert len(tail) <= 2100 and tail.endswith("….")
+
+
+def test_a_hostile_column_name_stays_one_quoted_line(env):
+    hostile = 'a\nb"c`' + "x" * 300
+    sales = env.add_file()
+    env.files.set_status(sales.id, "ready", {**SALES_SUMMARY, "columns": [hostile, "ok"]})
+    prompt = analysis_context(env.files, CHAT)
+    [line] = [x for x in prompt.splitlines() if x.startswith(f"- {sales.id}:")]
+    assert len(prompt.splitlines()) == len(ANALYSIS_PROMPT.format(files="x").splitlines())
+    assert '; columns: "a\\nb\\"c`' + "x" * 94 + '", "ok"' in line  # cut to 100 characters
