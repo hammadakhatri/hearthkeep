@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -26,6 +27,14 @@ class MemoryKeyring(keyring.backend.KeyringBackend):
 
     def delete_password(self, service, username):
         self.store.pop((service, username), None)
+
+
+@pytest.fixture(autouse=True)
+def system_root(monkeypatch):
+    """Start-at-login tests fake Windows; give schtasks a System32 folder on any OS (CI is
+    Linux). Never runs anything there: those tests replace schtasks with a fake."""
+    if not (sys.platform == "win32" or "SystemRoot" in os.environ):
+        monkeypatch.setenv("SystemRoot", "C:\\Windows")
 
 
 @pytest.fixture(autouse=True)

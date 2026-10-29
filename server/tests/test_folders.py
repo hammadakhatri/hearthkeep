@@ -668,7 +668,9 @@ def test_swap_between_check_and_open_is_refused(env, monkeypatch):
 
     def checked_then_swapped(f, rel):
         result = real_checked(f, rel)
-        target.unlink()
+        # Moved away, not deleted: a deleted file's inode number can be reused at once
+        # (Linux does), which would make the new file look like the checked one.
+        target.rename(docs / "old.csv")
         write(target, b"swapped,1\n")
         return result
 
