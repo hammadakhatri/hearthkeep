@@ -845,3 +845,25 @@ def test_result_still_refuses_a_table_or_a_list(job):
     for value in (pd.DataFrame({"a": [1]}), [1, 2]):
         with pytest.raises(TypeError, match="use hk.table for many values"):
             hk.result("Many", value)
+
+
+def test_long_result_names_stay_within_100_characters(job):
+    key = "Payment to " + "x" * 139  # 150 characters
+    hk.result("Spending by description", {key: 12.5, "Rent": 900})
+    hk.result("n" * 150, 1)
+    [long, rent, plain] = by_type(job.results(), "value")
+    assert len(long["name"]) == 100 and long["name"].endswith("…")
+    assert long["name"].startswith("Spending by description: Payment to xxx")
+    assert long["value"] == 12.5
+    assert rent["name"] == "Spending by description: Rent"
+    assert len(plain["name"]) == 100 and plain["name"].endswith("…")
+
+
+def test_an_empty_dict_or_series_says_so(job):
+    hk.result("Refunds", {})
+    hk.result("Fees", pd.Series(dtype=float))
+    assert by_type(job.results(), "value") == []
+    assert [r["note"] for r in by_type(job.results(), "cleaning")] == [
+        "Refunds: no values",
+        "Fees: no values",
+    ]

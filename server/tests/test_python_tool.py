@@ -795,3 +795,16 @@ def test_a_hostile_column_name_stays_one_quoted_line(env):
     [line] = [x for x in prompt.splitlines() if x.startswith(f"- {sales.id}:")]
     assert len(prompt.splitlines()) == len(ANALYSIS_PROMPT.format(files="x").splitlines())
     assert '; columns: "a\\nb\\"c`' + "x" * 94 + '", "ok"' in line  # cut to 100 characters
+
+
+@pytest.mark.docker
+async def test_a_long_result_key_comes_back_through_the_host_reader(env, sandbox_image):
+    from hearthkeep.sandbox.runner import SandboxRunner
+
+    env.tool = PythonTool(SandboxRunner(env.tmp, image_tag=sandbox_image), env.files, env.runs)
+    key = "Payment to " + "x" * 139
+    script = f"import hk\nhk.result('Spending by description', {{{key!r}: 12.5}})\n"
+    result = await env.tool.run(args(script=script), env.ctx)
+    assert result.ok is True, result.content
+    [value] = env.runs.get(result.data["attachments"][0]["id"]).values
+    assert value.value == 12.5 and len(value.name) == 100

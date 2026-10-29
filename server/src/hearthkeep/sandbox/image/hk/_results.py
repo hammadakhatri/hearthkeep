@@ -14,6 +14,8 @@ import numpy as np
 import pandas as pd
 
 MAX_TABLE_ROWS = 500
+MAX_NAME_CHARS = 100  # the host drops a value whose name is longer (sandbox/results.py)
+ITEM_NAME_CHARS = 60  # a dict or Series item is named "<name, cut to 60>: <key>"
 MAX_ITEM_RESULTS = 20  # a dict or Series given to hk.result reports this many items at most
 _MANY = (dict, list, tuple, set, frozenset, pd.Series, pd.DataFrame, np.ndarray)
 # At most 100 characters, so `files/<name>` fits a plain ustar header (prefix + name).
@@ -87,6 +89,8 @@ def _value_record(name: str, value, *, unit, note, kind: str, page) -> dict:
         )
     if not name.strip():
         raise ValueError("a result needs a name")
+    if len(name) > MAX_NAME_CHARS:  # cut, never dropped by the host
+        name = name[: MAX_NAME_CHARS - 1] + "…"
     value = _from_numpy(value)
     is_date = isinstance(value, _dt.date | pd.Timestamp) and value is not pd.NaT
     if _is_missing(value):
@@ -128,6 +132,9 @@ def _report(name: str, value, *, unit, note, kind: str, page) -> None:
     if not isinstance(name, str):
         _value_record(name, 0, unit=None, note=None, kind=kind, page=None)  # raises
     items = list(value.items())
+    if not items:
+        cleaned(f"{name}: no values")
+        return
     reported = 0
     skipped: list[str] = []
     for key, item in items:
@@ -135,7 +142,7 @@ def _report(name: str, value, *, unit, note, kind: str, page) -> None:
             skipped.append(str(key))
             continue
         if reported < MAX_ITEM_RESULTS:
-            label = f"{name}: {key}"
+            label = f"{name[:ITEM_NAME_CHARS]}: {key}"  # a long key is cut to fit, with …
             emit(_value_record(label, item, unit=unit, note=note, kind=kind, page=page))
             reported += 1
     if skipped:
