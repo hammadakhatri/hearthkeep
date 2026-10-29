@@ -37,6 +37,15 @@ def system_root(monkeypatch):
         monkeypatch.setenv("SystemRoot", "C:\\Windows")
 
 
+@pytest.fixture
+def pythonw_beside_python(tmp_path, monkeypatch):
+    """`startup enable` looks for pythonw.exe beside this Python; give it one on any OS."""
+    python = tmp_path / "python" / "python.exe"
+    python.parent.mkdir()
+    (python.parent / "pythonw.exe").write_bytes(b"")
+    monkeypatch.setattr(sys, "executable", str(python))
+
+
 @pytest.fixture(autouse=True)
 def memory_keyring():
     previous = keyring.get_keyring()

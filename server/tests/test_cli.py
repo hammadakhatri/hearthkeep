@@ -253,7 +253,7 @@ def test_health_owned_chat_model_starts_on_first_use(serve, tmp_path, monkeypatc
 # ---- start at login --------------------------------------------------------------------
 
 
-def test_cli_startup_commands(tmp_path, monkeypatch, capsys):
+def test_cli_startup_commands(tmp_path, monkeypatch, capsys, pythonw_beside_python):
     import subprocess
     import sys
     from pathlib import Path
@@ -274,11 +274,6 @@ def test_cli_startup_commands(tmp_path, monkeypatch, capsys):
             return subprocess.CompletedProcess(argv, 0, xml[0].encode("utf-16"), b"")
         return subprocess.CompletedProcess(argv, 1, b"", b"")
 
-    # enable looks for pythonw.exe beside this Python; give it one on any OS (CI is Linux).
-    python = tmp_path / "python" / "python.exe"
-    python.parent.mkdir()
-    (python.parent / "pythonw.exe").write_bytes(b"")
-    monkeypatch.setattr(sys, "executable", str(python))
     monkeypatch.setattr(startup, "is_windows", lambda: True)
     monkeypatch.setattr(cli, "startup_run", fake_run)
     startup.clear_cache()
@@ -311,7 +306,9 @@ def test_cli_startup_commands(tmp_path, monkeypatch, capsys):
         )
 
 
-def test_cli_startup_other_folder_and_schtasks_failures(tmp_path, monkeypatch, capsys):
+def test_cli_startup_other_folder_and_schtasks_failures(
+    tmp_path, monkeypatch, capsys, pythonw_beside_python
+):
     import subprocess
 
     from hearthkeep import startup
