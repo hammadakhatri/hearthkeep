@@ -426,7 +426,8 @@ export function Chat({
     }
   }
 
-  // After the dialog's own clean-up (which runs first): the deleted thing's button is gone.
+  // The deleted thing's button is gone: put focus somewhere useful. The dialog's clean-up leaves
+  // it here whether it runs before or after this effect.
   useEffect(() => {
     if (deleting || !refocus.current) return
     const where = refocus.current

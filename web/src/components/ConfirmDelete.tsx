@@ -15,8 +15,8 @@ export function deleteErrorMessage(error: unknown): string {
 /**
  * Asks before deleting something for good. "Delete with passkey" runs `onConfirm` (which does the
  * passkey step-up and the deletion); while it runs both buttons wait, and if it throws the dialog
- * stays and says why. Focus is kept inside, Escape cancels, and focus goes back to whatever opened
- * it when it closes.
+ * stays and says why. Focus is kept inside, Escape cancels, and when it closes focus goes back to
+ * whatever opened it, unless the page has already placed it.
  */
 export function ConfirmDelete({
   title,
@@ -44,7 +44,12 @@ export function ConfirmDelete({
     cancel.current?.focus()
     return () => {
       alive.current = false
-      if (opener && opener.isConnected) opener.focus()
+      // Only when focus went with the dialog: after a deletion the page may already have put it
+      // somewhere else (the opener is the deleted thing's button), and React doesn't promise
+      // whether this clean-up runs before or after the page's own effect.
+      const at = document.activeElement
+      const lost = !at || at === document.body || !at.isConnected
+      if (lost && opener && opener.isConnected) opener.focus()
     }
   }, [])
 

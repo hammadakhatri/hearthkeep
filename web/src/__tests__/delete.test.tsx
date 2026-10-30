@@ -233,4 +233,34 @@ describe('ConfirmDelete', () => {
     fireEvent.keyDown(dialog, { key: 'Escape' })
     expect(onCancel).toHaveBeenCalledTimes(1)
   })
+
+  function Harness({ open }: { open: boolean }) {
+    return (
+      <>
+        <button type="button">Opener</button>
+        <button type="button">Elsewhere</button>
+        {open && <ConfirmDelete title="Delete x?" body="Gone." onConfirm={async () => {}} onCancel={() => {}} />}
+      </>
+    )
+  }
+
+  it('gives focus back to what opened it when nothing else took it', () => {
+    const { rerender } = render(<Harness open={false} />)
+    screen.getByRole('button', { name: 'Opener' }).focus()
+    rerender(<Harness open />)
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus()
+    rerender(<Harness open={false} />)
+    expect(screen.getByRole('button', { name: 'Opener' })).toHaveFocus()
+  })
+
+  it('leaves focus alone when the page already moved it, whatever order effects run in', () => {
+    // After a deletion the page puts focus somewhere sensible (the deleted thing's button is
+    // going away); the dialog must not pull it back to that button.
+    const { rerender } = render(<Harness open={false} />)
+    screen.getByRole('button', { name: 'Opener' }).focus()
+    rerender(<Harness open />)
+    screen.getByRole('button', { name: 'Elsewhere' }).focus()
+    rerender(<Harness open={false} />)
+    expect(screen.getByRole('button', { name: 'Elsewhere' })).toHaveFocus()
+  })
 })
