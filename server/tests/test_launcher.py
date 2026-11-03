@@ -36,11 +36,14 @@ from hearthkeep.lifecycle import (
 
 
 class FakeChild:
-    def __init__(self, argv, env, creationflags, code):
+    def __init__(self, argv, env, creationflags, code, pid):
         self.argv, self.env, self.creationflags = argv, env, creationflags
         self._code = code
+        self.pid = pid
 
     def wait(self):
+        if isinstance(self._code, BaseException):
+            raise self._code
         return self._code
 
 
@@ -53,7 +56,7 @@ class FakePopen:
         self.started: list[FakeChild] = []
 
     def __call__(self, argv, *, env=None, creationflags=0, **kw):
-        child = FakeChild(list(argv), env, creationflags, self._codes())
+        child = FakeChild(list(argv), env, creationflags, self._codes(), 1000 + len(self.started))
         self.started.append(child)
         return child
 
@@ -64,6 +67,30 @@ class FakeClock:
 
     def __call__(self):
         return self.now
+
+
+class FakeJob:
+    def __init__(self, fail_assign=False):
+        self.assigned: list[int] = []
+        self.closed = 0
+        self._fail_assign = fail_assign
+
+    def assign(self, pid):
+        if self._fail_assign:
+            raise OSError("access denied")
+        self.assigned.append(pid)
+
+    def close(self):
+        self.closed += 1
+
+
+real_new_job = launcher.new_job
+
+
+@pytest.fixture(autouse=True)
+def no_real_job(monkeypatch):
+    """Fake children have made-up pids: never put a real process in a real job here."""
+    monkeypatch.setattr(launcher, "new_job", lambda: None)
 
 
 def no_sleep(seconds):
@@ -191,6 +218,65 @@ def test_a_child_that_cannot_start_counts_as_a_crash(tmp_path):
     assert run_launcher(tmp_path, popen=broken, sleep=no_sleep, lock=always_lock) == 1
 
 
+def test_children_run_in_a_kill_on_close_job(tmp_path):
+    # normal end: every child is assigned, the job is closed once
+    job = FakeJob()
+    codes = iter([EXIT_RESTART, 0])
+    popen = FakePopen(lambda: next(codes))
+    assert run_launcher(tmp_path, popen=popen, sleep=no_sleep, lock=always_lock,
+                        make_job=lambda: job) == 0  # fmt: skip
+    assert job.assigned == [c.pid for c in popen.started] == [1000, 1001]
+    assert job.closed == 1
+
+    # crash give-up
+    job = FakeJob()
+    popen = FakePopen(lambda: 1)
+    assert run_launcher(tmp_path, popen=popen, sleep=no_sleep, lock=always_lock,
+                        make_job=lambda: job) == 1  # fmt: skip
+    assert len(job.assigned) == CRASH_LIMIT and job.closed == 1
+
+    # config error
+    job = FakeJob()
+    assert run_launcher(tmp_path, popen=FakePopen(lambda: EXIT_USAGE), sleep=no_sleep,
+                        lock=always_lock, make_job=lambda: job) == EXIT_USAGE  # fmt: skip
+    assert job.closed == 1
+
+    # an exception while waiting (the launcher is being torn down): the job still closes,
+    # which is what kills the running child
+    job = FakeJob()
+    popen = FakePopen(lambda: KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        run_launcher(tmp_path, popen=popen, sleep=no_sleep, lock=always_lock,
+                     make_job=lambda: job)  # fmt: skip
+    assert job.assigned == [1000] and job.closed == 1
+
+
+def test_launcher_runs_on_without_a_job(tmp_path):
+    # Windows refused a job, or assigning failed: the child still runs, the log says so
+    job = FakeJob(fail_assign=True)
+    assert run_launcher(tmp_path, popen=FakePopen(lambda: 0), sleep=no_sleep, lock=always_lock,
+                        make_job=lambda: job) == 0  # fmt: skip
+    assert job.closed == 1
+    assert run_launcher(tmp_path, popen=FakePopen(lambda: 0), sleep=no_sleep, lock=always_lock,
+                        make_job=lambda: None) == 0  # fmt: skip
+    text = (tmp_path / LAUNCHER_LOG).read_text(encoding="utf-8")
+    assert " job_assign_failed" in text and " no_job" in text
+
+
+def test_new_job_only_on_windows(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert real_new_job() is None
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows job objects")
+def test_new_job_is_a_kill_on_close_job_on_windows():
+    from hearthkeep.runtime.winjob import KillOnCloseJob
+
+    job = real_new_job()
+    assert isinstance(job, KillOnCloseJob)
+    job.close()
+
+
 def test_second_launcher_exits_at_once(tmp_path):
     lock_path = tmp_path / "runtime" / "launcher.lock"
     first = acquire_lock(lock_path)
@@ -217,7 +303,8 @@ def test_launcher_releases_its_lock(tmp_path):
 def test_launcher_log_has_no_paths(tmp_path):
     data = tmp_path / "data folder"
     codes = iter([EXIT_RESTART, 1, 0])
-    run_launcher(data, popen=FakePopen(lambda: next(codes)), sleep=no_sleep, lock=always_lock)
+    popen = FakePopen(lambda: next(codes))
+    run_launcher(data, popen=popen, sleep=no_sleep, lock=always_lock, make_job=FakeJob)
     text = (data / LAUNCHER_LOG).read_text(encoding="utf-8")
     lines = text.splitlines()
     assert len(lines) == 6  # three starts, three exits
@@ -341,9 +428,12 @@ def test_launch_and_open_use_the_recorded_location(tmp_path, monkeypatch):
     data.mkdir()
     host = RecordingHost(location=data)
     seen = {}
-    monkeypatch.setattr(
-        launcher, "run_launcher", lambda d, *, popen: seen.setdefault("launch", d) and 0
-    )
+
+    def fake_run_launcher(data_dir, *, popen):
+        seen["launch"] = data_dir
+        return 0
+
+    monkeypatch.setattr(launcher, "run_launcher", fake_run_launcher)
     assert cli.cmd_launch(cli.build_parser().parse_args(["launch"]), host=host) == 0
     assert seen["launch"] == data.resolve()
 
