@@ -722,3 +722,40 @@ def test_find_executable_ignores_current_folder(tmp_path, monkeypatch):
     elsewhere = _touch(tmp_path / "bin" / "tool.exe")
     monkeypatch.setattr(procutil.shutil, "which", lambda name: str(elsewhere))
     assert find_executable("tool", [fallback]) == elsewhere
+
+
+# --- "Check again" and the background loop ----------------------------------------------------
+
+
+async def test_fresh_refresh_bypasses_the_startup_cache(monkeypatch):
+    calls = []
+
+    def fake_status(*, run=None):
+        calls.append(1)
+        return StartupStatus(True, False, None)
+
+    monkeypatch.setattr(addons_mod.startup, "status", fake_status)
+    monkeypatch.setattr(
+        addons_mod,
+        "startup_status",
+        lambda fresh=False: addons_mod.startup.cached_status(100.0, fresh=fresh),
+    )
+    addons_mod.startup.clear_cache()
+    addons = Addons(settings(), EXTERNAL, probes(startup=None))
+    await addons.refresh("startup")
+    await addons.refresh("startup")
+    assert len(calls) == 1  # the 30 s cache
+    await addons.refresh("startup", fresh=True)
+    assert len(calls) == 2
+    addons_mod.startup.clear_cache()
+
+
+async def test_run_forever_sleeps_before_its_first_pass():
+    sandbox = FakeSandboxStatus()
+    addons = Addons(settings(), EXTERNAL, probes(sandbox=sandbox.call))
+    task = asyncio.create_task(addons.run_forever(interval=60))
+    await asyncio.sleep(0.05)
+    assert sandbox.calls == 0
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task

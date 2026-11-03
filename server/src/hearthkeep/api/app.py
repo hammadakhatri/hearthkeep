@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import dataclasses
 import logging
 import mimetypes
@@ -20,9 +22,11 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from hearthkeep import db
+from hearthkeep.addons import Addons, Probes, github_probes, model_setup, sandbox_probe
 from hearthkeep.agent.loop import AgentLoop
 from hearthkeep.agent.runner import TurnRunner, recover_after_restart
 from hearthkeep.api import (
+    routes_addons,
     routes_analysis,
     routes_approvals,
     routes_audit,
@@ -294,18 +298,20 @@ def create_app(
     push_sender: PushSender | None = None,
     github_transport: httpx.AsyncBaseTransport | None = None,
     git: GitRunner | None = None,
+    addon_probes: Probes | None = None,
 ) -> FastAPI:
     """`sandbox`, when given (tests), is used as is; otherwise one is made when Docker is
     available. Without one the `python` tool is still offered and answers that Docker is
     needed: nothing ever runs on the host. `push_sender`, when given (tests: a fake, or one
     on a mock transport), is used instead of the real one, so tests never touch the network;
     `github_transport` does the same for the GitHub client, and `git` (a runner on a local
-    bare repo) for host git."""
+    bare repo) for host git. `addon_probes` (tests) replaces how the add-on checks are made."""
     # The static files' types come from `mimetypes`, which on Windows reads the registry: a
     # .js mapped to text/plain there would stop the service worker from registering.
     mimetypes.add_type("text/javascript", ".js")
     mimetypes.add_type("text/javascript", ".mjs")
     detected = settings.docker_available is None
+    docker_configured_off = settings.docker_available is False
     if detected:
         settings = dataclasses.replace(settings, docker_available=detect_docker())
     check = health_check or chat_model_health_check(settings)
@@ -326,6 +332,7 @@ def create_app(
         runner: TurnRunner | None = None
         push: PushSender | None = None
         sent: SentStore | None = None
+        addons_task: asyncio.Task | None = None
         try:
             recover_after_restart(conn)
             approvals = ApprovalStore(
@@ -412,6 +419,20 @@ def create_app(
                 reply_checker=checker,
             )
             runner = TurnRunner(conn, loop)
+            git_available, token_saved = github_probes(repo_store)
+
+            async def sandbox_status():
+                return await sandbox_probe(await handle.get())()
+
+            probes = addon_probes or Probes(
+                sandbox=sandbox_status,
+                docker_configured_off=docker_configured_off,
+                git_available=git_available,
+                token_saved=token_saved,
+                chat_reachable=check,
+            )
+            addons = Addons(settings, model_setup(stack, settings), probes, gpu)
+            registry.addons = addons
             sessions = SessionStore(conn, settings.session_idle_days, clock=clock)
             app.state.hk = Services(
                 settings=settings,
@@ -450,27 +471,39 @@ def create_app(
                 repos=repo_store,
                 deps=deps,
                 repo_tests=repo_tests,
+                addons=addons,
+                chat_mode=stack.chat_mode,
             )
+            # One full check before serving, so nobody sees the not-ready defaults; a failing
+            # probe is caught inside (start-up never fails), and the loop sleeps before its first.
+            await addons.refresh()
+            addons_task = asyncio.create_task(addons.run_forever())
             yield
         finally:
             # Also runs when setup above fails part way: the connection is always closed.
             try:
-                if runner is not None:
-                    await runner.shutdown()
+                if addons_task is not None:
+                    addons_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await addons_task
             finally:
                 try:
-                    # After the runner (no turn can still start a push): pushes still going
-                    # are given a moment, then cancelled, before the sender is closed.
-                    try:
-                        if sent is not None:
-                            await sent.aclose()
-                    finally:
-                        if push is not None:
-                            await push.aclose()
+                    if runner is not None:
+                        await runner.shutdown()
                 finally:
-                    # After the runner: no turn can still be holding a lease on a model server.
-                    await stack.stop()
-                    conn.close()
+                    try:
+                        # After the runner (no turn can still start a push): pushes still going
+                        # are given a moment, then cancelled, before the sender is closed.
+                        try:
+                            if sent is not None:
+                                await sent.aclose()
+                        finally:
+                            if push is not None:
+                                await push.aclose()
+                    finally:
+                        # After the runner: no turn can still be holding a lease on a model server.
+                        await stack.stop()
+                        conn.close()
 
     app = FastAPI(
         title="Hearthkeep",
@@ -505,6 +538,7 @@ def create_app(
         routes_push,
         routes_sent,
         routes_analysis,
+        routes_addons,
     ):
         app.include_router(module.router)
 

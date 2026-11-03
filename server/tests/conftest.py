@@ -65,7 +65,9 @@ def hermetic_addon_probes(monkeypatch):
     monkeypatch.setattr(
         addons, "tailscale_state", lambda *a, **k: addons.TailscaleState(False, False, None)
     )
-    monkeypatch.setattr(addons, "startup_status", lambda: StartupStatus(False, False, None))
+    monkeypatch.setattr(
+        addons, "startup_status", lambda fresh=False: StartupStatus(False, False, None)
+    )
     monkeypatch.setattr(addons, "docker_installed", lambda: False)
 
 

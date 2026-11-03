@@ -85,6 +85,7 @@ def harness(tmp_path):
             push_sender=None,
             github_transport=None,
             git=None,
+            addon_probes=None,
         ):
             self.chat = FakeChatClient(list(scripts))
 
@@ -106,6 +107,7 @@ def harness(tmp_path):
                 push_sender=push_sender,
                 github_transport=github_transport,
                 git=git,
+                addon_probes=addon_probes,
             )
             client = TestClient(app, base_url=ORIGIN)
             client.__enter__()
@@ -300,6 +302,7 @@ def test_unauthenticated_requests_401(harness):
         "/api/settings/tools",
         "/api/audit",
         "/api/devices",
+        "/api/addons",
         "/api/auth/session",
         "/api/chats/x/messages",
         "/api/chats/x/turns/t/events",
@@ -316,6 +319,7 @@ def test_unauthenticated_requests_401(harness):
         ("POST", "/api/auth/stepup/options", {"purpose": "settings"}),
         ("POST", "/api/devices/add-code", {"step_up_token": "x"}),
         ("DELETE", "/api/devices/cred-1", None),
+        ("POST", "/api/addons/refresh", None),
     ):
         response = client.request(method, path, json=body, headers=CSRF)
         assert response.status_code == 401, path
@@ -942,6 +946,7 @@ def test_health_reachability_cached_for_five_seconds(harness):
         return True
 
     client = harness.start(health=probe, monotonic=lambda: now[0])
+    probes.clear()  # the add-on check at start-up probed once, apart from /api/health's cache
     for _ in range(5):
         assert client.get("/api/health").json()["chat_model_reachable"] is True
     assert len(probes) == 1

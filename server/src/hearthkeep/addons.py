@@ -272,8 +272,8 @@ def docker_installed() -> bool:
     return find_executable("docker", fallbacks) is not None
 
 
-def startup_status() -> StartupStatus:
-    return startup.cached_status(time.monotonic())
+def startup_status(fresh: bool = False) -> StartupStatus:
+    return startup.cached_status(time.monotonic(), fresh=fresh)
 
 
 # --- what is set up --------------------------------------------------------------------------
@@ -396,8 +396,9 @@ class Addons:
 
     # -- refresh ------------------------------------------------------------------------------
 
-    async def refresh(self, *ids: AddonId) -> list[AddonStatus]:
-        """Run the checks for `ids` (all add-ons when none) and return their states."""
+    async def refresh(self, *ids: AddonId, fresh: bool = False) -> list[AddonStatus]:
+        """Run the checks for `ids` (all add-ons when none) and return their states. `fresh`
+        (a "Check again") makes Start at login skip its 30 s cache, as the sandbox check does."""
         unknown = [i for i in ids if i not in ADDON_IDS]
         if unknown:
             raise ValueError(f"unknown add-on: {', '.join(map(str, unknown))}")
@@ -408,7 +409,7 @@ class Addons:
             "images": self._refresh_images,
             "github": self._refresh_github,
             "devices": self._refresh_devices,
-            "startup": self._refresh_startup,
+            "startup": lambda: self._refresh_startup(fresh),
         }
         async with self._lock:
             await asyncio.gather(*(checks[i]() for i in wanted))
@@ -416,13 +417,14 @@ class Addons:
         return [self.get(i) for i in wanted]
 
     async def run_forever(self, interval: float = REFRESH_SECONDS) -> None:
-        """Refresh every `interval` seconds until cancelled; a failed refresh is logged."""
+        """Refresh every `interval` seconds until cancelled; a failed refresh is logged. Sleeps
+        first: start-up has just made a full pass, so there is no second one right after it."""
         while True:
+            await asyncio.sleep(interval)
             try:
                 await self.refresh()
             except Exception as exc:
                 log.warning("add-on refresh failed: %s", type(exc).__name__)
-            await asyncio.sleep(interval)
 
     async def _probe(self, name: str, call: Callable[[], Awaitable[Any]], fallback: Any) -> Any:
         try:
@@ -501,9 +503,11 @@ class Addons:
             return
         self._cache["devices"] = _status("devices", "ready")  # a front end we can't check
 
-    async def _refresh_startup(self) -> None:
+    async def _refresh_startup(self, fresh: bool = False) -> None:
         state = await self._probe(
-            "startup", self._threaded(self._startup), StartupStatus(True, False, None)
+            "startup",
+            self._threaded(lambda: self._startup(fresh)),
+            StartupStatus(True, False, None),
         )
         if not state.supported:
             self._cache["startup"] = _status("startup", "unsupported")
@@ -523,9 +527,9 @@ class Addons:
         probe = self._probes.tailscale
         return probe() if probe is not None else tailscale_state()
 
-    def _startup(self) -> StartupStatus:
+    def _startup(self, fresh: bool = False) -> StartupStatus:
         probe = self._probes.startup
-        return probe() if probe is not None else startup_status()
+        return probe() if probe is not None else startup_status(fresh)
 
     # -- reading ------------------------------------------------------------------------------
 

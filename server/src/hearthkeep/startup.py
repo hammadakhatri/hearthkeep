@@ -270,12 +270,14 @@ def clear_cache() -> None:
         _cache = None
 
 
-def cached_status(now: float) -> StartupStatus:
+def cached_status(now: float, *, fresh: bool = False) -> StartupStatus:
+    """The task's state, at most STATUS_CACHE_SECONDS old; `fresh` looks again now ("Check
+    again" never reports a stale answer) and refills the cache."""
     global _cache
     with _cache_lock:
-        if _cache is not None and now - _cache[0] < STATUS_CACHE_SECONDS:
+        if not fresh and _cache is not None and now - _cache[0] < STATUS_CACHE_SECONDS:
             return _cache[1]
-    fresh = status()
+    current = status()
     with _cache_lock:
-        _cache = (now, fresh)
-    return fresh
+        _cache = (now, current)
+    return current
