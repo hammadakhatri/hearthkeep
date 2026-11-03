@@ -9,7 +9,14 @@ import {
 } from '@simplewebauthn/browser'
 import { api, isApiError, post } from './client'
 
-export type StepUpPurpose = 'approval' | 'settings' | 'add_device' | 'add_folder' | 'delete'
+export type StepUpPurpose =
+  | 'approval'
+  | 'settings'
+  | 'add_device'
+  | 'add_folder'
+  | 'delete'
+  | 'github_token'
+  | 'add_repo'
 
 export type Device = { id: string; device_name: string; created_at: string; current: boolean }
 
@@ -72,7 +79,7 @@ export async function login(): Promise<Device> {
 
 /**
  * Confirm a sensitive action with this session's passkey; returns the step-up token. An
- * approval names its `approvalId`; a deletion names its `target` (`chat:<id>` or `file:<id>`).
+ * approval names its `approvalId`; a deletion names its `target` (`chat:<id>`, `file:<id>` or `repo:<id>`).
  */
 export async function stepUp(purpose: StepUpPurpose, approvalId?: string, target?: string): Promise<string> {
   const bound = {
