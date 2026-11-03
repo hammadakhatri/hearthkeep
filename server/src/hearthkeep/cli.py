@@ -423,10 +423,10 @@ def cmd_serve(
 
 
 def _host_data(args: argparse.Namespace, host: Host) -> Path | None:
-    """The data folder for `launch` and `open`: `--data`, else the one setup recorded."""
-    if args.data:
-        return Path(args.data).resolve()
-    return host.read_location()
+    """The data folder for `launch` and `open`, resolved: `--data`, else the one setup
+    recorded."""
+    data = Path(args.data) if args.data else host.read_location()
+    return data.resolve() if data is not None else None
 
 
 def cmd_launch(
@@ -440,7 +440,7 @@ def cmd_launch(
     if data is None:
         print(NOT_SET_UP, file=sys.stderr)
         return 1
-    return launcher.run_launcher(Path(data).resolve(), popen=popen)
+    return launcher.run_launcher(data, popen=popen)
 
 
 def cmd_open(

@@ -4,7 +4,11 @@ it in the browser, starting the launcher first when nothing answers.
 The launcher runs `serve` as a child process and reads only its exit code (see
 `lifecycle`): restart starts a new child, stop and a configuration error end the launcher, and
 anything else is a crash, started again after a pause unless it keeps crashing. A lock file
-makes it single-instance per data folder. Its own log holds times, events and exit codes,
+makes it single-instance per data folder. On Windows every child is put in a kill-on-close job
+held by the launcher, so ending the launcher (Task Manager, ending the start-at-login task,
+signing out) ends the server and the model servers it started, never leaving an orphan that
+holds the port. The launcher runs only on Windows (`UnsupportedHost` elsewhere), so there is
+no job on other systems. Its own log holds times, events and exit codes,
 never a path or an argument."""
 
 from __future__ import annotations
@@ -71,6 +75,19 @@ def acquire_lock(path: Path) -> object | None:
     return handle
 
 
+def new_job() -> object | None:
+    """A kill-on-close job for the launcher's children on Windows; None elsewhere, or when
+    Windows refuses one (the launcher still runs, as before)."""
+    if sys.platform != "win32":
+        return None
+    from hearthkeep.runtime.winjob import KillOnCloseJob
+
+    try:
+        return KillOnCloseJob()
+    except OSError:
+        return None
+
+
 def _note(log: Path, event: str) -> None:
     """One line in the launcher log: UTC time and the event. Never fails the launcher."""
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -87,6 +104,7 @@ def run_launcher(
     sleep=time.sleep,
     clock=time.monotonic,
     lock=acquire_lock,
+    make_job=None,
 ) -> int:
     """Run `serve` until it stops: 0 when it stopped (or another launcher already runs),
     EXIT_USAGE on a configuration error, 1 after CRASH_LIMIT crashes within CRASH_WINDOW_S."""
@@ -97,13 +115,24 @@ def run_launcher(
     log = data_dir / LAUNCHER_LOG
     env = {**os.environ, SUPERVISED_ENV: "1"}
     crashes: list[float] = []
+    job = None
     try:
+        job = (make_job or new_job)()
+        if job is None:
+            _note(log, "no_job")
         while True:
             _note(log, "start")
             try:
-                code = popen(serve_argv(data_dir), env=env, creationflags=NO_WINDOW).wait()
+                child = popen(serve_argv(data_dir), env=env, creationflags=NO_WINDOW)
             except OSError:
                 code = None
+            else:
+                if job is not None:
+                    try:
+                        job.assign(child.pid)
+                    except OSError:
+                        _note(log, "job_assign_failed")
+                code = child.wait()
             if code == EXIT_RESTART:
                 _note(log, f"exit {code} restart")
                 continue
@@ -119,6 +148,8 @@ def run_launcher(
                 return 1
             sleep(CRASH_PAUSE_S)
     finally:
+        if job is not None:
+            job.close()  # kills a child still running (the launcher is ending abnormally)
         close = getattr(held, "close", None)
         if close is not None:
             close()
