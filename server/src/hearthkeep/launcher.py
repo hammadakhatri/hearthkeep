@@ -40,9 +40,11 @@ HEALTH_TIMEOUT_S = 1.0
 START_WAIT_S = 60.0
 HEALTH_POLL_S = 0.5
 LAUNCHER_NOT_READY = (
-    "Hearthkeep isn't ready to start. To finish setting up, double-click Setup.cmd in the "
-    "Hearthkeep folder."
+    "Hearthkeep couldn't start. Double-click Setup.cmd in the Hearthkeep folder to finish "
+    "setting it up or to fix its settings."
 )
+MESSAGE_TITLE = "Hearthkeep"
+MB_OK_INFORMATION = 0x40
 LAUNCHER_GAVE_UP = (
     "Hearthkeep couldn't start. Another program may be using its port, or it keeps stopping. "
     "Double-click Setup.cmd in the Hearthkeep folder to check."
@@ -211,6 +213,27 @@ def wait_for_health(
         sleep(HEALTH_POLL_S)
 
 
+def _message_box(title: str, text: str) -> None:
+    import ctypes
+
+    ctypes.windll.user32.MessageBoxW(None, text, title, MB_OK_INFORMATION)
+
+
+def show_message(text: str, *, box=_message_box, out=None) -> None:
+    """Tell the owner something in plain words: a message box on Windows (the launcher and
+    `open` run under pythonw, with no console), a printed line elsewhere."""
+    if startup.is_windows():
+        try:
+            box(MESSAGE_TITLE, text)
+            return
+        except Exception:  # no desktop to show it on: fall through to print
+            pass
+    if out is None:
+        out = sys.stderr
+    if out is not None:
+        print(text, file=out)
+
+
 def open_app(
     settings: Settings,
     host: Host,
@@ -218,10 +241,12 @@ def open_app(
     probe=health,
     open_url=webbrowser.open,
     wait=wait_for_health,
+    notify=show_message,
 ) -> int:
-    """Start the launcher when Hearthkeep isn't answering, then open it in the browser either
-    way (the app shows "Can't reach Hearthkeep" with Retry if it's still starting). Returns 1
-    with a plain sentence when the launcher it started ended before the server answered."""
+    """Start the launcher when Hearthkeep isn't answering, then open it in the browser (the
+    app shows "Can't reach Hearthkeep" with Retry if it's still starting). When the launcher
+    it started ended before the server answered, `notify` says why, the browser is not
+    opened, and the result is 1."""
     base = f"http://127.0.0.1:{settings.port}"
     result = 0
     if probe(base) is None:
@@ -229,9 +254,7 @@ def open_app(
         if not wait(base, process=process):
             code = launcher_ended(process)
             if code is not None:
-                print(
-                    LAUNCHER_NOT_READY if code == EXIT_USAGE else LAUNCHER_GAVE_UP, file=sys.stderr
-                )
-                result = 1
+                notify(LAUNCHER_NOT_READY if code == EXIT_USAGE else LAUNCHER_GAVE_UP)
+                return 1
     open_url(settings.public_origin)
     return result

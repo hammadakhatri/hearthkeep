@@ -24,7 +24,7 @@ SessionDep = Annotated[Session, Depends(current_session)]
 
 class StepUpTokenBody(BaseModel):
     # A missing token is a refusal like a wrong one (403, audited), not a 422.
-    step_up_token: str = Field(default="", max_length=256)
+    step_up_token: str | None = Field(default="", max_length=256)
 
 
 def _control(hk: Services) -> ServerControl:
@@ -34,7 +34,7 @@ def _control(hk: Services) -> ServerControl:
 
 
 def _require_step_up(hk: Services, session: Session, body: StepUpTokenBody, event: str) -> None:
-    if not hk.step_up.check(body.step_up_token, session.id, None, "server"):
+    if not hk.step_up.check(body.step_up_token or "", session.id, None, "server"):
         record(hk, actor(session), f"{event}_denied", {"reason": "step_up_required"})
         raise ApiError(403, "step_up_required")
 

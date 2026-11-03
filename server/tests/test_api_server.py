@@ -75,6 +75,7 @@ def test_restart_and_stop_need_step_up(harness, action, code):
     # Everything that must be refused is tried first: nothing may ask the server to stop.
     for body in (
         {},
+        {"step_up_token": None},
         {"step_up_token": "nope"},
         {"step_up_token": wrong_purpose},
         {"step_up_token": other_session},
@@ -93,7 +94,7 @@ def test_restart_and_stop_need_step_up(harness, action, code):
     reused = client.post(path, json={"step_up_token": used}, headers=CSRF)
     assert reused.status_code == 403 and fresh.exit_code is None and fresh_shutdowns == []
     events = [e["event"] for e in harness.events()]
-    assert events.count(f"server.{action}_denied") == 5
+    assert events.count(f"server.{action}_denied") == 6
     assert events.count(f"server.{action}") == 1
 
 
@@ -140,3 +141,9 @@ def test_health_reports_setup_mode(harness):
     assert harness.start().get("/api/health").json()["setup_mode"] is False
     on = harness.start(control=ServerControl(supervised=False, setup_mode=True))
     assert on.get("/api/health").json()["setup_mode"] is True
+
+
+def test_health_reads_the_current_control(harness):
+    client = harness.start()
+    client.app.state.hk.control = ServerControl(supervised=False, setup_mode=True)
+    assert client.get("/api/health").json()["setup_mode"] is True
