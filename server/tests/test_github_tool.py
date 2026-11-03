@@ -223,10 +223,14 @@ async def test_open_pr_needs_pushed_head(s):
             "body": "Does the thing."}  # fmt: skip
 
     detail = await s.tool.approval_detail(args, ctx(s))  # not on GitHub yet: 404
+    assert detail["note"] == "Push the branch first. This request will be refused."
+    assert "head_sha" not in detail and "+new line" in detail["diff"]
     got = await s.tool.run(args, ctx(s, detail, step_up=True))
     assert not got.ok and got.content == "Push the branch first."
 
     s.fake.routes[("GET", ref_path)] = (200, {"object": {"sha": SHA}})  # GitHub is elsewhere
+    elsewhere = await s.tool.approval_detail(args, ctx(s))
+    assert "head_sha" not in elsewhere and elsewhere["note"].startswith("Push the branch first.")
     got = await s.tool.run(args, ctx(s, detail, step_up=True))
     assert not got.ok and got.content == "Push the branch first."
     assert requests_by_method(s.fake, "POST") == []
@@ -235,7 +239,7 @@ async def test_open_pr_needs_pushed_head(s):
     s.fake.routes[("POST", f"{API}/pulls")] = (201, {"number": 7, "html_url": "https://x/7"})
     detail = await s.tool.approval_detail(args, ctx(s))
     assert detail["head"] == "hearthkeep/work" and detail["base"] == "main"
-    assert detail["head_sha"] == head and detail["title"] == "Fix it"
+    assert detail["head_sha"] == head and detail["title"] == "Fix it" and "note" not in detail
     assert detail["body"] == "Does the thing." and "+new line" in detail["diff"]
 
     without = await s.tool.run(args, ctx(s, detail))  # no step-up
@@ -269,13 +273,15 @@ async def test_open_pr_needs_pushed_head(s):
 async def test_merge_sends_approved_sha(s):
     pr = f"{API}/pulls/5"
     s.fake.routes[("GET", pr)] = (200, {"number": 5, "title": "Add x", "state": "open",
-                                        "head": {"sha": SHA, "ref": "hearthkeep/x"}})  # fmt: skip
+                                        "head": {"sha": SHA, "ref": "hearthkeep/x"},
+                                        "base": {"ref": "main"}})  # fmt: skip
     s.fake.routes[("GET", pr, DIFF_ACCEPT)] = (200, "diff --git a/x b/x\n+x\n")
     s.fake.routes[("PUT", f"{pr}/merge")] = (200, {"merged": True, "sha": "b" * 40})
     args = {"repo": R, "action": "merge_pr", "number": 5, "method": "squash"}
     detail = await s.tool.approval_detail(args, ctx(s))
     assert detail == {"repo": R, "number": 5, "title": "Add x", "method": "squash",
-                      "head_sha": SHA, "diff": "diff --git a/x b/x\n+x\n"}  # fmt: skip
+                      "base": "main", "head_sha": SHA,
+                      "diff": "diff --git a/x b/x\n+x\n"}  # fmt: skip
 
     assert not (await s.tool.run(args, ctx(s, detail))).ok
     assert requests_by_method(s.fake, "PUT") == []
@@ -289,9 +295,34 @@ async def test_merge_sends_approved_sha(s):
         ("github.merge_pr", {"repo_id": s.repo.id, "number": 5})
     ]
 
-    s.fake.fail_next(409)  # the PR moved: GitHub itself refuses
+    s.fake.routes[("PUT", f"{pr}/merge")] = (409, {"message": "Head moved"})  # GitHub refuses
     moved = await s.tool.run(args, ctx(s, detail, step_up=True))
     assert not moved.ok and "changed after you approved it" in moved.content
+
+
+async def test_merge_refuses_a_pr_retargeted_after_approval(s):
+    pr = f"{API}/pulls/5"
+    s.fake.routes[("GET", pr)] = (200, {"number": 5, "title": "Add x", "state": "open",
+                                        "head": {"sha": SHA, "ref": "hearthkeep/x"},
+                                        "base": {"ref": "main"}})  # fmt: skip
+    s.fake.routes[("GET", pr, DIFF_ACCEPT)] = (200, "diff --git a/x b/x\n+x\n")
+    s.fake.routes[("PUT", f"{pr}/merge")] = (200, {"merged": True})
+    args = {"repo": R, "action": "merge_pr", "number": 5}
+    detail = await s.tool.approval_detail(args, ctx(s))
+    assert detail["base"] == "main" and detail["method"] == "merge"
+
+    s.fake.routes[("GET", pr)] = (200, {"number": 5, "title": "Add x", "state": "open",
+                                        "head": {"sha": SHA, "ref": "hearthkeep/x"},
+                                        "base": {"ref": "release"}})  # fmt: skip
+    got = await s.tool.run(args, ctx(s, detail, step_up=True))
+    assert not got.ok and got.content == (
+        "The pull request changed after you approved it. Nothing was merged."
+    )
+    assert requests_by_method(s.fake, "PUT") == []
+    no_base = {k: v for k, v in detail.items() if k != "base"}  # a card that never showed one
+    got = await s.tool.run(args, ctx(s, no_base, step_up=True))
+    assert not got.ok and requests_by_method(s.fake, "PUT") == []
+    assert github_events(s.store.conn) == []
 
 
 async def test_comment_and_close_use_fixed_paths(s):
@@ -318,6 +349,36 @@ async def test_comment_and_close_use_fixed_paths(s):
     assert patch.url.path == f"{API}/issues/9" and json.loads(patch.content) == {"state": "closed"}
     assert [e["event"] for e in github_events(s.store.conn)] == ["github.comment", "github.close"]
     assert all(set(e["detail"]) == {"repo_id", "number"} for e in github_events(s.store.conn))
+
+
+async def test_close_kind_must_match_what_the_number_is(s):
+    s.fake.routes[("GET", f"{API}/issues/4")] = (200, {
+        "number": 4, "title": "A PR", "pull_request": {"url": "x"}})  # fmt: skip
+    s.fake.routes[("GET", f"{API}/issues/9")] = (200, {"number": 9, "title": "Bug"})
+    for n in (4, 9):
+        s.fake.routes[("PATCH", f"{API}/issues/{n}")] = (200, {"state": "closed"})
+        s.fake.routes[("PATCH", f"{API}/pulls/{n}")] = (200, {"state": "closed"})
+
+    cases = [
+        (4, "issue", "#4 is a pull request, not an issue. Nothing was closed."),
+        (9, "pr", "#9 is an issue, not a pull request. Nothing was closed."),
+    ]
+    for n, kind, refusal in cases:
+        args = {"repo": R, "action": "close", "kind": kind, "number": n}
+        detail = await s.tool.approval_detail(args, ctx(s))
+        assert detail["note"] == refusal + " This request will be refused."
+        got = await s.tool.run(args, ctx(s, detail, step_up=True))
+        assert not got.ok and got.content == refusal
+    assert requests_by_method(s.fake, "PATCH") == []
+    assert github_events(s.store.conn) == []
+
+    args = {"repo": R, "action": "close", "kind": "pr", "number": 4}
+    detail = await s.tool.approval_detail(args, ctx(s))
+    assert detail == {"repo": R, "kind": "pr", "number": 4, "title": "A PR"}
+    got = await s.tool.run(args, ctx(s, detail, step_up=True))
+    assert got.ok, got.content
+    (patch,) = requests_by_method(s.fake, "PATCH")
+    assert patch.url.path == f"{API}/pulls/4"
 
 
 async def test_unknown_repo_is_refused_without_a_request(s):
