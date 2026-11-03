@@ -242,6 +242,10 @@ MIGRATIONS: dict[int, str] = {
     );
     CREATE INDEX IF NOT EXISTS repo_runs_repo ON repo_runs(repo_id, created_at);
     """,
+    # Small facts about the install itself: the upgrade level and the "was updated" note.
+    10: """
+    CREATE TABLE IF NOT EXISTS app_state (key TEXT PRIMARY KEY, value TEXT);
+    """,
 }
 
 

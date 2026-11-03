@@ -71,6 +71,17 @@ def hermetic_addon_probes(monkeypatch):
     monkeypatch.setattr(addons, "docker_installed", lambda: False)
 
 
+@pytest.fixture(autouse=True)
+def hermetic_cli_host(monkeypatch):
+    """`hearthkeep serve` runs the upgrade, which on Windows would read and write the real
+    data-folder record, start-at-login task and Start menu shortcut. In tests the CLI's own
+    host is the unsupported one (as on Linux CI); tests that need Windows pass a fake host."""
+    from hearthkeep import cli
+    from hearthkeep.host import UnsupportedHost
+
+    monkeypatch.setattr(cli, "current_host", UnsupportedHost)
+
+
 @pytest.fixture
 def sandbox_image():
     """The built sandbox image's tag; skips when Docker or the image is missing."""

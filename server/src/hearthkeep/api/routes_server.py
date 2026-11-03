@@ -1,7 +1,9 @@
 """The running server: what it is (version, supervised, restart needed) and stopping or
 restarting it from the app. Both actions take a passkey step-up (purpose `server`) and are
 audited; the answer leaves before the server stops. Restart needs the launcher (a supervised
-server): without one, nothing would start the server again."""
+server): without one, nothing would start the server again.
+
+Also the "Hearthkeep was updated" note the upgrade leaves, and dismissing it."""
 
 from __future__ import annotations
 
@@ -16,6 +18,7 @@ import hearthkeep
 from hearthkeep.api.common import ApiError, Services, actor, current_session, record, services
 from hearthkeep.auth.sessions import Session
 from hearthkeep.lifecycle import EXIT_RESTART, EXIT_STOPPED, ServerControl
+from hearthkeep.upgrade import dismiss_update_note, update_note
 
 router = APIRouter(prefix="/api")
 
@@ -74,3 +77,17 @@ async def stop(body: StepUpTokenBody, session: SessionDep, request: Request) -> 
     return JSONResponse(
         {"ok": True}, status_code=202, background=BackgroundTask(control.request, EXIT_STOPPED)
     )
+
+
+@router.get("/update-note")
+async def get_update_note(session: SessionDep, request: Request) -> dict:
+    hk = services(request)
+    return {"note": update_note(hk.conn, hk.addons)}
+
+
+@router.post("/update-note/dismiss")
+async def dismiss_note(session: SessionDep, request: Request) -> dict:
+    hk = services(request)
+    if dismiss_update_note(hk.conn):
+        record(hk, actor(session), "update_note.dismissed", {})
+    return {"ok": True}
