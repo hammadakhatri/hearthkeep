@@ -19,12 +19,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from xml.sax.saxutils import escape
 
+from hearthkeep import procutil
+
 TASK_NAME = "Hearthkeep"
 LOG_FILE = Path("logs") / "hearthkeep.log"
 STATUS_CACHE_SECONDS = 30.0
-UNSUPPORTED = (
-    "Start at login is built in only on Windows. See docs/install.md for macOS and Linux."
-)
+UNSUPPORTED = "Start at login is built in only on Windows. See docs/install.md for macOS and Linux."
 SCHTASKS_TIMEOUT_S = 15
 
 _NS = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
@@ -52,9 +52,7 @@ class StartupStatus:
 
 
 def same_folder(a: Path | str, b: Path | str) -> bool:
-    return os.path.normcase(os.path.normpath(str(a))) == os.path.normcase(
-        os.path.normpath(str(b))
-    )
+    return os.path.normcase(os.path.normpath(str(a))) == os.path.normcase(os.path.normpath(str(b)))
 
 
 def on_for_another_folder(state: StartupStatus, data_dir: Path | str) -> bool:
@@ -81,14 +79,19 @@ def _unquoted(value: str) -> str:
 
 def schtasks_exe() -> str:
     """schtasks.exe from System32, never whatever PATH finds first."""
-    root = os.environ.get("SystemRoot") or os.environ.get("windir")
-    if not root:
+    exe = procutil.system32_exe("schtasks.exe")
+    if exe is None:
         raise StartupError("Windows' SystemRoot folder is not set, so schtasks can't be found.")
-    return str(Path(root) / "System32" / "schtasks.exe")
+    return str(exe)
 
 
 def is_windows() -> bool:
     return sys.platform == "win32"
+
+
+def pythonw_path() -> Path:
+    """pythonw.exe beside this Python: runs Hearthkeep with no console window."""
+    return Path(sys.executable).with_name("pythonw.exe")
 
 
 def log_path(data_dir: Path) -> Path:
@@ -186,7 +189,7 @@ def enable(data_dir: Path, *, run: Run = subprocess.run, pythonw: Path | None = 
     if not is_windows():
         raise StartupError(UNSUPPORTED)
     data = Path(data_dir).resolve()
-    exe = pythonw or Path(sys.executable).with_name("pythonw.exe")
+    exe = pythonw or pythonw_path()
     if not exe.is_file():
         raise StartupError(
             f"pythonw.exe was not found next to this Python ({exe}), so Hearthkeep can't "
