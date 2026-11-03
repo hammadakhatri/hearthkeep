@@ -283,7 +283,7 @@ The full security model is in [docs/security.md](docs/security.md).
 Hearthkeep is early software. It's a good fit if you:
 
 - have a **Windows 11 PC with an NVIDIA GPU** (about 16 GB of VRAM for the shipped models),
-- are comfortable running a few commands in a terminal,
+- are happy to follow a step-by-step guide to add the models and reach it from your phone,
 - want an assistant you can use from your phone without your data leaving home.
 
 <details>

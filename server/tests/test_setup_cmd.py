@@ -3,6 +3,8 @@
 import re
 from pathlib import Path
 
+from copy_rules import forbidden_in
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CMD = REPO_ROOT / "Setup.cmd"
 
@@ -32,6 +34,46 @@ def test_setup_cmd_runs_setup_and_keeps_the_window_open():
     assert '"%UV_EXE%" run --project server hearthkeep setup' in text
     assert text.rstrip().endswith("pause >nul")
     assert "Press any key to close this window." in text
+
+
+def _lines() -> list[str]:
+    return CMD.read_text().splitlines()
+
+
+def _index(predicate) -> int:
+    return next(i for i, line in enumerate(_lines()) if predicate(line))
+
+
+def test_setup_cmd_never_runs_from_the_wrong_folder():
+    assert 'cd /d "%~dp0" || goto end' in _lines()
+
+
+def test_setup_cmd_clears_the_module_path_before_powershell_runs():
+    assert _index(lambda line: line == 'set "PSModulePath="') < _index(
+        lambda line: line.startswith('"%PS%"')
+    )
+
+
+def test_setup_cmd_stops_on_a_checksum_mismatch_before_running_setup():
+    ps_line = _lines()[_index(lambda line: line.startswith('"%PS%"'))]
+    assert "exit 3" in ps_line
+    run = _index(lambda line: line == ":run")
+    assert _index(lambda line: line.startswith("if errorlevel 3 if not errorlevel 4 ")) < run
+
+
+def test_setup_cmd_stops_when_uv_is_still_missing():
+    lines = _lines()
+    missing = _index(lambda line: line.startswith('if not exist "%UV_EXE%"'))
+    assert missing < _index(lambda line: line == ":run")
+    assert lines[missing].endswith("& goto end)")
+
+
+def test_setup_cmd_console_text_follows_the_copy_rules():
+    said = re.findall(r"\becho ([^&)\r\n]+)", CMD.read_text())
+    assert len(said) >= 5
+    for text in said:
+        assert text.isascii(), text
+        assert forbidden_in(text) == [], text
 
 
 def test_gitattributes_keeps_cmd_crlf():
