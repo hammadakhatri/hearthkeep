@@ -6,6 +6,7 @@ import pytest
 from fakes import FakeGitHub
 from test_api import CSRF, harness, signed_in, step_up  # noqa: F401  (harness is a fixture)
 
+from hearthkeep.github.git import GitRunner
 from hearthkeep.secrets import SecretStore
 
 TOKEN = "github_pat_" + "a" * 30
@@ -43,9 +44,9 @@ def test_github_needs_a_session(harness):
 
 
 def test_get_reports_git_and_no_connection(api_client, monkeypatch):
-    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/git" if name == "git" else None)
+    monkeypatch.setattr(GitRunner, "available", lambda self: True)
     assert api_client.get("/api/github").json() == {"git": True, "connected": False, "login": None}
-    monkeypatch.setattr("shutil.which", lambda name: None)
+    monkeypatch.setattr(GitRunner, "available", lambda self: False)
     assert api_client.get("/api/github").json()["git"] is False
 
 

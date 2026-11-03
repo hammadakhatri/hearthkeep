@@ -18,6 +18,7 @@ DATA_SUBDIRS = (
     "workspace/uploads",
     "workspace/chats",
     "workspace/repos",
+    "runtime/git-home/no-hooks",
     "logs",
     "private",
 )
