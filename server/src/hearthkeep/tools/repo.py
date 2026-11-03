@@ -11,6 +11,7 @@ import asyncio
 import os
 import re
 from pathlib import Path
+from secrets import token_hex
 
 from hearthkeep.github.api import GitHubUser, noreply_email
 from hearthkeep.github.diff import cap_diff, file_diff
@@ -462,6 +463,14 @@ class RepoEditTool:
         exists = target.is_file()
         old: str | None = None
         crlf = False
+        if action == "delete":
+            if not exists:
+                raise ValueError("That path isn't a file in the repo.")
+            try:
+                old, _ = self._read_text(target)
+            except ValueError:
+                old = None  # binary or large: removed all the same, shown without a text diff
+            return rel, target, old, None, False
         if exists:
             old, crlf = self._read_text(target)
         if action == "write":
@@ -473,8 +482,6 @@ class RepoEditTool:
             return rel, target, old, _lf(content), crlf
         if old is None:
             raise ValueError("That path isn't a file in the repo.")
-        if action == "delete":
-            return rel, target, old, None, crlf
         needle, new = args.get("old"), args.get("new")
         if not needle or not isinstance(new, str):
             raise ValueError("Replace needs 'old' and 'new'.")
@@ -485,6 +492,22 @@ class RepoEditTool:
                 f"The text to replace was found {found} times; it must match exactly once."
             )
         return rel, target, old, old.replace(needle, new, 1), crlf
+
+    async def _preview_commit(self, clone: Path) -> str:
+        """What `git add -A` then `git commit` would record, computed in a throwaway index
+        (under runtime/, deleted after) so the clone's own index is never touched. Untracked
+        files are hashed into the object store as unreachable loose objects, which git's gc
+        removes; there is no way to render their diff without that."""
+        git = self._repos.git
+        index = git.home / f"index-{token_hex(8)}"
+        try:
+            await git.run(clone, "read-tree", "HEAD", index_file=index, timeout=GIT_TIMEOUT_S)
+            await git.run(clone, "add", "-A", index_file=index, timeout=GIT_TIMEOUT_S)
+            staged = await git.run(clone, *_STAGED_DIFF, index_file=index, timeout=GIT_TIMEOUT_S)
+            return staged.out
+        finally:
+            index.unlink(missing_ok=True)
+            Path(str(index) + ".lock").unlink(missing_ok=True)
 
     # -- approval --------------------------------------------------------------------------
 
@@ -502,17 +525,17 @@ class RepoEditTool:
             detail["message"] = str(args.get("message", ""))
             if branch.startswith(BRANCH_PREFIX):
                 try:
-                    git = self._repos.git
-                    await git.run(clone, "add", "-A", timeout=GIT_TIMEOUT_S)
-                    staged = await git.run(clone, *_STAGED_DIFF, timeout=GIT_TIMEOUT_S)
-                    detail["diff"] = cap_diff(staged.out)
+                    detail["diff"] = cap_diff(await self._preview_commit(clone))
                 except GitError:
                     pass  # `run` gives the model the reason
             return detail
         detail["path"] = str(args.get("path", ""))
         try:
             rel, _target, old, new, _crlf = self._plan(clone, args)
-            detail["diff"] = cap_diff(file_diff(rel, old, new))
+            if action == "delete" and old is None:
+                detail["diff"] = f"Binary or large file {rel} deleted\n"
+            else:
+                detail["diff"] = cap_diff(file_diff(rel, old, new))
         except (PathRefused, ValueError, OSError):
             pass  # `run` gives the model the reason
         return detail

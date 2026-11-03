@@ -179,7 +179,7 @@ class GitRunner:
             argv += ["-c", setting]
         return argv + list(args)
 
-    def env(self, token: str | None) -> dict[str, str]:
+    def env(self, token: str | None, index_file: Path | None = None) -> dict[str, str]:
         home = str(self.home)
         env = {
             "PATH": os.environ.get("PATH", ""),
@@ -192,6 +192,8 @@ class GitRunner:
         }
         if _IS_WINDOWS:
             env["SYSTEMROOT"] = os.environ.get("SYSTEMROOT", r"C:\Windows")
+        if index_file is not None:
+            env["GIT_INDEX_FILE"] = str(index_file)  # a throwaway index, never the clone's
         if token:
             env["GIT_CONFIG_COUNT"] = "1"
             env["GIT_CONFIG_KEY_0"] = EXTRAHEADER_KEY
@@ -205,6 +207,7 @@ class GitRunner:
         token: str | None = None,
         timeout: float = 60.0,
         check: bool = True,
+        index_file: Path | None = None,
     ) -> GitResult:
         what = args[0] if args else "git"
         if self._executable() is None:
@@ -214,7 +217,7 @@ class GitRunner:
             proc = await asyncio.create_subprocess_exec(
                 *self.argv(*args),
                 cwd=str(cwd),
-                env=self.env(token),
+                env=self.env(token, index_file),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
