@@ -42,7 +42,7 @@ async def s(tmp_path):
     data = tmp_path / "data"
     data.mkdir()
     fake = FakeGitHub()
-    fake.routes[("GET", API)] = (200, REPO)
+    fake.repos.append(REPO)
     origin = make_origin(tmp_path)
     store = make_store(data, origin, fake)
     repo = await store.add(R)
@@ -387,7 +387,8 @@ async def test_unknown_repo_is_refused_without_a_request(s):
         got = await s.tool.run(args, ctx(s, {"repo": "acme/other"}, step_up=True))
         assert not got.ok and got.content == UNKNOWN_REPO
         assert s.tool.classify(args) == ActionClass.LOOK  # nothing to approve: it does nothing
-    assert [r for r in s.fake.requests if r.url.path != API] == []
+    # Only the lookup made when the fixture added acme/widgets.
+    assert [r for r in s.fake.requests if r.url.path != "/user/repos"] == []
 
 
 # -- reads ----------------------------------------------------------------------------------------
