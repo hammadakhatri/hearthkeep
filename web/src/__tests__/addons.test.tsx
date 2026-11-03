@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { memo } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { useAddons, type Addon } from '../api/addons'
 import { AddonsPanel } from '../components/AddonsPanel'
@@ -8,14 +9,26 @@ import { Settings } from '../views/Settings'
 import { forbiddenIn } from '../test/copyRules'
 import { addonList, addonsReady, addonsWith, headerOf, healthy, mockFetch } from '../test/fetch'
 
+const renders = vi.hoisted(() => ({ count: 0 }))
+
+// Memoised, so it re-renders only when the add-ons context it reads changes.
+const Probe = memo(function Probe() {
+  const github = useAddon('github')
+  renders.count += 1
+  return <p data-testid="probe">{github ? `github ${github.state}` : 'github unknown'}</p>
+})
+
 vi.mock('../views/Placeholder', () => ({
   // A stand-in view that asks the shell to open Settings at an add-on's card.
   Placeholder: () => {
     const open = useOpenSettings()
     return (
-      <button type="button" onClick={() => open('addon-images')}>
-        Open the images add-on
-      </button>
+      <>
+        <button type="button" onClick={() => open('addon-images')}>
+          Open the images add-on
+        </button>
+        <Probe />
+      </>
     )
   },
 }))
@@ -160,6 +173,7 @@ describe('Add-ons', () => {
       const state = useAddons()
       return (
         <AddonsProvider value={{ ...state, openSettings: vi.fn() }}>
+          <p>{state.failed ? 'load failed' : 'loading'}</p>
           <Show />
         </AddonsProvider>
       )
@@ -169,7 +183,7 @@ describe('Add-ons', () => {
       return <p>{github ? `github is ${github.state}` : 'github is unknown'}</p>
     }
     render(<Probe />)
-    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled())
+    await screen.findByText('load failed')
     expect(screen.getByText('github is unknown')).toBeInTheDocument()
     // Without any provider, too.
     function Bare() {
@@ -177,6 +191,52 @@ describe('Add-ons', () => {
     }
     render(<Bare />)
     expect(screen.getByText('chat is unknown')).toBeInTheDocument()
+  })
+
+  it('says when a check again worked', async () => {
+    mockFetch({
+      'GET /api/addons': addonsReady,
+      'POST /api/addons/refresh': addonsReady,
+    })
+    render(<AddonsPanel />)
+    await screen.findByRole('heading', { level: 3, name: 'Chat model' })
+    expect(screen.queryByText('Checked just now')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
+    expect(await screen.findByText('Checked just now')).toBeInTheDocument()
+  })
+
+  it('consumers do not re-render when unrelated shell state changes', async () => {
+    mockFetch({ ...settingsRoutes, 'GET /api/health': healthy, 'GET /api/addons': addonsReady })
+    renders.count = 0
+    render(<AppShell initialView="today" onSignOut={() => {}} />)
+    await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('github ready'))
+    const before = renders.count
+    // The tray opening is shell state unrelated to add-ons.
+    fireEvent.click(screen.getByRole('button', { name: 'Sent to you' }))
+    await Promise.resolve()
+    expect(renders.count).toBe(before)
+  })
+
+  it('an anchor given while loading failed does not linger', async () => {
+    let ok = false
+    mockFetch({
+      ...settingsRoutes,
+      'GET /api/health': healthy,
+      'GET /api/addons': () => (ok ? addonsReady : { status: 500, body: { reason: 'boom' } }),
+      'POST /api/addons/refresh': addonsReady,
+    })
+    render(<AppShell initialView="today" onSignOut={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open the images add-on' }))
+    expect(await screen.findByRole('alert')).toBeInTheDocument()
+    ok = true
+    // Away and back, with the add-ons now loaded: nothing jumps to the card.
+    const sidebar = screen.getByRole('navigation', { name: 'Hearthkeep' })
+    fireEvent.click(within(sidebar).getByRole('button', { name: 'Images' }))
+    fireEvent.click(within(sidebar).getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Check again' }))
+    await screen.findByRole('heading', { level: 3, name: 'Images' })
+    await new Promise((r) => setTimeout(r, 30)) // let a stray focus move happen
+    expect(card('images')).not.toHaveFocus()
   })
 
   it('maps actions to the screen that can act', () => {

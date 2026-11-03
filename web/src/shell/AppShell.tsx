@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useAddons, type AddonsState } from '../api/addons'
 import { SentTray, useUnreadSent } from '../components/SentTray'
 import { Analysis } from '../views/Analysis'
@@ -84,6 +84,8 @@ export function AppShell({ initialView = DEFAULT_VIEW, onSignOut }: Props) {
 
   function select(next: ViewId) {
     if (next !== view && scroller.current) scroller.current.scrollTop = 0
+    // An anchor nobody used (a failed load) must not fire on a later visit.
+    if (next !== 'settings') setSettingsFocus(null)
     setView(next)
   }
 
@@ -94,45 +96,48 @@ export function AppShell({ initialView = DEFAULT_VIEW, onSignOut }: Props) {
 
   const clearSettingsFocus = useCallback(() => setSettingsFocus(null), [])
 
-  function openSettings(anchor: SettingsAnchor) {
+  // Stable, so add-on consumers don't re-render when unrelated shell state changes.
+  const openSettings = useCallback((anchor: SettingsAnchor) => {
     setSettingsFocus(anchor)
-    select('settings')
-  }
+    if (scroller.current) scroller.current.scrollTop = 0
+    setView('settings')
+  }, [])
+  const addonsValue = useMemo(() => ({ ...addons, openSettings }), [addons, openSettings])
 
   return (
-    <AddonsProvider value={{ ...addons, openSettings }}>
-    <div className="shell" ref={shell}>
-      <Sidebar current={view} onSelect={select} onSignOut={onSignOut} />
-      <main className="main">
-        <TopBar title={VIEWS[view].title} health={health} unread={unread} onOpenSent={() => setTrayOpen(true)} />
-        {view === 'chat' ? (
-          // Chat scrolls its own thread under a floating composer.
-          <div className="view view-fill" key={view}>
-            <Chat model={modelName(health)} target={target} onTargetHandled={() => setTarget(null)} />
-          </div>
-        ) : (
-          <div className="scroll" ref={scroller}>
-            <div className="view" key={view}>
-              {/* Views not built yet are placeholders; later updates replace them one by one. */}
-              {view === 'tools' ? (
-                <ToolsPermissions />
-              ) : view === 'images' ? (
-                <Images />
-              ) : view === 'analysis' ? (
-                <Analysis onOpenChat={openChat} />
-              ) : view === 'repos' ? (
-                <Repos />
-              ) : view === 'settings' ? (
-                <Settings focus={settingsFocus} onFocused={clearSettingsFocus} />
-              ) : (
-                <Placeholder view={view} />
-              )}
+    <AddonsProvider value={addonsValue}>
+      <div className="shell" ref={shell}>
+        <Sidebar current={view} onSelect={select} onSignOut={onSignOut} />
+        <main className="main">
+          <TopBar title={VIEWS[view].title} health={health} unread={unread} onOpenSent={() => setTrayOpen(true)} />
+          {view === 'chat' ? (
+            // Chat scrolls its own thread under a floating composer.
+            <div className="view view-fill" key={view}>
+              <Chat model={modelName(health)} target={target} onTargetHandled={() => setTarget(null)} />
             </div>
-          </div>
-        )}
-      </main>
-      <BottomTabs current={view} onSelect={select} onSignOut={onSignOut} />
-    </div>
+          ) : (
+            <div className="scroll" ref={scroller}>
+              <div className="view" key={view}>
+                {/* Views not built yet are placeholders; later updates replace them one by one. */}
+                {view === 'tools' ? (
+                  <ToolsPermissions />
+                ) : view === 'images' ? (
+                  <Images />
+                ) : view === 'analysis' ? (
+                  <Analysis onOpenChat={openChat} />
+                ) : view === 'repos' ? (
+                  <Repos />
+                ) : view === 'settings' ? (
+                  <Settings focus={settingsFocus} onFocused={clearSettingsFocus} />
+                ) : (
+                  <Placeholder view={view} />
+                )}
+              </div>
+            </div>
+          )}
+        </main>
+        <BottomTabs current={view} onSelect={select} onSignOut={onSignOut} />
+      </div>
       <SentTray open={trayOpen} onClose={() => setTrayOpen(false)} onUnread={setUnread} reloadKey={arrivals} />
     </AddonsProvider>
   )
