@@ -1200,3 +1200,49 @@ def test_unavailable_tool_is_not_offered(conn, registry):
     assert "gated" not in names() and "clock" in names()
     gated.up = True
     assert "gated" in names()
+
+
+class OutwardDetailTool(DetailTool):
+    def classify(self, args):
+        return ActionClass.OUTWARD
+
+
+class LookDetailTool(DetailTool):
+    def classify(self, args):
+        return ActionClass.LOOK
+
+
+async def test_approved_step_up_only_after_an_approved_step_up_card(
+    conn, settings, approvals, registry
+):
+    tool = OutwardDetailTool({"lock_hash": "h"})
+    loop = _detail_loop(conn, settings, approvals, registry, tool)
+
+    def approve_with_passkey(event):
+        assert event["requires_step_up"] is True
+        approvals.resolve(event["approval_id"], "sess1", approve=True, step_up_verified=True)
+
+    await drain(loop, user("go"), on_approval=approve_with_passkey)
+    assert tool.ran == 1 and tool.seen_ctx.approved_step_up is True
+
+
+async def test_approved_step_up_is_false_after_a_plain_card(conn, settings, approvals, registry):
+    tool = DetailTool({"lock_hash": "h"})  # Change local at Ask: a card without step-up
+    loop = _detail_loop(conn, settings, approvals, registry, tool)
+
+    def approve(event):
+        assert event["requires_step_up"] is False
+        approvals.resolve(event["approval_id"], "sess1", approve=True, step_up_verified=False)
+
+    await drain(loop, user("go"), on_approval=approve)
+    assert tool.ran == 1 and tool.seen_ctx.approved_step_up is False
+
+
+async def test_approved_step_up_is_false_without_a_card(conn, settings, approvals, registry):
+    tool = LookDetailTool({"lock_hash": "h"})
+    loop = _detail_loop(conn, settings, approvals, registry, tool)
+    set_level(conn, "thing", ToolLevel.ALLOWED)  # Look at Allowed: runs without a card
+    events = await drain(loop, user("go"))
+    assert "approval_required" not in types(events)
+    assert tool.ran == 1 and tool.seen_ctx.approved_step_up is False
+    assert tool.seen_ctx.approved_detail is None

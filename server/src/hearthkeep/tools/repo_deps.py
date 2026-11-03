@@ -13,20 +13,29 @@ import asyncio
 from pathlib import Path
 from secrets import token_hex
 
-from hearthkeep.github.deps import DepsCache, DepsPlan, DepsTooLarge, remove_job
+from hearthkeep.github.deps import (
+    ALREADY_INSTALLED,
+    DepsCache,
+    DepsPlan,
+    DepsTooLarge,
+    remove_job,
+)
 from hearthkeep.github.repos import RepoStore
 from hearthkeep.permissions import ActionClass
 from hearthkeep.tools.base import ToolContext, ToolResult
 from hearthkeep.tools.repo import GITHUB_LEVEL_KEY, UNKNOWN_REPO, github_ready
 
 NETWORK_NOTE = "This install has internet access. Only the dependency files are given to it."
-ALREADY_INSTALLED = "Dependencies are already installed for this lock file."
 NOTHING_TO_INSTALL = (
     "This repo has no uv.lock (with pyproject.toml), requirements.txt or package-lock.json "
     "(with package.json) at its top level, so there is nothing to install."
 )
 CHANGED_AFTER_APPROVAL = "The dependency files changed after you approved. Nothing was installed."
 NEEDS_APPROVAL = "Installing needs the owner's approval for this lock file. Nothing was installed."
+NO_LONGER_INSTALLED = (
+    "The dependencies are no longer installed. "
+    "Call repo_install again so the owner can approve the install."
+)
 MISSING_CLONE = "The local copy of that repo is missing. Remove it and add it again."
 
 
@@ -114,6 +123,10 @@ class RepoInstallTool:
             return ToolResult(ok=True, content=NOTHING_TO_INSTALL)
         if await self._deps.is_installed(repo, plan):
             return ToolResult(ok=True, content=ALREADY_INSTALLED)
+        # A network install runs only on an approved step-up card (Outward). A run that was
+        # classified Look (the deps were there) and then found them gone runs nothing.
+        if not ctx.approved_step_up:
+            return _fail(NO_LONGER_INSTALLED)
         approved = ctx.approved_detail or {}
         if not approved.get("lock_hash"):
             return _fail(NEEDS_APPROVAL)
@@ -134,6 +147,8 @@ class RepoInstallTool:
             ok, output = await self._deps.install(repo, plan, job)
         finally:
             await asyncio.to_thread(remove_job, job)
+        if ok and output == ALREADY_INSTALLED:  # another call installed it meanwhile
+            return ToolResult(ok=True, content=ALREADY_INSTALLED)
         if ok:
             return ToolResult(
                 ok=True,
