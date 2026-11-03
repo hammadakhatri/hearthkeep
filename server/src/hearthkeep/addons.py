@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from hearthkeep.github.repos import RepoStore
     from hearthkeep.runtime.gpu import GpuScheduler
     from hearthkeep.runtime.stack import ModelStack
-    from hearthkeep.sandbox.runner import SandboxRunner
+    from hearthkeep.sandbox.handle import SandboxHandle
 
 log = logging.getLogger(__name__)
 
@@ -179,6 +179,7 @@ _COPY: dict[tuple[AddonId, str], tuple[str, str | None, str | None]] = {
 MESSAGE_VARIANTS: dict[str, str] = {
     "chat.ready_not_loaded": "Ready. It loads when you send a message.",
     "startup.off_other_folder": "Start at login is on for another data folder.",
+    "analysis.docker_off": "Docker is turned off in Hearthkeep's settings.",
 }
 _READY_STATES = frozenset({"ready", "on"})
 
@@ -212,11 +213,27 @@ class AddonStatus:
         }
 
 
+_SAME: Any = object()  # keep the state's usual action or short
+
+
 def _status(
-    addon_id: AddonId, state: str, *, message: str | None = None, **details: Any
+    addon_id: AddonId,
+    state: str,
+    *,
+    message: str | None = None,
+    action: str | None = _SAME,
+    short: str | None = _SAME,
+    **details: Any,
 ) -> AddonStatus:
-    text, action, short = _COPY[(addon_id, state)]
-    return AddonStatus(addon_id, state, message or text, action, short, details)
+    text, usual_action, usual_short = _COPY[(addon_id, state)]
+    return AddonStatus(
+        addon_id,
+        state,
+        message or text,
+        usual_action if action is _SAME else action,
+        usual_short if short is _SAME else short,
+        details,
+    )
 
 
 # --- probes that touch the PC ----------------------------------------------------------------
@@ -339,7 +356,7 @@ class Probes:
     """How each check is made. A None probe means the module function of that name, looked
     up when it's called (so a test's monkeypatch of it takes effect)."""
 
-    sandbox: Callable[[], Awaitable[SandboxStatus | None]]
+    sandbox: Callable[[bool], Awaitable[SandboxStatus | None]]  # takes `fresh`
     docker_configured_off: bool
     git_available: Callable[[], bool]
     token_saved: Callable[[], bool]
@@ -350,10 +367,15 @@ class Probes:
     file_exists: Callable[[Path], bool] = Path.is_file
 
 
-def sandbox_probe(runner: SandboxRunner | None) -> Callable[[], Awaitable[SandboxStatus | None]]:
-    """The analysis check over the sandbox runner: always a fresh look, never its cache."""
+def handle_sandbox_probe(
+    handle: SandboxHandle,
+) -> Callable[[bool], Awaitable[SandboxStatus | None]]:
+    """The analysis check over the app's sandbox handle. The runner's own status is always a
+    fresh look; `fresh` (a "Check again") also makes a handle that has no runner yet look for
+    Docker now rather than wait out its 30 s throttle."""
 
-    async def probe() -> SandboxStatus | None:
+    async def probe(fresh: bool = False) -> SandboxStatus | None:
+        runner = await handle.get(fresh=fresh)
         return None if runner is None else await runner.status(fresh=True)
 
     return probe
@@ -364,7 +386,7 @@ def github_probes(repos: RepoStore | None) -> tuple[Callable[[], bool], Callable
     offered and the GitHub card agree."""
     if repos is None:
         return (lambda: False), (lambda: False)
-    return repos.git.available, (lambda: repos.token() is not None)
+    return repos.git.available, repos.token_saved
 
 
 def _utcnow() -> datetime:
@@ -398,14 +420,15 @@ class Addons:
 
     async def refresh(self, *ids: AddonId, fresh: bool = False) -> list[AddonStatus]:
         """Run the checks for `ids` (all add-ons when none) and return their states. `fresh`
-        (a "Check again") makes Start at login skip its 30 s cache, as the sandbox check does."""
+        (a "Check again") makes Start at login skip its 30 s cache, and the analysis check
+        look for Docker now even if it looked less than 30 s ago."""
         unknown = [i for i in ids if i not in ADDON_IDS]
         if unknown:
             raise ValueError(f"unknown add-on: {', '.join(map(str, unknown))}")
         wanted = list(dict.fromkeys(ids)) if ids else list(ADDON_IDS)
         checks = {
             "chat": self._refresh_chat,
-            "analysis": self._refresh_analysis,
+            "analysis": lambda: self._refresh_analysis(fresh),
             "images": self._refresh_images,
             "github": self._refresh_github,
             "devices": self._refresh_devices,
@@ -452,11 +475,17 @@ class Addons:
                 await self._probe("chat server", self._probes.chat_reachable, False)
             )
 
-    async def _refresh_analysis(self) -> None:
+    async def _refresh_analysis(self, fresh: bool = False) -> None:
         if self._probes.docker_configured_off:
-            self._cache["analysis"] = _status("analysis", "not_set_up")
+            self._cache["analysis"] = _status(
+                "analysis",
+                "not_set_up",
+                message=MESSAGE_VARIANTS["analysis.docker_off"],
+                action="open_setup",
+                short="Docker turned off",
+            )
             return
-        state = await self._probe("sandbox", self._probes.sandbox, None)
+        state = await self._probe("sandbox", lambda: self._probes.sandbox(fresh), None)
         if state is None or not state.docker:
             installed = await self._probe("docker", self._threaded(self._docker_installed), False)
             self._cache["analysis"] = _status(

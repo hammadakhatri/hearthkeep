@@ -1,5 +1,6 @@
 """The sandbox runner as the app holds it: ready at startup when Docker was running, or made
-later, the first time Docker is seen up (checked at most every 30 s), when it wasn't. With
+later, the first time Docker is seen up (checked at most every 30 s, or at once when asked
+afresh), when it wasn't. With
 Docker configured off it never exists, and nothing ever runs on the host."""
 
 from __future__ import annotations
@@ -46,15 +47,17 @@ class SandboxHandle:
         """The runner if it exists yet (no check is made)."""
         return self._runner
 
-    async def get(self) -> SandboxRunner | None:
-        """The runner, made now if Docker has come up since the last check; else None."""
+    async def get(self, fresh: bool = False) -> SandboxRunner | None:
+        """The runner, made now if Docker has come up since the last check; else None.
+        `fresh` (a "Check again") looks for Docker now, inside the 30 s window too."""
         if self._runner is not None or self._factory is None or self._check is None:
             return self._runner
         async with self._lock:
             if self._runner is not None:
                 return self._runner
             now = self._clock()
-            if self._checked_at is not None and now - self._checked_at < DOCKER_CHECK_S:
+            recent = self._checked_at is not None and now - self._checked_at < DOCKER_CHECK_S
+            if recent and not fresh:
                 return None
             self._checked_at = now
             try:

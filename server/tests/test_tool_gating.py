@@ -197,10 +197,10 @@ def test_stored_levels_for_removed_tools_are_harmless(harness):
 
 
 def test_tools_rows_carry_addon_state(harness):
-    client = signed_in(harness)  # no sandbox: Docker is down
+    client = signed_in(harness)  # no sandbox: Docker is configured off
     python = levels(client)["python"]
     assert python["addon"]["id"] == "analysis" and python["addon"]["ready"] is False
-    assert python["addon"]["short"] == "Needs Docker"
+    assert python["addon"]["short"] == "Docker turned off"
     assert set(python["addon"]) == {"id", "state", "ready", "short", "message"}
     assert levels(client)["send"]["addon"] is None
 

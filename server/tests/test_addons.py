@@ -21,6 +21,7 @@ from hearthkeep.addons import (
     ModelSetup,
     Probes,
     TailscaleState,
+    handle_sandbox_probe,
     model_setup,
     tailscale_state,
 )
@@ -29,6 +30,7 @@ from hearthkeep.models.cards import load_cards
 from hearthkeep.models.runtime import RuntimeConfig, card_file_paths
 from hearthkeep.procutil import find_executable
 from hearthkeep.runtime.stack import ModelStack
+from hearthkeep.sandbox.handle import SandboxHandle
 from hearthkeep.sandbox.runner import SandboxStatus
 from hearthkeep.startup import StartupStatus
 
@@ -53,7 +55,7 @@ class FakeSandboxStatus:
         self.docker, self.image = docker, image
         self.calls = 0
 
-    async def call(self) -> SandboxStatus:
+    async def call(self, fresh: bool = False) -> SandboxStatus:
         self.calls += 1
         return SandboxStatus(docker=self.docker, image=self.image, tag="hearthkeep-sandbox:0")
 
@@ -219,7 +221,7 @@ async def test_docker_stopped_after_startup_turns_analysis_off():
 
 
 async def test_docker_not_installed_is_not_set_up():
-    async def no_sandbox():
+    async def no_sandbox(fresh=False):
         return None
 
     addons = Addons(
@@ -239,8 +241,58 @@ async def test_docker_configured_off_is_not_set_up():
     sandbox = FakeSandboxStatus()
     addons = Addons(settings(), EXTERNAL, probes(sandbox=sandbox.call, docker_configured_off=True))
     await addons.refresh()
-    assert addons.get("analysis").state == "not_set_up"
+    s = addons.get("analysis")
+    assert s.state == "not_set_up"
+    # Not "isn't installed": Docker may well be installed, it's turned off in config.toml.
+    assert s.message == MESSAGE_VARIANTS["analysis.docker_off"]
+    assert s.message == "Docker is turned off in Hearthkeep's settings."
+    assert (s.action, s.short) == ("open_setup", "Docker turned off")
     assert sandbox.calls == 0
+
+
+class FakeRunner:
+    async def status(self, fresh: bool = False) -> SandboxStatus:
+        return SandboxStatus(docker=True, image=False, tag="hearthkeep-sandbox:0")
+
+
+async def test_check_again_sees_docker_that_started_after_hearthkeep():
+    """Docker missing at start-up, started a few seconds later: the background refresh may
+    still land inside the handle's 30 s throttle, but "Check again" (fresh) looks now."""
+    up, now = [False], [0.0]
+
+    async def factory():
+        return FakeRunner()
+
+    handle = SandboxHandle(factory=factory, docker_check=lambda: up[0], clock=lambda: now[0])
+    addons = Addons(
+        settings(),
+        EXTERNAL,
+        probes(sandbox=handle_sandbox_probe(handle), docker_installed=lambda: True),
+    )
+    await addons.refresh("analysis")
+    assert addons.get("analysis").state == "docker_stopped"
+    up[0], now[0] = True, 10.0  # Docker starts; still inside the 30 s window
+    await addons.refresh("analysis")
+    assert addons.get("analysis").state == "docker_stopped"  # throttled, as before
+    await addons.refresh("analysis", fresh=True)
+    assert addons.get("analysis").state == "needs_image"
+
+
+async def test_handle_get_fresh_skips_the_throttle():
+    checks, now = [], [0.0]
+
+    def check():
+        checks.append(now[0])
+        return False
+
+    async def factory():
+        return FakeRunner()
+
+    handle = SandboxHandle(factory=factory, docker_check=check, clock=lambda: now[0])
+    assert await handle.get() is None
+    now[0] = 5.0
+    assert await handle.get() is None and checks == [0.0]
+    assert await handle.get(fresh=True) is None and checks == [0.0, 5.0]
 
 
 async def test_missing_image_is_needs_image():
@@ -475,7 +527,7 @@ async def test_checks_run_off_the_event_loop(tmp_path):
         seen[name].append(threading.get_ident())
         return value
 
-    async def no_sandbox():
+    async def no_sandbox(fresh=False):
         return None
 
     addons = Addons(
@@ -510,7 +562,7 @@ class CountingProbes:
         return value
 
     def probes(self) -> Probes:
-        async def sandbox():
+        async def sandbox(fresh=False):
             return self.bump(SandboxStatus(docker=True, image=True, tag="t"))
 
         async def reachable():
@@ -547,7 +599,7 @@ async def test_get_reads_the_cache_and_only_refresh_probes(tmp_path):
 async def test_concurrent_refreshes_share_one_lock():
     active = {"now": 0, "max": 0}
 
-    async def slow_sandbox():
+    async def slow_sandbox(fresh=False):
         active["now"] += 1
         active["max"] = max(active["max"], active["now"])
         await asyncio.sleep(0.01)
@@ -562,7 +614,7 @@ async def test_concurrent_refreshes_share_one_lock():
 async def test_probe_that_raises_gives_not_ready_and_logs_type_only(caplog):
     secret = "token-abc123-secret-detail"
 
-    async def bad_sandbox():
+    async def bad_sandbox(fresh=False):
         raise RuntimeError(secret)
 
     def bad_docker() -> bool:

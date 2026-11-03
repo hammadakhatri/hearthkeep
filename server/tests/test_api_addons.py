@@ -54,8 +54,9 @@ class CountingProbes(Probes):
         self.calls += 1
         return value
 
-    async def _sandbox(self):
+    async def _sandbox(self, fresh=False):
         self.calls += 1
+        self.fresh_sandbox += bool(fresh)
         return SandboxStatus(docker=True, image=True, tag="t")
 
     async def _reachable(self):
@@ -116,8 +117,10 @@ def test_refresh_reruns_checks_and_is_rate_limited(harness):
         harness, addon_probes=probes, limiter=RateLimiter(per_client=2, global_limit=2)
     )
     before = probes.calls
+    assert probes.fresh_sandbox == 0  # start-up and the loop use the throttled check
     first = client.post("/api/addons/refresh", headers=CSRF)
     assert first.status_code == 200
+    assert probes.fresh_sandbox == 1  # "Check again" looks for Docker afresh
     assert [a["id"] for a in first.json()["addons"]] == IDS
     assert probes.calls > before
     assert client.post("/api/addons/refresh", headers=CSRF).status_code == 200

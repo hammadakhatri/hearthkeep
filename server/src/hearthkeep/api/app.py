@@ -22,7 +22,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from hearthkeep import db
-from hearthkeep.addons import Addons, Probes, github_probes, model_setup, sandbox_probe
+from hearthkeep.addons import Addons, Probes, github_probes, handle_sandbox_probe, model_setup
 from hearthkeep.agent.loop import AgentLoop
 from hearthkeep.agent.runner import TurnRunner, recover_after_restart
 from hearthkeep.api import (
@@ -420,12 +420,8 @@ def create_app(
             )
             runner = TurnRunner(conn, loop)
             git_available, token_saved = github_probes(repo_store)
-
-            async def sandbox_status():
-                return await sandbox_probe(await handle.get())()
-
             probes = addon_probes or Probes(
-                sandbox=sandbox_status,
+                sandbox=handle_sandbox_probe(handle),
                 docker_configured_off=docker_configured_off,
                 git_available=git_available,
                 token_saved=token_saved,
