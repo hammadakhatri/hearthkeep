@@ -75,7 +75,7 @@ from hearthkeep.tools.base import ToolRegistry
 from hearthkeep.tools.files import FilesTool
 from hearthkeep.tools.python import PythonTool, analysis_context
 from hearthkeep.tools.read_pages import ReadPagesTool
-from hearthkeep.tools.repo import RepoReadTool
+from hearthkeep.tools.repo import RepoEditTool, RepoReadTool
 from hearthkeep.tools.send import SendToDevicesTool
 
 DB_FILE = "hearthkeep.db"
@@ -367,6 +367,8 @@ def create_app(
             # Offered only while host git exists and a token is saved (checked each turn).
             if registry.get(RepoReadTool.name) is None:
                 registry.register(RepoReadTool(repo_store))
+            if registry.get(RepoEditTool.name) is None:
+                registry.register(RepoEditTool(repo_store))
             loop = AgentLoop(
                 chat,
                 registry,
