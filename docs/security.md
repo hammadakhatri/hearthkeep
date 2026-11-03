@@ -12,7 +12,7 @@ This page describes what the code in this repository does today. Phase 1 is the 
 - Remote access is meant to go through your private Tailscale network (`tailscale serve` in front of the loopback port; see [install.md](install.md#7-decide-on-remote-access-before-your-first-passkey) for the setup). Nothing is exposed to the public internet. If `public_origin` is not localhost it must be `https`, and the session cookie is then marked `Secure`.
 - The server ignores `X-Forwarded-For`, so a local process cannot fake its address to dodge rate limits.
 - Hearthkeep never uses system or environment proxy settings for any of its connections (to the chat model, the image server and the push services), so your chats and the chat API key cannot be routed through a proxy or VPN.
-- Hearthkeep's outgoing connections are the payload-free push notification described under [Notifications](#notifications-hearthkeeps-only-outgoing-connection), which is off until you turn it on for a device, and, once you save a GitHub token, the calls to `api.github.com` and `github.com` described under [GitHub](#github). Without a token, GitHub is never contacted.
+- Hearthkeep's outgoing connections are the payload-free push notification described under [Notifications](#notifications), which is off until you turn it on for a device, and, once you save a GitHub token, the calls to `api.github.com` and `github.com` described under [GitHub](#github). Without a token, GitHub is never contacted.
 - Every child process Hearthkeep starts (llama-server for chat, ComfyUI for images) binds to `127.0.0.1` only. A model card whose launch arguments try to bind another address (`0.0.0.0`, `::`, or a `--host` other than `127.0.0.1`) is rejected.
 - ComfyUI on `127.0.0.1` has no authentication of its own, so any program on this PC can use it (render images, read its output, upload files). That is the same trust boundary as other local software: Hearthkeep does not protect you from programs already running on your PC.
 
@@ -126,7 +126,7 @@ Numbers in your own question and in the chat's file names are not marked. This i
 - Hearthkeep never writes to, moves or deletes anything in an allowed folder. To work on a file, the assistant copies it into the chat's `files/` folder.
 - Folder paths are not written to the audit log or the server logs, only ids and labels.
 
-## Notifications: Hearthkeep's only outgoing connection
+## Notifications
 
 When a file or summary is sent to your devices, Hearthkeep can nudge a device that opted in with a web push notification. This is the only notification connection, and it carries no content. (GitHub, once you turn it on, is the other outgoing connection: see [GitHub](#github).)
 

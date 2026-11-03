@@ -1,6 +1,6 @@
 """Payload-free web push to the owner's devices.
 
-Hearthkeep's only outgoing connection of its own: one HTTPS POST with an empty body to the
+Hearthkeep's push connection: one HTTPS POST with an empty body to the
 push service a browser gave us. Nothing is encrypted because nothing is sent; the device's
 service worker shows a fixed notice. Endpoints are checked against an allow-list when a device
 subscribes and again before every send. The endpoint URL (it carries the device's token) is
