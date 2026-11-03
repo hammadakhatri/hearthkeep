@@ -19,6 +19,15 @@ export type Addon = {
 
 export type AddonsResponse = { addons: Addon[]; checked_at: string | null }
 
+const CHAT_BLOCKING = new Set(['not_set_up', 'offline', 'error'])
+
+/** Whether the chat add-on stops anything being sent through chat: only when it is known and
+ *  not set up, offline or in error. A model that is loading ("starting") is a notice, never a
+ *  block, and unknown (null) never blocks. */
+export function chatBlocks(addon: Addon | null): boolean {
+  return addon !== null && addon.id === 'chat' && CHAT_BLOCKING.has(addon.state)
+}
+
 export function getAddons(): Promise<AddonsResponse> {
   return api<AddonsResponse>('/api/addons')
 }

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { chatBlocks, type Addon } from '../api/addons'
 import { api, isApiError, post } from '../api/client'
 import { subscribeTurn, type AgentEvent } from '../api/events'
 import { ImageGrid, Thumb, type GridImage } from '../components/ImageGrid'
@@ -56,6 +57,21 @@ export type ImageRecord = {
 
 type Run = { prompt: string; model: string | null; shape: Shape; count: number; item: AssistantItem }
 type Live = { chatId: string; turnId: string }
+
+/** The server's Images "not set up" card (addons.py), shown when the add-ons aren't known yet
+ *  and there are no image cards: the form would have nothing to make pictures with. */
+const IMAGES_NOT_SET_UP: Addon = {
+  id: 'images',
+  name: 'Images',
+  about: 'Create and edit images on this PC.',
+  requires: 'ComfyUI and at least one image model.',
+  state: 'not_set_up',
+  ready: false,
+  message: "ComfyUI and an image model aren't set up on this PC.",
+  action: 'install',
+  short: 'Needs Images',
+  details: {},
+}
 
 /**
  * The chat message that asks for images: "Create 4 image(s), shape square, using FLUX: …",
@@ -159,14 +175,16 @@ export function Images() {
   const ids = { shape: useId(), count: useId(), text: useId(), photoWhy: useId() }
   const attach = usePhoto()
   const images = useAddon('images')
-  // Known and not ready: one panel replaces the form. Unknown never gates.
-  // Pictures are made by posting into a chat, so the chat model has to be usable too.
   const chat = useAddon('chat')
-  const blockedBy = images !== null && !images.ready ? images : chat !== null && !chat.ready ? chat : null
-  const needsSetUp = blockedBy !== null
-
   const cards = models.state === 'ready' ? models.cards : []
   const notSetUp = models.state === 'none'
+  // Known and not ready: one panel replaces the form. Unknown add-ons never gate a setup that
+  // has image cards; with none at all the form couldn't work, so the Images panel shows.
+  const imagesBlock = images !== null ? (images.ready ? null : images) : notSetUp ? IMAGES_NOT_SET_UP : null
+  // Pictures are made by posting into a chat, so the chat model has to be usable too (one
+  // that is only loading is).
+  const blockedBy = imagesBlock ?? (chat !== null && chatBlocks(chat) ? chat : null)
+  const needsSetUp = blockedBy !== null
   const busy = sending || live !== null
   // The first card that can edit photos is the one a photo is edited with.
   const editor = cards.find((c) => c.capabilities?.includes(IMAGE_EDIT)) ?? null

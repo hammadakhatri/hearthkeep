@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { chatBlocks } from '../api/addons'
 import { api, isApiError, post } from '../api/client'
 import { subscribeTurn, type AgentEvent, type ApprovalStatus } from '../api/events'
 import { isPhotoFile, listChatFiles, attachedFileLine, splitAttachments, type ChatFileInfo } from '../api/files'
@@ -140,9 +141,7 @@ export function Chat({
   const openSettings = useOpenSettings()
   // Unknown add-ons never block: the composer behaves as it did before add-ons.
   const blocked =
-    chat && (chat.state === 'not_set_up' || chat.state === 'offline' || chat.state === 'error')
-      ? { message: chat.message, onSetUp: () => openSettings('addon-chat') }
-      : null
+    chat && chatBlocks(chat) ? { message: chat.message, onSetUp: () => openSettings('addon-chat') } : null
   const loadingModel = chat !== null && (chat.state === 'starting' || chat.details.loaded === false)
 
   const learnFiles = useCallback(async (chatId: string) => {
