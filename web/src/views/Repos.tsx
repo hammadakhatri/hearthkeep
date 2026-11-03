@@ -15,7 +15,7 @@ import {
   type RunStatus,
   type RunSummary,
 } from '../api/github'
-import { passkeyErrorMessage } from '../api/webauthn'
+import { PASSKEY_NOT_CONFIRMED, passkeyErrorMessage } from '../api/webauthn'
 import { ConfirmDelete } from '../components/ConfirmDelete'
 import { relativeTime } from '../components/DevicesPanel'
 import { SetUpPanel } from '../components/SetUpPanel'
@@ -54,7 +54,7 @@ function failure(error: unknown, action: string): string {
   }
   if (isApiError(error, 'no_token')) return 'Connect GitHub in Settings first.'
   if (isApiError(error, 'network')) return "Can't reach Hearthkeep. Try again in a moment."
-  if (isApiError(error, 'step_up_required')) return "Your passkey couldn't be confirmed. Try again."
+  if (isApiError(error, 'step_up_required')) return PASSKEY_NOT_CONFIRMED
   if (isApiError(error, 'unavailable')) return 'GitHub is not available on this computer.'
   if (isApiError(error)) return serverMessage(error) ?? `${action} didn't work. Try again.`
   return passkeyErrorMessage(error, action)

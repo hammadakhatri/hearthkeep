@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useState, type FormEvent } from 'react'
 import { isApiError } from '../api/client'
 import { getGitHub, removeToken, saveToken, type GitHubState } from '../api/github'
-import { passkeyErrorMessage } from '../api/webauthn'
+import { PASSKEY_NOT_CONFIRMED, passkeyErrorMessage } from '../api/webauthn'
 import { useOpenSettings } from '../shell/AddonsContext'
 import { AlertIcon, PasskeyIcon } from '../shell/icons'
 
@@ -24,7 +24,7 @@ export function tokenErrorMessage(error: unknown, action: string): string {
   }
   if (isApiError(error, 'secrets_unreadable')) return serverMessage(error) ?? "Hearthkeep couldn't use its stored secrets."
   if (isApiError(error, 'network')) return "Can't reach Hearthkeep. Try again in a moment."
-  if (isApiError(error, 'step_up_required')) return "Your passkey couldn't be confirmed. Try again."
+  if (isApiError(error, 'step_up_required')) return PASSKEY_NOT_CONFIRMED
   if (isApiError(error)) return `${action} didn't work. Try again.`
   return passkeyErrorMessage(error, action)
 }

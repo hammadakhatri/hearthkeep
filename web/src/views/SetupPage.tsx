@@ -23,9 +23,10 @@ type Props = {
 /** `/setup`: the first passkey, made with the secret from the setup link. */
 export function SetupPage({ onLeave, retryMs = BUSY_RETRY_MS }: Props) {
   // Read once: reading clears it from the address bar, so a second read would find nothing.
-  const secretRef = useRef<{ value: string | null } | null>(null)
-  if (secretRef.current === null) secretRef.current = { value: readSetupSecret() }
-  const secret = secretRef.current.value
+  const firstRead = useRef<{ value: string | null } | null>(null)
+  if (firstRead.current === null) firstRead.current = { value: readSetupSecret() }
+  // Held in memory only, never rendered. A setup link opened again in this tab replaces it.
+  const [secret, setSecret] = useState(firstRead.current.value)
 
   const [stage, setStage] = useState<Stage>(secret ? 'checking' : 'no-secret')
   const [busyRetry, setBusyRetry] = useState(false)
@@ -41,6 +42,19 @@ export function SetupPage({ onLeave, retryMs = BUSY_RETRY_MS }: Props) {
     return () => {
       alive.current = false
     }
+  }, [])
+
+  // A setup link opened in this tab again only changes the fragment: take it, clear it, check it.
+  useEffect(() => {
+    const onHash = () => {
+      const next = readSetupSecret()
+      if (!next) return
+      setSecret(next)
+      setError(null)
+      setAttempt((n) => n + 1)
+    }
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
   }, [])
 
   /** `call`, asked again after a pause while the server says it is busy (429). */

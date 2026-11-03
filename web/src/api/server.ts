@@ -13,9 +13,13 @@ export type ServerInfo = {
   restart_reasons: string[]
 }
 
-export function getServer(): Promise<ServerInfo> {
-  return api<ServerInfo>('/api/server')
+export function getServer(signal?: AbortSignal): Promise<ServerInfo> {
+  return api<ServerInfo>('/api/server', { signal })
 }
+
+/** Whether the owner stopped Hearthkeep from this page. Kept for the page's life, so Settings
+ *  still says so after the owner leaves it and comes back, when the server can't answer. */
+export const serverSession = { stopped: false }
 
 /** Needs a step-up token (purpose `server`). 409 `not_supervised` when nothing would start it again. */
 export function restartServer(token: string): Promise<{ ok: true }> {
@@ -27,15 +31,19 @@ export function stopServer(token: string): Promise<{ ok: true }> {
   return api('/api/server/stop', post({ step_up_token: token }))
 }
 
-type WaitOptions = { timeoutMs?: number; intervalMs?: number }
+export type WaitOptions = { timeoutMs?: number; intervalMs?: number }
 
 /** Ask `check` until it says yes or the time is up. A failed ask (the server is between
- *  processes) is a no, never the end. */
-async function waitUntil(check: () => Promise<boolean>, { timeoutMs = 60_000, intervalMs = 1000 }: WaitOptions) {
+ *  processes) is a no, never the end, and each ask has its own time limit, so one that hangs
+ *  can't keep the wait going forever. */
+async function waitUntil(
+  check: (signal: AbortSignal) => Promise<boolean>,
+  { timeoutMs = 60_000, intervalMs = 1000 }: WaitOptions,
+) {
   const deadline = Date.now() + timeoutMs
   for (;;) {
     try {
-      if (await check()) return true
+      if (await check(AbortSignal.timeout(intervalMs * 3))) return true
     } catch {
       // Down for a moment while it restarts or hands over: ask again.
     }
@@ -46,12 +54,15 @@ async function waitUntil(check: () => Promise<boolean>, { timeoutMs = 60_000, in
 
 /** True once the server answers with another `started_at` than `previous`. */
 export function waitForRestart(previous: string, options: WaitOptions = {}): Promise<boolean> {
-  return waitUntil(async () => (await getServer()).started_at !== previous, options)
+  return waitUntil(async (signal) => (await getServer(signal)).started_at !== previous, options)
 }
 
 /** True once `/api/health` answers from the real server, out of setup mode. */
 export function waitForSetupDone(options: WaitOptions = {}): Promise<boolean> {
-  return waitUntil(async () => (await api<{ setup_mode?: boolean }>('/api/health')).setup_mode === false, options)
+  return waitUntil(
+    async (signal) => (await api<{ setup_mode?: boolean }>('/api/health', { signal })).setup_mode === false,
+    options,
+  )
 }
 
 /** Page loads, behind one object so tests can watch them (jsdom's `location` can't be stubbed). */

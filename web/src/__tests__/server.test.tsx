@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { page, waitForRestart, waitForSetupDone } from '../api/server'
+import { page, serverSession, waitForRestart, waitForSetupDone } from '../api/server'
 import { stepUp } from '../api/webauthn'
+import { ServerProvider } from '../components/RestartNotice'
 import { ServerPanel } from '../components/ServerPanel'
 import { UpdateNote } from '../components/UpdateNote'
 import { renderWithAddons } from '../test/addons'
@@ -16,12 +17,14 @@ vi.mock('../api/webauthn', async (importOriginal) => ({
 
 const NEEDED = 'A change needs Hearthkeep to restart.'
 const LATER = '2026-11-04T09:30:00+00:00'
+const STOPPED = 'Hearthkeep has stopped. Open it again from the Start menu on the PC.'
 
 let reload: ReturnType<typeof vi.spyOn>
 
 beforeEach(() => {
   vi.mocked(stepUp).mockReset().mockResolvedValue('step-token')
   reload = vi.spyOn(page, 'reload').mockImplementation(() => {})
+  serverSession.stopped = false
 })
 
 afterEach(() => {
@@ -157,6 +160,86 @@ describe('Settings › General', () => {
     expect(reload).not.toHaveBeenCalled()
   })
 
+  it('a restart that never comes back says so, and the buttons work again', async () => {
+    mockFetch({
+      'GET /api/server': serverInfo(),
+      'POST /api/server/restart': { status: 202, body: { ok: true } },
+    })
+    render(
+      <ServerProvider wait={{ timeoutMs: 30, intervalMs: 5 }}>
+        <ServerPanel />
+      </ServerProvider>,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: 'Restart Hearthkeep' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      "Hearthkeep didn't come back. Open it from the Start menu on the PC.",
+    )
+    expect(reload).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Restart Hearthkeep' })).not.toHaveAttribute('aria-busy')
+    expect(screen.getByRole('button', { name: 'Stop Hearthkeep' })).toBeEnabled()
+  })
+
+  it('after a stop the focus moves to General and the message is announced', async () => {
+    mockFetch({
+      'GET /api/server': serverInfo(),
+      'POST /api/server/stop': { status: 202, body: { ok: true } },
+    })
+    render(<ServerPanel />)
+    await screen.findByText('Version 0.3.0')
+    const section = document.getElementById('settings-general')!
+    const live = section.querySelector(':scope > [role="status"]') as HTMLElement
+    expect(live).toHaveAttribute('aria-live', 'polite')
+    expect(live).toHaveTextContent('')
+    fireEvent.click(screen.getByRole('button', { name: 'Stop Hearthkeep' }))
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Stop' }))
+    await waitFor(() => expect(live).toHaveTextContent(STOPPED))
+    expect(section.querySelector(':scope > [role="status"]')).toBe(live)
+    await waitFor(() => expect(section).toHaveFocus())
+  })
+
+  it('stopped stays said after leaving Settings and coming back', async () => {
+    settingsRoutes({
+      'GET /api/server': serverInfo(),
+      'POST /api/server/stop': { status: 202, body: { ok: true } },
+    })
+    const first = render(<Settings />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop Hearthkeep' }))
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Stop' }))
+    await screen.findByText(STOPPED)
+    first.unmount()
+
+    // The server is gone now: the page still says why, with nothing to press.
+    settingsRoutes({ 'GET /api/server': () => Promise.reject(new TypeError('Failed to fetch')) })
+    render(<Settings />)
+    expect(await screen.findByText(STOPPED)).toBeInTheDocument()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(screen.queryByText("Couldn't check Hearthkeep's version.")).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Stop Hearthkeep' })).toBeNull()
+  })
+
+  it('Settings asks the server once for both panels', async () => {
+    const { calls } = settingsRoutes({ 'GET /api/server': serverInfo({ restart_needed: true }) })
+    render(<Settings />)
+    await waitFor(() => expect(screen.getAllByText(NEEDED)).toHaveLength(2))
+    expect(calls.filter((c) => c.path === '/api/server')).toHaveLength(1)
+  })
+
+  it('a restart from Add-ons shows its error there only', async () => {
+    settingsRoutes({
+      'GET /api/server': serverInfo({ restart_needed: true }),
+      'POST /api/server/restart': { status: 403, body: { reason: 'step_up_required' } },
+    })
+    const { container } = render(<Settings />)
+    await waitFor(() => expect(screen.getAllByText(NEEDED)).toHaveLength(2))
+    const addons = container.querySelector('#settings-addons') as HTMLElement
+    fireEvent.click(within(addons).getByRole('button', { name: 'Restart now' }))
+    await waitFor(() =>
+      expect(within(addons).getByText("Your passkey couldn't be confirmed. Try again.")).toBeInTheDocument(),
+    )
+    const general = container.querySelector('#settings-general') as HTMLElement
+    expect(within(general).queryByText("Your passkey couldn't be confirmed. Try again.")).toBeNull()
+  })
+
   it('Settings can be opened at General', async () => {
     settingsRoutes({ 'GET /api/server': serverInfo() })
     render(<Settings focus="settings-general" />)
@@ -197,6 +280,28 @@ describe('waiting for the server', () => {
     expect(await waitForRestart('x', { timeoutMs: 30, intervalMs: 5 })).toBe(false)
   })
 
+  it('a check that hangs is given up on, and the wait goes on', async () => {
+    let asked = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_input: RequestInfo | URL, init: RequestInit = {}) => {
+        asked += 1
+        if (asked === 1) {
+          return new Promise((_resolve, reject) => {
+            init.signal?.addEventListener('abort', () => reject(init.signal?.reason))
+          })
+        }
+        return Promise.resolve(
+          new Response(JSON.stringify({ status: 'ok', setup_mode: false }), {
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        )
+      }),
+    )
+    expect(await waitForSetupDone({ timeoutMs: 2000, intervalMs: 10 })).toBe(true)
+    expect(asked).toBe(2)
+  })
+
   it('waitForSetupDone waits through the hand-over to the real server', async () => {
     let asked = 0
     mockFetch({
@@ -228,7 +333,7 @@ describe('Update note', () => {
       'POST /api/update-note/dismiss': { body: { ok: true } },
     })
     const { openSettings, container } = renderWithAddons(<UpdateNote />, [])
-    const section = await screen.findByRole('status', { name: 'Hearthkeep was updated' })
+    const section = await screen.findByRole('region', { name: 'Hearthkeep was updated' })
     expect(within(section).getByText(note.items[0].text)).toBeInTheDocument()
     expect(within(section).getByText(note.items[1].text)).toBeInTheDocument()
     const open = within(section).getAllByRole('button', { name: 'Open Settings › Add-ons' })
@@ -239,7 +344,7 @@ describe('Update note', () => {
     expect(forbiddenIn(container.textContent ?? '')).toEqual([])
 
     fireEvent.click(within(section).getByRole('button', { name: 'Got it' }))
-    await waitFor(() => expect(screen.queryByRole('status', { name: 'Hearthkeep was updated' })).toBeNull())
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Hearthkeep was updated' })).toBeNull())
     const dismiss = calls.find((c) => c.path === '/api/update-note/dismiss')!
     expect(dismiss.init.method).toBe('POST')
     expect(headerOf(dismiss, 'X-Hearthkeep')).toBe('1')
@@ -248,7 +353,7 @@ describe('Update note', () => {
   it('update note with no items says nothing needs you', async () => {
     mockFetch({ 'GET /api/update-note': { body: { note: { version: '0.3.0', items: [] } } } })
     renderWithAddons(<UpdateNote />, [])
-    const section = await screen.findByRole('status', { name: 'Hearthkeep was updated' })
+    const section = await screen.findByRole('region', { name: 'Hearthkeep was updated' })
     expect(within(section).getByText('Nothing needs you.')).toBeInTheDocument()
     expect(within(section).queryByRole('button', { name: 'Open Settings › Add-ons' })).toBeNull()
   })

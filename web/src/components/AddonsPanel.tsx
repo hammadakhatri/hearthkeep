@@ -88,7 +88,7 @@ function AddonsView({ state, onNavigate, onLoaded }: Props & { state: AddonsStat
           Check again
         </button>
       </div>
-      <RestartNotice />
+      <RestartNotice place="addons" />
       <p className="settings-lede">What Hearthkeep can use on this PC, and what each part still needs.</p>
       <p className="settings-lede" role="status" aria-live="polite">
         {checked ? 'Checked just now' : ''}

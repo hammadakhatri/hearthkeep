@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { isApiError } from '../api/client'
-import { getServer, page, restartServer, waitForRestart, type ServerInfo } from '../api/server'
-import { passkeyErrorMessage, stepUp } from '../api/webauthn'
+import { getServer, page, restartServer, serverSession, waitForRestart, type ServerInfo, type WaitOptions } from '../api/server'
+import { PASSKEY_NOT_CONFIRMED, passkeyErrorMessage, stepUp } from '../api/webauthn'
 import { AlertIcon, InfoIcon } from '../shell/icons'
 
 /** A plain sentence for anything a restart or a stop can throw (passkey or server). */
@@ -9,12 +9,12 @@ export function serverErrorMessage(error: unknown, action: 'Restart' | 'Stop'): 
   if (isApiError(error, 'not_supervised')) {
     return "Hearthkeep can't restart itself here. Stop it, then open it from the Start menu."
   }
-  if (isApiError(error, 'step_up_required')) return "Your passkey couldn't be confirmed. Try again."
+  if (isApiError(error, 'step_up_required')) return PASSKEY_NOT_CONFIRMED
   return passkeyErrorMessage(error, action)
 }
 
 /** What the server says about itself, loaded once. `failed` when it couldn't be asked. */
-export function useServerInfo(): { info: ServerInfo | null; failed: boolean } {
+function useServerInfo(): { info: ServerInfo | null; failed: boolean } {
   const [info, setInfo] = useState<ServerInfo | null>(null)
   const [failed, setFailed] = useState(false)
   useEffect(() => {
@@ -29,12 +29,21 @@ export function useServerInfo(): { info: ServerInfo | null; failed: boolean } {
   return { info, failed }
 }
 
-export type Restart = { restarting: boolean; error: string | null; restart(): Promise<void> }
+/** Where a restart was asked for, so only that place shows its progress and errors. */
+export type RestartPlace = 'addons' | 'general'
+
+export type Restart = {
+  restarting: boolean
+  error: string | null
+  place: RestartPlace | null
+  restart(place: RestartPlace): Promise<void>
+}
 
 /** Restart with the passkey, wait for the server to come back, then load the app afresh. */
-export function useRestart(info: ServerInfo | null): Restart {
+function useRestart(info: ServerInfo | null, wait?: WaitOptions): Restart {
   const [restarting, setRestarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [place, setPlace] = useState<RestartPlace | null>(null)
   const alive = useRef(true)
   const busy = useRef(false)
 
@@ -45,15 +54,16 @@ export function useRestart(info: ServerInfo | null): Restart {
     }
   }, [])
 
-  const restart = useCallback(async () => {
+  const restart = useCallback(async (from: RestartPlace) => {
     if (!info || busy.current) return
     busy.current = true
+    setPlace(from)
     setRestarting(true)
     setError(null)
     try {
       const token = await stepUp('server')
       await restartServer(token)
-      if (await waitForRestart(info.started_at)) {
+      if (await waitForRestart(info.started_at, wait)) {
         page.reload()
         return
       }
@@ -64,30 +74,48 @@ export function useRestart(info: ServerInfo | null): Restart {
       busy.current = false
     }
     if (alive.current) setRestarting(false)
-  }, [info])
+  }, [info, wait])
 
-  return { restarting, error, restart }
+  return useMemo(() => ({ restarting, error, place, restart }), [restarting, error, place, restart])
 }
 
-type Props = {
-  /** The server's state when the page already has it; otherwise the notice asks for it. */
-  info?: ServerInfo | null
-  /** A restart the page shares (and shows the errors of); otherwise the notice has its own. */
-  restart?: Restart
+export type ServerState = {
+  info: ServerInfo | null
+  failed: boolean
+  restart: Restart
+  /** Stopped from this page; stays so for the page's life. */
+  stopped: boolean
+  markStopped(): void
+}
+
+const ServerContext = createContext<ServerState | null>(null)
+
+/** One ask of the server and one restart for everything in Settings that shows them. */
+export function ServerProvider({ wait, children }: { wait?: WaitOptions; children: ReactNode }) {
+  const { info, failed } = useServerInfo()
+  const restart = useRestart(info, wait)
+  const [stopped, setStopped] = useState(serverSession.stopped)
+  const markStopped = useCallback(() => {
+    serverSession.stopped = true
+    setStopped(true)
+  }, [])
+  const value = useMemo(
+    () => ({ info, failed, restart, stopped, markStopped }),
+    [info, failed, restart, stopped, markStopped],
+  )
+  return <ServerContext.Provider value={value}>{children}</ServerContext.Provider>
+}
+
+/** The shared server state, or null outside a `ServerProvider`. */
+export function useServer(): ServerState | null {
+  return useContext(ServerContext)
 }
 
 /** "A change needs Hearthkeep to restart", with a button, only when one is needed and possible. */
-export function RestartNotice({ info, restart }: Props) {
-  return info === undefined ? <OwnNotice /> : <NoticeWith info={info} restart={restart} />
-}
-
-function OwnNotice() {
-  return <NoticeWith info={useServerInfo().info} />
-}
-
-function NoticeWith({ info, restart }: { info: ServerInfo | null; restart?: Restart }) {
-  const own = useRestart(info)
-  const action = restart ?? own
+export function RestartNotice({ place }: { place: RestartPlace }) {
+  const server = useServer()
+  if (!server || server.stopped) return null
+  const { info, restart } = server
   if (!info?.restart_needed || !info.supervised) return null
   return (
     <div className="restart-notice">
@@ -99,27 +127,29 @@ function NoticeWith({ info, restart }: { info: ServerInfo | null; restart?: Rest
         <button
           type="button"
           className="btn"
-          aria-busy={action.restarting || undefined}
+          aria-busy={restart.restarting || undefined}
           onClick={() => {
-            if (!action.restarting) void action.restart()
+            if (!restart.restarting) void restart.restart(place)
           }}
         >
           Restart now
         </button>
       </div>
-      {!restart && <RestartStatus restart={own} />}
+      {place === 'addons' && <RestartStatus restart={restart} place={place} />}
     </div>
   )
 }
 
-/** "Restarting…" for screen readers too, and why a restart didn't work. */
-export function RestartStatus({ restart }: { restart: Restart }) {
+/** "Restarting…" for screen readers too, and why a restart didn't work, for a restart asked for
+ *  at `place`. */
+export function RestartStatus({ restart, place }: { restart: Restart; place: RestartPlace }) {
+  const here = restart.place === place
   return (
     <>
       <p className="settings-lede" role="status" aria-live="polite">
-        {restart.restarting ? 'Restarting Hearthkeep…' : ''}
+        {here && restart.restarting ? 'Restarting Hearthkeep…' : ''}
       </p>
-      {restart.error && (
+      {here && restart.error && (
         <div className="note error" role="alert">
           <AlertIcon />
           <span>{restart.error}</span>

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import { api, isApiError, post } from '../api/client'
-import { passkeyErrorMessage, stepUp, type Device } from '../api/webauthn'
+import { PASSKEY_NOT_CONFIRMED, passkeyErrorMessage, stepUp, type Device } from '../api/webauthn'
 import { AlertIcon, InfoIcon, PasskeyIcon } from '../shell/icons'
 import { QrCode } from './QrCode'
 
@@ -36,7 +36,7 @@ export function relativeTime(iso: string, now = Date.now()): string {
 
 function failure(error: unknown, action: string): string {
   if (isApiError(error, 'network')) return "Can't reach Hearthkeep. Try again in a moment."
-  if (isApiError(error, 'step_up_required')) return "Your passkey couldn't be confirmed. Try again."
+  if (isApiError(error, 'step_up_required')) return PASSKEY_NOT_CONFIRMED
   if (isApiError(error, 'last_device')) return ONLY_DEVICE
   if (isApiError(error)) return `${action} didn't work. Try again.`
   return passkeyErrorMessage(error, action)

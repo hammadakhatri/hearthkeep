@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useState, type FormEvent } from 'react'
 import { api, isApiError, post } from '../api/client'
-import { passkeyErrorMessage, stepUp } from '../api/webauthn'
+import { PASSKEY_NOT_CONFIRMED, passkeyErrorMessage, stepUp } from '../api/webauthn'
 import { AlertIcon, FilesIcon, PasskeyIcon } from '../shell/icons'
 
 type Folder = { id: string; label: string; path: string }
@@ -14,7 +14,7 @@ function failure(error: unknown, action: string): string {
     return "Hearthkeep can't use that folder."
   }
   if (isApiError(error, 'network')) return "Can't reach Hearthkeep. Try again in a moment."
-  if (isApiError(error, 'step_up_required')) return "Your passkey couldn't be confirmed. Try again."
+  if (isApiError(error, 'step_up_required')) return PASSKEY_NOT_CONFIRMED
   if (isApiError(error)) return `${action} didn't work. Try again.`
   return passkeyErrorMessage(error, action)
 }

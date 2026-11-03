@@ -100,10 +100,13 @@ export async function stepUp(purpose: StepUpPurpose, approvalId?: string, target
   return result.step_up_token
 }
 
+/** The one sentence for a passkey the server didn't accept (sign-in, setup or a step-up). */
+export const PASSKEY_NOT_CONFIRMED = "Your passkey couldn't be confirmed. Try again."
+
 const REASONS: Record<string, string> = {
   rate_limited: 'Too many attempts. Wait a minute and try again.',
   invalid_code: "That code didn't work. Codes work once and expire after 15 minutes.",
-  verification_failed: "Your passkey couldn't be confirmed. Try again.",
+  verification_failed: PASSKEY_NOT_CONFIRMED,
   challenge_invalid: 'That took too long. Try again.',
   credential_exists: 'This passkey is already set up. Sign in instead.',
   network: "Can't reach Hearthkeep. Check that it's running on your computer.",

@@ -5,6 +5,7 @@ import { DevicesPanel } from '../components/DevicesPanel'
 import { FoldersPanel } from '../components/FoldersPanel'
 import { GitHubPanel } from '../components/GitHubPanel'
 import { NotificationToggle } from '../components/NotificationToggle'
+import { ServerProvider } from '../components/RestartNotice'
 import { ServerPanel } from '../components/ServerPanel'
 import { useAddonsState, type SettingsAnchor } from '../shell/AddonsContext'
 import { AlertIcon, CopyIcon } from '../shell/icons'
@@ -120,17 +121,20 @@ export function Settings({ focus, onFocused }: Props = {}) {
   }, [target, addonsLoaded, onFocused])
 
   return (
-    <div className="settings">
-      <AddonsPanel onNavigate={inShell ? undefined : setOwn} onLoaded={onLoaded} />
-      <DevicesPanel />
-      <FoldersPanel />
-      <GitHubPanel />
-      <section className="settings-section" aria-labelledby={notifyId}>
-        <h2 id={notifyId}>Notifications</h2>
-        <NotificationToggle />
-      </section>
-      <StartupPanel />
-      <ServerPanel />
-    </div>
+    // One ask of the server for the restart notice in Add-ons and the General section.
+    <ServerProvider>
+      <div className="settings">
+        <AddonsPanel onNavigate={inShell ? undefined : setOwn} onLoaded={onLoaded} />
+        <DevicesPanel />
+        <FoldersPanel />
+        <GitHubPanel />
+        <section className="settings-section" aria-labelledby={notifyId}>
+          <h2 id={notifyId}>Notifications</h2>
+          <NotificationToggle />
+        </section>
+        <StartupPanel />
+        <ServerPanel />
+      </div>
+    </ServerProvider>
   )
 }

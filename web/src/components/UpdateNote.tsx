@@ -35,7 +35,7 @@ export function UpdateNote() {
 
   if (!note) return null
   return (
-    <section className="update-note" role="status" aria-labelledby={titleId}>
+    <section className="update-note" aria-labelledby={titleId}>
       <h2 id={titleId}>Hearthkeep was updated</h2>
       {note.items.length === 0 ? (
         <p>Nothing needs you.</p>
