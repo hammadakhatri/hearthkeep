@@ -1,6 +1,6 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
-title Hearthkeep setup
+title Setting up Hearthkeep
 cd /d "%~dp0" || goto end
 rem When UV_VERSION changes, recompute UV_INSTALLER_SHA256 from the downloaded file: Invoke-WebRequest -OutFile, then Get-FileHash.
 set "UV_VERSION=0.13.0"
@@ -19,7 +19,7 @@ echo Installing uv for your Windows account. No admin rights are needed.
 if errorlevel 3 if not errorlevel 4 (echo The uv installer didn't match its expected checksum, so it was not run. Try again later. & goto end)
 if not exist "%UV_EXE%" (echo uv couldn't be installed. Check your internet connection, then double-click Setup.cmd again. & goto end)
 :run
-"%UV_EXE%" run --project server hearthkeep setup
+"%UV_EXE%" run --locked --no-dev --project server hearthkeep setup
 :end
 echo.
 echo Press any key to close this window.

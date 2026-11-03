@@ -31,7 +31,9 @@ def test_setup_cmd_pins_and_checks_the_uv_installer():
 
 def test_setup_cmd_runs_setup_and_keeps_the_window_open():
     text = CMD.read_text()
-    assert '"%UV_EXE%" run --project server hearthkeep setup' in text
+    # --locked: run exactly the committed uv.lock, never a newly resolved set of packages;
+    # --no-dev: an owner's PC gets no test tools.
+    assert '"%UV_EXE%" run --locked --no-dev --project server hearthkeep setup' in text
     assert text.rstrip().endswith("pause >nul")
     assert "Press any key to close this window." in text
 
@@ -69,7 +71,10 @@ def test_setup_cmd_stops_when_uv_is_still_missing():
 
 
 def test_setup_cmd_console_text_follows_the_copy_rules():
-    said = re.findall(r"\becho ([^&)\r\n]+)", CMD.read_text())
+    titles = re.findall(r"^title (.+)$", CMD.read_text(), re.M)
+    # The window title is owner copy too, and must not read like the CLI command.
+    assert titles == ["Setting up Hearthkeep"]
+    said = titles + re.findall(r"\becho ([^&)\r\n]+)", CMD.read_text())
     assert len(said) >= 5
     for text in said:
         assert text.isascii(), text
