@@ -577,7 +577,7 @@ The first start after an update brings an existing install up to date, once:
 - on Windows, it makes the Start menu shortcut;
 - on any system, it removes saved tool levels for tools that never shipped (`wallet`, `news`, `demo`).
 
-Your config files, model cards, passkeys and your other tool levels are not touched. If a step fails (start at login or the shortcut), Hearthkeep still starts, and tries again the next time it starts, up to three starts; after that the note keeps saying what still needs you. When you next open the app, a one-time "Hearthkeep was updated" note lists anything that still needs you, such as a sandbox that needs rebuilding. Dismiss it once you've read it.
+Your config files, model cards, passkeys and your other tool levels are not touched. If a step fails (start at login or the shortcut), Hearthkeep still starts, and tries again the next time it starts, up to three starts; after that it stops trying and the note keeps saying what still needs you. For start at login, check it in Settings › Add-ons. For the shortcut, double-click `Setup.cmd` again: it makes the shortcut and opens Hearthkeep. When you next open the app, a one-time "Hearthkeep was updated" note lists anything that still needs you, such as a sandbox that needs rebuilding. Dismiss it once you've read it.
 
 Compare `<repo>\config.example.toml` and `<repo>\models.example.toml` with your own copies for new settings.
 
