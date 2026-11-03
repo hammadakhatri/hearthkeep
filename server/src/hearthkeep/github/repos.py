@@ -9,7 +9,9 @@ Repo names are the owner's: errors raised here name no repo, and nothing here lo
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
+import re
 import shutil
 import sqlite3
 import stat
@@ -24,6 +26,11 @@ from hearthkeep.github.api import TOKEN_SECRET, GitHubClient, GitHubError
 from hearthkeep.github.git import GitError, GitRunner
 from hearthkeep.github.paths import check_repo_name
 from hearthkeep.secrets import SecretStore, SecretStoreError
+
+_log = logging.getLogger(__name__)
+_REPARSE_POINT = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT: junctions and other Windows links
+_REPO_FOLDER = re.compile(r"[A-Za-z0-9_-]{1,32}")  # a repo id, as the routes accept it
+_STAGING_FOLDER = re.compile(r"clone-[A-Za-z0-9_-]{1,32}")
 
 CLONE_TIMEOUT_S = 600.0
 FETCH_TIMEOUT_S = 300.0
@@ -72,18 +79,72 @@ def _row(row: sqlite3.Row) -> Repo:
     )
 
 
-def _remove_tree(path: Path) -> None:
-    """Remove a clone; git marks its object files read-only, which Windows won't delete."""
+def _is_link(path: Path) -> bool:
+    """A symlink or (Windows) reparse point; also when it can't be told."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return True
+    return stat.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0) & _REPARSE_POINT)
+
+
+def _remove_tree(path: Path) -> bool:
+    """Remove a clone (or a clone in progress); True once it is gone. Git marks its object
+    files read-only, which Windows won't delete, so those are made writable and retried. A
+    link is never walked into. What can't go now (a file held open, say) is left for
+    `sweep_repo_folders`; only the error type is logged, never the path."""
 
     def writable_then_retry(func, name, _exc) -> None:
         try:
             os.chmod(name, stat.S_IWRITE)
             func(name)
-        except OSError:
-            pass
+        except OSError as exc:
+            _log.warning("could not remove part of a repo folder: %s", type(exc).__name__)
 
-    if path.exists() or path.is_symlink():
-        shutil.rmtree(path, onexc=writable_then_retry)
+    if not os.path.lexists(path):
+        return True
+    if _is_link(path):
+        _log.warning("left in place: a repo folder that is a link")
+        return False
+    shutil.rmtree(path, onexc=writable_then_retry)
+    return not os.path.lexists(path)
+
+
+def _own_dir(folder: Path) -> bool:
+    """`folder` is a real directory, with no link on the way from the data folder."""
+    return folder.is_dir() and not _is_link(folder)
+
+
+def sweep_repo_folders(conn: sqlite3.Connection, data_dir: Path) -> int:
+    """Finish what a failed add or remove left on disk (run at startup, before any add can
+    be under way): every `runtime/clone-<id>` staging folder, and every
+    `workspace/repos/<id>` folder without a row. Never follows a link. Logs ids at most,
+    never names. Returns how many folders were removed."""
+    data_dir = Path(data_dir)
+    known = {r[0] for r in conn.execute("SELECT id FROM repos") if r[0]}
+    candidates: list[Path] = []
+    for parent, pattern in (
+        (data_dir / "workspace" / "repos", _REPO_FOLDER),
+        (data_dir / "runtime", _STAGING_FOLDER),
+    ):
+        if not _own_dir(parent.parent) or not _own_dir(parent):
+            continue
+        try:
+            with os.scandir(parent) as found:
+                names = sorted(entry.name for entry in found)
+        except OSError as exc:  # never stops Hearthkeep from starting
+            _log.warning("could not sweep repo folders: %s", type(exc).__name__)
+            continue
+        for name in names:
+            if pattern.fullmatch(name) and (pattern is _STAGING_FOLDER or name not in known):
+                candidates.append(parent / name)
+    removed = 0
+    for folder in candidates:
+        if _is_link(folder) or not folder.is_dir():
+            continue
+        if _remove_tree(folder):
+            removed += 1
+    return removed
 
 
 def _parse_status(text: str) -> RepoStatus:
@@ -215,7 +276,10 @@ class RepoStore:
             self.conn.execute("DELETE FROM repo_runs WHERE repo_id = ?", (repo.id,))
             self.conn.execute("DELETE FROM repo_deps WHERE repo_id = ?", (repo.id,))
             self.conn.execute("DELETE FROM repos WHERE id = ?", (repo.id,))
-        await asyncio.to_thread(_remove_tree, self.dir(repo))
+        # The row is gone either way; a folder that can't go now (a file held open) is
+        # finished by the next startup's sweep_repo_folders.
+        if not await asyncio.to_thread(_remove_tree, self.dir(repo)):
+            _log.warning("repo %s: folder left for the startup sweep", repo.id)
         return True
 
     async def fetch(self, repo: Repo) -> None:
