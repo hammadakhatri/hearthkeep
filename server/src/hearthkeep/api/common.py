@@ -26,6 +26,7 @@ from hearthkeep.config import LOOPBACK_HOSTS, Settings
 from hearthkeep.files.store import ChatFileStore
 from hearthkeep.folders import FolderStore
 from hearthkeep.github.api import GitHubClient
+from hearthkeep.github.repos import RepoStore
 from hearthkeep.images import ImageStore
 from hearthkeep.models.cards import CardError, ModelCard
 from hearthkeep.numbercheck import NumberChecker
@@ -148,6 +149,7 @@ class Services:
     sent: SentStore | None = None  # what was sent to each device
     secrets: SecretStore | None = None
     github: GitHubClient | None = None
+    repos: RepoStore | None = None  # the added GitHub repos and their clones
     health_cache: tuple[float, bool] | None = None
     health_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 

@@ -58,6 +58,8 @@ from hearthkeep.deletion import sweep_orphans
 from hearthkeep.files.store import ChatFileStore
 from hearthkeep.folders import FolderStore
 from hearthkeep.github.api import TOKEN_SECRET, GitHubClient
+from hearthkeep.github.git import GitRunner
+from hearthkeep.github.repos import RepoStore
 from hearthkeep.images import ImageStore
 from hearthkeep.numbercheck import NumberChecker
 from hearthkeep.push import PushSender, PushSubscriptions, VapidKeys
@@ -286,12 +288,14 @@ def create_app(
     sandbox: SandboxRunner | None = None,
     push_sender: PushSender | None = None,
     github_transport: httpx.AsyncBaseTransport | None = None,
+    git: GitRunner | None = None,
 ) -> FastAPI:
     """`sandbox`, when given (tests), is used as is; otherwise one is made when Docker is
     available. Without one the `python` tool is still offered and answers that Docker is
     needed: nothing ever runs on the host. `push_sender`, when given (tests: a fake, or one
     on a mock transport), is used instead of the real one, so tests never touch the network;
-    `github_transport` does the same for the GitHub client."""
+    `github_transport` does the same for the GitHub client, and `git` (a runner on a local
+    bare repo) for host git."""
     # The static files' types come from `mimetypes`, which on Windows reads the registry: a
     # .js mapped to text/plain there would stop the service worker from registering.
     mimetypes.add_type("text/javascript", ".js")
@@ -366,6 +370,8 @@ def create_app(
                 reply_checker=checker,
             )
             runner = TurnRunner(conn, loop)
+            github = GitHubClient(github_token, transport=github_transport)
+            git_runner = git or GitRunner(Path(settings.data_dir))
             sessions = SessionStore(conn, settings.session_idle_days, clock=clock)
             app.state.hk = Services(
                 settings=settings,
@@ -400,7 +406,8 @@ def create_app(
                 subscriptions=subscriptions,
                 sent=sent,
                 secrets=store,
-                github=GitHubClient(github_token, transport=github_transport),
+                github=github,
+                repos=RepoStore(conn, Path(settings.data_dir), git_runner, github, store),
             )
             yield
         finally:
