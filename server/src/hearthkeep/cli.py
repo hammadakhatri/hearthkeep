@@ -9,7 +9,9 @@ launcher if needed (the Start menu shortcut runs it)."""
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
+import functools
 import getpass
 import logging
 import os
@@ -52,6 +54,7 @@ from hearthkeep.runtime.supervisor import (
 from hearthkeep.sandbox import image as sandbox_image
 from hearthkeep.secrets import SecretStore, SecretStoreError
 from hearthkeep.setupmode import SetupMode, setup_url
+from hearthkeep.shortcut import SHORTCUT_FAILED
 from hearthkeep.upgrade import UpgradeReport, run_upgrade
 from hearthkeep.webbundle import ensure_web_bundle, release_version
 
@@ -94,10 +97,6 @@ PORT_BUSY = (
     "restart the PC, then double-click Setup.cmd again."
 )
 STOPPED_EARLY = "Setup stopped before it was finished. Double-click Setup.cmd to start again."
-SHORTCUT_FAILED = (
-    "The Start menu shortcut couldn't be made. You can still open Hearthkeep by "
-    "double-clicking Setup.cmd."
-)
 FINISHED = (
     "Setup is finished. Hearthkeep keeps running in the background; open it from the Start "
     "menu any time. You can close this window now."
@@ -557,6 +556,46 @@ def _install_shortcut(host: Host, data: Path) -> None:
         print(SHORTCUT_FAILED)
 
 
+def _task_data_folder(host: Host) -> Path | None:
+    """The data folder the start-at-login task runs, when it is a Hearthkeep data folder; None
+    when there is no task or it can't be read (the non-strict check: nothing here changes)."""
+    try:
+        state = host.startup_status(run=startup_run)
+    except Exception as exc:
+        log.warning("the start-at-login task couldn't be read: %s", type(exc).__name__)
+        return None
+    if not state.data_dir:
+        return None
+    folder = Path(state.data_dir)
+    return folder if _is_data_folder(folder) else None
+
+
+@contextlib.contextmanager
+def _quiet_logs():
+    """Keep Hearthkeep's own log lines out of the setup window: with no logging set up, a
+    warning would reach the console through logging.lastResort. Put back as it was after."""
+    logger = logging.getLogger("hearthkeep")
+    quiet = logging.NullHandler()
+    propagate = logger.propagate
+    logger.addHandler(quiet)
+    logger.propagate = False
+    try:
+        yield
+    finally:
+        logger.removeHandler(quiet)
+        logger.propagate = propagate
+
+
+def _in_quiet_window(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        with _quiet_logs():
+            return func(*args, **kwargs)
+
+    return wrapper
+
+
+@_in_quiet_window
 def cmd_setup(
     args: argparse.Namespace,
     *,
@@ -582,9 +621,13 @@ def cmd_setup(
         print(UNSUPPORTED_HOST)
         return EXIT_USAGE
 
-    # The folder: the one asked for, else the one setup recorded, else the default.
+    # The folder: the one asked for, else the one setup recorded, else the one start at login
+    # runs (an install whose record is gone), else the default.
     recorded = host.read_location()
-    data = Path(args.data) if args.data else (recorded or host.default_data_dir())
+    if args.data:
+        data = Path(args.data)
+    else:
+        data = recorded or _task_data_folder(host) or host.default_data_dir()
     # The folder rules are for a new folder. An existing Hearthkeep data folder skips all of
     # check_data_dir (controller ruling on C2): existing installs must keep working as they are.
     new_folder = not _is_data_folder(data)
@@ -594,7 +637,10 @@ def cmd_setup(
             print(problem)
             return 1
     data = data.resolve()
-    if new_folder:  # protected before anything is written in it (an existing one is kept)
+    # Protected before Hearthkeep writes anything in it. A folder that already has its
+    # database is an install in use and is kept as it is (C2); one with only a config.toml the
+    # owner made first (for Tailscale) holds nothing of theirs yet, so it is protected too.
+    if not (data / DB_FILE).exists():
         data.mkdir(parents=True, exist_ok=True)
         _protect_folder(host, data)
     program = program_folder()
@@ -718,7 +764,14 @@ def cmd_open(
     if data is None:
         print(NOT_SET_UP, file=sys.stderr)
         return 1
-    return launcher.open_app(_settings(Path(data)), host, open_url=open_url)
+    # Run under pythonw from the Start menu: no console, so nothing printed is ever seen. A
+    # problem is shown in a message box instead of being dropped.
+    try:
+        return launcher.open_app(_settings(Path(data)), host, open_url=open_url)
+    except Exception as exc:
+        log.warning("open failed: %s", type(exc).__name__)
+        launcher.show_message(launcher.LAUNCHER_NOT_READY)
+        return EXIT_USAGE
 
 
 def cmd_enroll_code(args: argparse.Namespace) -> int:

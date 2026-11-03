@@ -368,7 +368,7 @@ def test_note_copy_follows_the_rules(item):
 
 
 def test_shortcut_note_matches_what_setup_says():
-    assert NOTE_ITEMS["shortcut_failed"][0] == cli.SHORTCUT_FAILED
+    assert NOTE_ITEMS["shortcut_failed"][0] is cli.SHORTCUT_FAILED  # one string, not a copy
 
 
 def test_migration_10_adds_app_state(tmp_path):

@@ -572,6 +572,30 @@ def test_launch_and_open_use_the_recorded_location(tmp_path, monkeypatch):
     assert opened == ["http://localhost:8765"] and host.spawned == []
 
 
+@pytest.mark.parametrize("broken", ["config", "unexpected"])
+def test_open_with_a_broken_setup_shows_a_message_not_nothing(tmp_path, monkeypatch, broken):
+    """Under pythonw there is no console: a bad config.toml (or anything unexpected) is told
+    in a message box, never dropped."""
+    data = tmp_path / "data"
+    data.mkdir()
+    if broken == "config":
+        (data / "config.toml").write_text("port = 'not a number'\n", encoding="utf-8")
+    else:
+
+        def explode(*args, **kwargs):
+            raise RuntimeError("something unexpected")
+
+        monkeypatch.setattr(launcher, "open_app", explode)
+    shown = []
+    monkeypatch.setattr(launcher, "show_message", lambda text, **kw: shown.append(text))
+    host = RecordingHost(location=data)
+    opened = []
+    assert cli.cmd_open(cli.build_parser().parse_args(["open"]), host=host,
+                        open_url=opened.append) == EXIT_USAGE  # fmt: skip
+    assert shown == [launcher.LAUNCHER_NOT_READY]
+    assert opened == [] and host.spawned == []
+
+
 def test_open_and_launch_on_other_os_are_unsupported(tmp_path, monkeypatch, capsys):
     # The real resolver (conftest pins the CLI to UnsupportedHost): the OS check is under test.
     monkeypatch.setattr(cli, "current_host", host_module.current_host)

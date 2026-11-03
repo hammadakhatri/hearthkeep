@@ -50,6 +50,14 @@ def powershell_exe() -> str:
     return str(exe)
 
 
+# Said in the setup window and kept in the upgrade note when the shortcut can't be made.
+# Nothing retries a fresh install's shortcut, so it promises no retry (ruling C11).
+SHORTCUT_FAILED = (
+    "The Start menu shortcut couldn't be made. You can still open Hearthkeep by "
+    "double-clicking Setup.cmd."
+)
+
+
 def install_shortcut(data_dir: Path, *, run: Run = subprocess.run, pythonw: Path | None = None):
     """Make (or replace) the Start menu shortcut for this data folder."""
     data = str(data_dir)
