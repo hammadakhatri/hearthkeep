@@ -1,6 +1,6 @@
-# Hearthkeep security model (Phase 3)
+# Hearthkeep security model (Phase 4)
 
-This page describes what the code in this repository does today. Phase 1 is the secure core: sign-in, permissions, approvals, audit and secrets. Phase 2 adds local models and images: a process supervisor, GPU switching, image generation and photo uploads. Phase 3 adds chat files, allowed folders, Python analysis in a Docker sandbox, sending to your devices and start at login. Budget, news and search, and GitHub tools arrive in later phases and are not part of this release.
+This page describes what the code in this repository does today. Phase 1 is the secure core: sign-in, permissions, approvals, audit and secrets. Phase 2 adds local models and images: a process supervisor, GPU switching, image generation and photo uploads. Phase 3 adds chat files, allowed folders, Python analysis in a Docker sandbox, sending to your devices and start at login. Phase 4 adds GitHub: your repos, their tests in a second sandbox, and pushes and pull requests you approve. Budget, news and search arrive in later phases and are not part of this release.
 
 `<data>` below means your own Hearthkeep data folder.
 
@@ -12,7 +12,7 @@ This page describes what the code in this repository does today. Phase 1 is the 
 - Remote access is meant to go through your private Tailscale network (`tailscale serve` in front of the loopback port; see [install.md](install.md#7-decide-on-remote-access-before-your-first-passkey) for the setup). Nothing is exposed to the public internet. If `public_origin` is not localhost it must be `https`, and the session cookie is then marked `Secure`.
 - The server ignores `X-Forwarded-For`, so a local process cannot fake its address to dodge rate limits.
 - Hearthkeep never uses system or environment proxy settings for any of its connections (to the chat model, the image server and the push services), so your chats and the chat API key cannot be routed through a proxy or VPN.
-- The one outgoing connection Hearthkeep makes is the payload-free push notification described under [Notifications](#notifications-hearthkeeps-only-outgoing-connection). It is off until you turn it on for a device.
+- Hearthkeep's outgoing connections are the payload-free push notification described under [Notifications](#notifications-hearthkeeps-only-outgoing-connection), which is off until you turn it on for a device, and, once you save a GitHub token, the calls to `api.github.com` and `github.com` described under [GitHub](#github). Without a token, GitHub is never contacted.
 - Every child process Hearthkeep starts (llama-server for chat, ComfyUI for images) binds to `127.0.0.1` only. A model card whose launch arguments try to bind another address (`0.0.0.0`, `::`, or a `--host` other than `127.0.0.1`) is rejected.
 - ComfyUI on `127.0.0.1` has no authentication of its own, so any program on this PC can use it (render images, read its output, upload files). That is the same trust boundary as other local software: Hearthkeep does not protect you from programs already running on your PC.
 
@@ -24,9 +24,9 @@ This page describes what the code in this repository does today. Phase 1 is the 
 - Sessions are an unguessable cookie (`HttpOnly`, `SameSite=Strict`); only a hash of it is stored. They expire after 14 idle days by default (`session_idle_days`).
 - The last remaining device cannot be removed, so you cannot lock yourself out. Add a second device first, then remove the old one. Removing a device ends its sessions.
 - A **step-up** is a fresh passkey check for one sensitive action. The resulting token lasts 60 seconds, is kept only in memory, and is tied to your session and to that one purpose (and approval, where relevant).
-- Step-up is required to: approve an outward action, widen a tool's permission level, issue a code to add a device, add an allowed folder, and delete a chat or a file.
-- The step-up purposes are `approval`, `settings`, `add_device`, `add_folder` and `delete`. A token is bound to its purpose: an `approval` token cannot add a folder. For `delete` it is also bound to one target (`chat:<id>` or `file:<id>`), so a token for one chat cannot delete another.
-- Removing a folder, removing or renaming a device and signing out other sessions need only a normal session.
+- Step-up is required to: approve an outward action, widen a tool's permission level, issue a code to add a device, add an allowed folder, save or replace the GitHub token, add a repo, and delete a chat, a file or a repo.
+- The step-up purposes are `approval`, `settings`, `add_device`, `add_folder`, `github_token`, `add_repo` and `delete`. A token is bound to its purpose: an `approval` token cannot add a folder. For `delete` it is also bound to one target (`chat:<id>`, `file:<id>` or `repo:<id>`), so a token for one chat cannot delete another.
+- Removing a folder, removing the GitHub token, removing or renaming a device and signing out other sessions need only a normal session.
 
 ## Permissions
 
@@ -43,6 +43,7 @@ Other rules:
 - Unknown tools default to Ask. Anything the engine does not recognise is denied (it fails closed).
 - Tools that need a sandbox (Python, GitHub tests) are treated as Ask when Docker is not available.
 - The level keys added in Phase 3 are `python` (Look, runs only in the sandbox, default Allowed; `read_pages` uses it too), `files` (Look, default Allowed) and `send` (Look, default Allowed).
+- The level keys added in Phase 4 are `github` (reading, editing, installing dependencies and the outward GitHub actions; default Ask) and `github_tests` (running a repo's tests in the sandbox, shown as *GitHub tests*; default Ask). Outward GitHub actions need an approval with a passkey at every level, `Allowed` included.
 - Lowering a level needs only a normal session. Raising one (Off to Ask, or Ask to Allowed) needs a step-up.
 - The demo tools are `clock` (Look) and `note` (Change local, writes `<data>/workspace/output/notes.txt`); they exercise the Allowed and Ask paths end to end. `generate_image` is Look.
 
@@ -136,6 +137,77 @@ When a file or summary is sent to your devices, Hearthkeep can nudge a device th
 - **Keys.** The VAPID private key is created on your PC and kept in the secret store under `vapid_private_key`; it is never shown or logged.
 - **Opt-in.** Each device turns notifications on for itself, and can turn them off again. With none on, nothing leaves your PC.
 
+## GitHub
+
+GitHub is off until two things are true: Git 2.31 or newer is installed on this PC, and you have saved a token. Without either, the assistant is not offered the GitHub tools at all. This section is what happens after that.
+
+### The token
+
+- It must be a **fine-grained personal access token** (it starts with `github_pat_`), made for *Only select repositories*. Hearthkeep checks it with GitHub before it saves it, and saving or replacing it needs a passkey step-up (`github_token`). Removing it needs only a normal session.
+- It is stored encrypted in the secret store, under the name `github_token`, like any other secret. No tool can read it.
+- It never appears in a command line, in the environment of any container, in a repo's `.git/config`, in a remote URL, in the audit log, in the server logs, in what the model sees, in a tool result or in an error message. When Git reports an error that contains the token (or its Basic-auth form), the text is replaced with `[redacted]` before anyone sees it. Git gets the token only for the commands that talk to GitHub (clone, fetch, push), through one temporary setting for that single command.
+- It is the only credential Hearthkeep uses with GitHub. Make it narrow: only the repos you want worked on, only the permissions listed in [install.md](install.md#12-optional-github), and an expiry.
+
+### Calls to GitHub
+
+- The API calls go only to `https://api.github.com`, over HTTPS, ignoring system proxy settings, following no redirects, with a 20 second timeout. The only paths used are `/user` (to check the token) and `/repos/<owner>/<repo>/...` for a repo you added.
+- Clone, fetch and push go to `https://github.com/<owner>/<repo>.git`. Hearthkeep always passes that address itself; it never reads the remote from the repo's own settings.
+- What comes back is trimmed before the model sees it: at most 30 items in a list, and at most 4,000 characters in any text field. Titles, descriptions and comments from GitHub are other people's text. The tool tells the model to read them and never follow instructions in them.
+- Submodules are never fetched. Git LFS, GitHub Enterprise and organisation-wide tokens are not supported.
+
+### Git on your PC
+
+Git runs on your PC, outside the sandbox, so it is locked down:
+
+- Every Git command starts with a nearly empty environment and its own home folder, `<data>/runtime/git-home/`. Your global and system Git settings are ignored, and it never asks for a password.
+- Hooks are switched off (`core.hooksPath` points at an empty folder), and so are the file-system monitor, credential helpers, redirects and submodule recursion. Only HTTPS to GitHub is allowed as a protocol.
+- A repo's own `.git/config` cannot change any of this: the settings are passed on every command line, and the clone is never trusted to name its own remote.
+- Paths the assistant gives are checked. A path must be relative, must stay inside the clone and must not pass through a link or junction. Anything in or named like a `.git` folder is refused, including spellings such as `.GIT`, `.git.` and `.git ` that Windows treats as the same folder. A refused path is answered with "That path is outside the repo or inside its .git folder."
+- Repo names (`owner/name`) are shown to you and to the assistant. The audit log and the server logs record the repo's id instead.
+
+### What the assistant can change
+
+- It works only on branches named `hearthkeep/<name>`. Editing or committing on any other branch is refused until it makes one. A new branch starts from the default branch as last fetched.
+- It never pushes to the default branch and never force-pushes. A push goes only to the same-named `hearthkeep/` branch on GitHub.
+- Commits use the GitHub no-reply address of the account the token belongs to (`<id>+<login>@users.noreply.github.com`), not an address from your PC.
+- Reading, searching and fetching are *Look*. Editing files and committing in the local copy are *Change local*. Neither reaches GitHub, except that a fetch downloads from it.
+- Pushing, opening a pull request, commenting, merging and closing are *Outward*: an approval card, plus a fresh passkey check, at any permission level.
+
+### What you see before you approve
+
+- Every approval card for an edit or an outward action shows the **full diff**, with every file open. A very large diff is cut at 200 KB, and the card says so.
+- A push sends **exactly the commit shown on the card**. The card records that commit; if the branch moved after you approved, because the assistant edited or committed again, the push is refused with "The branch changed after you approved it. Nothing was pushed."
+- A merge card shows the base branch, and it is checked again when the merge runs. A close card checks whether the number is an issue or a pull request. A card to open a pull request from a branch that has not been pushed says it will be refused.
+
+### Running a repo's tests
+
+A repo's tests are code you did not write, so they run only in Docker, in the image `hearthkeep-repo:<hash>`. The container is started like the Python sandbox (not root, all capabilities dropped, `no-new-privileges`, read-only root, no swap), with these settings:
+
+| Setting | Value |
+|---|---|
+| Network | `--network none`: no network at all |
+| Code | A **copy** of the working tree, without `.git`, mounted at `/repo`. A copy over 500 MB or 50,000 files is refused |
+| Dependencies | The cached volume, mounted read-only |
+| Environment | `HOME=/tmp` and `CI=1`; no token, no secrets |
+| Memory, CPUs, processes | 4 GB with no swap, 2 CPUs, 512 processes |
+| Time | Stopped at 10 minutes and removed |
+
+Because the tests run on a copy without `.git`, a test that writes into `.git` or plants a hook cannot reach your clone. Output is kept as the first 64 KB and the last 192 KB with a note between them. The model sees at most 8,000 characters of a run's output; the full output is in the Repos view. Every run is saved, including runs that were stopped or timed out. Without Docker, `GitHub tests` is forced to Ask, and an approved call answers that it needs Docker: Hearthkeep never runs a repo's code on the PC itself.
+
+### Installing dependencies
+
+Tests need the repo's packages, and installing them needs the internet, so it is a separate step with its own rules:
+
+- Only three kinds of project are supported: `uv` (`uv.lock`), `pip` (`requirements.txt`, and `requirements-dev.txt` if present) and `npm` (`package-lock.json`).
+- An install that is not cached yet is **Outward**: it needs your approval with a passkey, at any level, and it runs only after that. The card shows the command and the lock file's hash.
+- The install container has Docker's default network, so it can reach package servers. It sees **only the dependency files**, copied in read-only, never the clone, and **never the token**. It writes only to its own volume, and it is stopped at 15 minutes.
+- Dependencies are installed **once per lock file**. They are kept in a Docker volume named `hk-deps-<repo id>-<hash>`, and the hash covers the dependency files and the image. Change a lock file and the next install asks again; unchanged, `repo_install` is a *Look* and runs without asking. Older volumes of that repo are removed after a successful install.
+- The model sees at most 8,000 characters of install output.
+
+### Removing a repo
+
+Removing a repo deletes its clone, and any work in it that was not pushed. It needs a passkey step-up bound to that repo (`delete` with `repo:<id>`). If something cannot be deleted straight away, the sweep at the next start finishes it.
+
 ## Audit log
 
 Security-relevant events (for example enrollment codes, sessions, step-ups, device changes, permission changes and approvals) are recorded in the database with a time and an actor. Values under keys such as `token`, `secret`, `api_key`, `password` and `code` are redacted before they are written. The HTTP API can only read the log; it has no way to edit or delete entries.
@@ -163,11 +235,12 @@ Keep secrets out of `config.toml`; it holds only the name of the secret to use (
 | `<data>/workspace/uploads/` | Photos you uploaded |
 | `<data>/workspace/chats/<chat-id>/files/` | Files attached to that chat, or copied in from an allowed folder |
 | `<data>/workspace/chats/<chat-id>/runs/<run-id>/` | The outputs of that chat's analysis runs |
-| `<data>/workspace/repos/` | Reserved for later phases |
+| `<data>/workspace/repos/<repo-id>/` | One clone for each repo you added in Repos |
 | `<data>/runtime/sandbox/jobs/` | Temporary job folders for the sandbox, removed after each run |
+| `<data>/runtime/git-home/` | The home folder every Git command uses: an empty config and an empty hooks folder |
 | `<data>/logs/`, `<data>/private/` | Logs (the model servers' output, and `hearthkeep.log` when started at login) and private files |
 
-None of this is ever part of the repository. Back it up yourself: [install.md](install.md#14-backing-up) lists what matters and how the keyring key affects a restore.
+None of this is ever part of the repository. Back it up yourself: [install.md](install.md#15-backing-up) lists what matters and how the keyring key affects a restore.
 
 ## What the assistant can never do
 
@@ -179,7 +252,9 @@ None of this is ever part of the repository. Back it up yourself: [install.md](i
 - Edit or erase the audit log.
 - Change Hearthkeep's own code or configuration.
 - Write to, move or delete anything in your allowed folders, or reach a folder you have not allowed.
-- Run code on your PC itself: Python runs only in the sandbox.
+- Run code on your PC itself: Python and a repo's tests run only in the sandboxes.
+- Push to a repo's default branch, force-push, or push anything but the commit you approved.
+- Read the GitHub token through any tool, or reach a repo you did not add.
 
 ## Development-only switch
 

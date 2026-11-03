@@ -51,6 +51,7 @@ Every number in that answer was computed by code in the sandbox, so the app unde
 | 💬 **Chat** | Talk to a local model (Gemma 4 12B through llama.cpp). Replies stream in, and every tool it uses is shown step by step. |
 | 📊 **Understand your data** | Attach CSV, Excel or PDF files, scanned pages included. Ask what's wrong, what's unusual, what the trend is. You get findings, interactive charts and the rows behind each finding. |
 | 🧮 **Trust the numbers** | Each number is marked *computed*, *read from page N* or *unverified*. Mixed date formats and gaps in daily data are found for you. |
+| 🐙 **Work on your GitHub repos** | Add repos you choose. The assistant reads them, edits them on a branch of its own and runs their tests in a sandbox. Pushing a branch or opening a pull request shows you the full diff and needs your passkey. It never pushes to your main branch. |
 | 🗂️ **Find your own files** | Let it look inside folders you choose, OneDrive included. It finds a file and brings a copy into the chat. It never writes to your folders. |
 | 🎨 **Make and edit images** | Z-Image Turbo for images with words in them, FLUX.2 klein for photos and edits. Attach a photo and ask for a change. |
 | 📱 **Send to your phone** | Results land in a tray on your phone. The notification says only "A file is ready in Hearthkeep", never what's in it. |
@@ -102,6 +103,7 @@ sequenceDiagram
 - **No passwords.** You sign in with a passkey: Face ID, Touch ID, Windows Hello or a PIN.
 - **Every tool is Allowed, Ask or Off**, and you decide which. Anything outward-facing always needs an approval plus a fresh passkey check.
 - **Deleting and widening access need a passkey too**, bound to that exact chat, file or folder.
+- **GitHub is opt-in and narrow.** A fine-grained token for the repos you pick. The assistant works on branches named `hearthkeep/<name>`, never pushes to your main branch, and a push sends exactly the commit on the approval card.
 - **The Python sandbox** has no network, a read-only view of your files, no privileges, and hard limits on memory, CPU and time. Every run is saved so you can read the script.
 - **An audit log** records sign-ins, approvals and changes. The app can read it but has no way to edit it.
 - **Secrets are encrypted** with a key held in your operating system's keyring, and never shown to the model.
@@ -123,7 +125,7 @@ Hearthkeep is early software. It's a good fit if you:
 | GPU | NVIDIA, about 16 GB VRAM for the shipped models |
 | RAM | 32 GB recommended |
 | Disk | About 60 GB for the shipped models and tools |
-| Software | Git, Python 3.12+, [uv](https://docs.astral.sh/uv/), Node 20.19+ or 22.12+, [Docker Desktop](https://www.docker.com/products/docker-desktop/) for Python analysis, [Tailscale](https://tailscale.com) for remote access |
+| Software | Git 2.31+, Python 3.12+, [uv](https://docs.astral.sh/uv/), Node 20.19+ or 22.12+, [Docker Desktop](https://www.docker.com/products/docker-desktop/) for Python analysis and repo tests, [Tailscale](https://tailscale.com) for remote access |
 
 No suitable GPU? You can point Hearthkeep at an OpenAI-compatible chat server you already run on the same PC. Image generation is then off.
 
@@ -151,7 +153,7 @@ uv run hearthkeep serve --data <data>
 | 1. Secure core | Passkeys, permissions and approvals, audit log, secrets, chat | ✅ Done |
 | 2. Models and images | Model cards, GPU switching, image generation, photo editing, Images view | ✅ Done |
 | 3. Files and analysis | Chat files, allowed folders, Python sandbox, number check, Analysis view, send to your phone, Devices and Settings, start at login | ✅ Done |
-| 4. GitHub | Your repos, sandboxed tests, approved pushes and pull requests | Next |
+| 4. GitHub | Your repos, sandboxed tests, approved pushes and pull requests | ✅ Done |
 | 5. Demos and launch | Demo data, screenshots and clips, getting started in minutes | Planned |
 | 6. Feature switches and model catalog | Choose features at install and in Settings (off means the AI can't reach them); a catalog that checks whether a model fits your PC, and room for your own models | Planned |
 | 7. Voice | Replies read aloud with local voices (Chatterbox, with Kokoro as a fallback) | Planned |

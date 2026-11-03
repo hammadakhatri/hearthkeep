@@ -204,13 +204,21 @@ Version 1 defaults: budgeting, News & search, Files, Python, Images = **Allowed*
 - Results go to `workspace/output/images`; saving elsewhere asks.
 
 **GitHub**
-- The owner adds repos explicitly; access via a **fine-grained personal access token** limited to those repos, stored encrypted.
-- Repos are cloned into `workspace/repos/`. Reading, searching, running tests in the sandbox: *Look*.
-- **Dependencies:** installing a repo's dependencies (npm, pip, etc.) is approved **once per repo**, and again only when its dependency/lock files change. The approval card shows the install command and lock file. Hearthkeep caches that environment (e.g. a per-repo container image or volume), so afterwards the model can edit, test and retry freely in the no-network sandbox; only outward actions ask.
-- Running a repo's tests is running untrusted code: it counts as *Look* only inside the Docker sandbox. Without Docker, repo test runs are forced to *Ask*, like Python.
-- Editing files in the clone and creating local branches: *Change local*.
-- Pushing, opening/merging/closing PRs or issues, commenting: *Outward or permanent* (approval card with the full diff + passkey).
-- Implementation via `git` plus the GitHub REST API or GitHub's official MCP server.
+- The owner adds repos explicitly (Repos view, passkey). Access is a **fine-grained personal access token** limited to those repos, saved in Settings (passkey) and stored encrypted. Classic tokens are refused. Only `api.github.com` and `github.com` are contacted, and only once a token is saved.
+- Repos are cloned into `workspace/repos/<repo-id>/`. Git runs on the host with hooks, credential helpers, redirects and submodules switched off, a home folder of its own and the remote URL passed on every command, never read from the clone. Host Git 2.31 or newer is required; without it, or without a token, the tools are not offered.
+- Five tools, three level keys:
+  - `repo_read` (list, read, search, status, diff, log, fetch): *Look*, level `github`.
+  - `repo_edit` (branch, write, replace, delete, commit): *Change local*, level `github`. Only on branches named `hearthkeep/<name>`; the model never works on the default branch.
+  - `repo_install`: *Outward* when the dependencies for the current lock file are not cached, else *Look*; level `github`.
+  - `repo_test`: *Look*, only inside the Docker sandbox; level `github_tests`. Without Docker it is forced to *Ask*, like Python.
+  - `github` (REST API, plus push over Git): *Look* for `list_prs`, `get_pr`, `list_issues`, `get_issue` and `checks`; *Outward* for `push`, `open_pr`, `comment`, `merge_pr` and `close`.
+- Defaults: `github` and `github_tests` are **Ask**. Outward actions need an approval and a passkey at every level.
+- **What an approval shows:** edits and every outward action carry the full unified diff (every file open, capped at 200 KB), and anything that publishes commits carries the head commit. The tool re-checks it when it runs and refuses if the branch moved (`The branch changed after you approved it. Nothing was pushed.`). A merge card shows and re-checks the base branch, a close checks issue against pull request, and an open-PR card for a branch that was never pushed says it will be refused.
+- **Never:** pushing to the default branch, force-pushing, or pushing anything but the approved commit. Commits use the GitHub no-reply address of the token's account.
+- **Tests** run on a throwaway copy of the working tree without `.git`, in the image `hearthkeep-repo`, with no network, 4 GB of memory, 2 CPUs and a 10 minute limit. A test cannot reach the clone or plant a hook in it. The model sees at most 8,000 characters of output; the full output is in the Repos view.
+- **Dependencies:** `uv`, `pip` and `npm` only. Installing is approved once per lock file, with a passkey, because the install container has internet. It sees only the dependency files and never the token, and writes into a Docker volume `hk-deps-<repo id>-<hash>` that the test runs then mount read-only. A changed lock file asks again.
+- Removing a repo deletes its clone (and any unpushed work), so it needs a passkey; leftovers are cleaned at the next start.
+- Implementation: `git` on the host for clone, fetch, commit and push, and the GitHub REST API (`api.github.com`, `/user` and `/repos/<owner>/<repo>/...` only) for the rest. GitHub's official MCP server, GitHub Enterprise, organisation-wide tokens, submodules, Git LFS, rebasing, editing issues or pull request descriptions after posting, and GitHub Actions logs are not part of version 1.
 
 ### 8.4 Briefing ("Today")
 - Contents: greeting and date; total balance with change since yesterday and a small trend line; "Needs you" (pending approvals, finished long tasks); news sections; one "Worth building together" suggestion.

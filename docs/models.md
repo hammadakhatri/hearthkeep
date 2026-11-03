@@ -188,7 +188,7 @@ Known Phase 2 limits:
 
 Logs are in `<data>/logs/`: `llama-server.log` for the chat model and `comfyui.log` for the image server. Start there.
 
-For problems outside the models (ports, enrollment codes, passkeys, start-up errors), see [Troubleshooting in install.md](install.md#15-troubleshooting).
+For problems outside the models (ports, enrollment codes, passkeys, start-up errors), see [Troubleshooting in install.md](install.md#16-troubleshooting).
 
 - **No images, or the image tool is missing.** Check that all three `comfyui_*` paths are set in `<data>/models.toml` and point to real files.
 - **A model "couldn't be started".** Open the matching log. The usual causes are a wrong path, a missing model file, or too little free GPU memory because another program is using it.

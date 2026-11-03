@@ -93,3 +93,31 @@ def test_the_script_exits_non_zero_when_it_prints_fail():
     )  # fmt: skip
     assert proc.stdout.startswith("FAIL ")
     assert proc.returncode != 0
+
+
+def test_changed_lines_ignore_file_headers_and_order():
+    from smoke_e2e import changed_lines
+
+    one = "--- a/README.md\n+++ b/README.md\n@@ -1 +1,2 @@\n keep\n+added\n-gone\n"
+    two = "diff --git a/README.md b/README.md\n+++ b/README.md\n--- a/README.md\n-gone\n+added\n"
+    assert changed_lines(one) == changed_lines(two) == ["+added", "-gone"]
+
+
+def test_github_steps_are_skipped_without_a_repo(no_server, monkeypatch, capsys):
+    monkeypatch.delenv("HK_SMOKE_GITHUB_REPO", raising=False)
+    monkeypatch.setattr(no_server, "check_clock", lambda client: "")
+    monkeypatch.setattr(no_server, "check_note_approval", lambda client: "")
+    assert no_server.main([]) == 0
+    assert "SKIP github" in capsys.readouterr().out
+
+
+def test_a_repo_without_a_token_fails_the_github_steps(no_server, monkeypatch, capsys):
+    monkeypatch.setenv("HK_SMOKE_GITHUB_REPO", "someone/throwaway")
+    monkeypatch.delenv("HK_SMOKE_GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(no_server, "check_clock", lambda client: "")
+    monkeypatch.setattr(no_server, "check_note_approval", lambda client: "")
+    assert no_server.main([]) == 1
+    out = capsys.readouterr().out
+    assert "FAIL github setup: HK_SMOKE_GITHUB_TOKEN is not set" in out
+    assert "SKIP github edit" in out
+    assert "someone/throwaway" not in out
