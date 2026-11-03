@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { DiffView } from '../components/DiffView'
 
@@ -54,7 +54,24 @@ describe('DiffView', () => {
     expect(screen.queryByText('line0')).toBeNull()
     const first = screen.getByRole('button', { name: 'f0.txt' })
     expect(first).toHaveAttribute('aria-expanded', 'false')
-    first.click()
+    fireEvent.click(first)
+    expect(first).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('line0')).toBeInTheDocument()
+    expect(screen.queryByText('line1')).toBeNull()
+  })
+
+  it('alwaysOpen shows every line of every file even past five files', () => {
+    const many = Array.from({ length: 6 }, (_, i) =>
+      [`diff --git a/f${i}.txt b/f${i}.txt`, `--- a/f${i}.txt`, `+++ b/f${i}.txt`, '@@ -1 +1 @@', '-x', `+line${i}`].join('\n'),
+    ).join('\n')
+    render(<DiffView diff={many} alwaysOpen />)
+    for (let i = 0; i < 6; i++) expect(screen.getByText(`line${i}`)).toBeInTheDocument()
+  })
+
+  it('keeps the whole path of a deleted file with spaces', () => {
+    const diff = ['diff --git a/my file.txt b/my file.txt', 'deleted file mode 100644', '--- a/my file.txt', '+++ /dev/null', '@@ -1 +0,0 @@', '-bye'].join('\n')
+    render(<DiffView diff={diff} />)
+    expect(screen.getAllByRole('heading').map((h) => h.textContent)).toEqual(['my file.txt'])
   })
 
   it('keeps five or fewer files open', () => {

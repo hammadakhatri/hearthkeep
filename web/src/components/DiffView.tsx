@@ -61,8 +61,10 @@ export function parseDiff(diff: string): Parsed {
       oldLeft = newLeft = 0
     }
     if (raw.startsWith('diff --git ')) {
-      const match = /^diff --git (.+?) (\S+)$/.exec(raw)
-      start(stripPrefix(match ? match[2] : raw.slice(11)))
+      const rest = raw.slice(11)
+      const split = rest.lastIndexOf(' b/')
+      const match = /^(.+?) (\S+)$/.exec(rest)
+      start(stripPrefix(split > 0 ? rest.slice(split + 1) : match ? match[2] : rest))
       continue
     }
     const hunk = HUNK.exec(raw)
@@ -136,11 +138,11 @@ function FileBlock({ file, startOpen }: { file: FileDiff; startOpen: boolean }) 
 
 /**
  * A unified diff, one block per file: added lines green, removed red, hunk headers dimmed, line
- * numbers for both sides. Every line is rendered as text; nothing in a diff is ever markup.
+ * numbers for both sides. More than five files fold, unless `alwaysOpen` (approval cards show it all). Every line is rendered as text; nothing in a diff is ever markup.
  */
-export function DiffView({ diff }: { diff: string }) {
+export function DiffView({ diff, alwaysOpen = false }: { diff: string; alwaysOpen?: boolean }) {
   const { files, notes } = parseDiff(diff)
-  const fold = files.length > FOLD_OVER
+  const fold = !alwaysOpen && files.length > FOLD_OVER
   return (
     <div className="diff" data-testid="diff-view">
       {files.map((file, i) => (
