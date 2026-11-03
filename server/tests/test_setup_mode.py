@@ -92,6 +92,8 @@ class FakeHost(WindowsHost):
         self.enabled: list[Path] = []
         self.protected: list[Path] = []
         self.protect_error = False
+        self.status_error = False
+        self.status_strict: list[bool] = []
 
     def drive_type(self, root: str) -> int:
         return 3  # a fixed local disk
@@ -109,6 +111,9 @@ class FakeHost(WindowsHost):
         self.location_writes.append(self.location)
 
     def startup_status(self, *, run=None, strict=False) -> startup.StartupStatus:
+        self.status_strict.append(strict)
+        if self.status_error:
+            raise startup.StartupError("schtasks didn't answer within 30 seconds.")
         if self.task is None:
             return startup.StartupStatus(True, False, None)
         return startup._parse(self.task)
@@ -517,6 +522,79 @@ def test_setup_uses_the_recorded_folder_then_the_default(tmp_path, run_cmd_setup
     assert host.location_writes == [host.default.resolve()]  # an existing record is kept
 
 
+def _task_for(host: FakeHost, data: Path) -> None:
+    host.task = startup.task_xml(
+        pythonw=Path(r"C:\py\pythonw.exe"), data_dir=data, user=r"HOMEPC\owner"
+    )
+
+
+def test_setup_rerun_without_a_record_finds_the_install_through_start_at_login(
+    tmp_path, run_cmd_setup
+):
+    """An install whose record is missing (LOCALAPPDATA reset, a new Windows profile copy) but
+    whose start-at-login task names its data folder: a re-run uses that folder, not the
+    default, and records it again."""
+    host = run_cmd_setup.host
+    data = tmp_path / "old-install"
+    data.mkdir()
+    (data / "config.toml").write_text("docker_available = false\n", encoding="utf-8")
+    _task_for(host, data)
+    assert run_cmd_setup(None) == 0
+    assert (data / "hearthkeep.db").is_file() and not host.default.exists()
+    assert host.location_writes == [data.resolve()]
+    assert host.status_strict[0] is False  # finding the folder never uses the strict check
+
+
+def test_setup_ignores_a_task_whose_folder_is_not_a_data_folder(tmp_path, run_cmd_setup):
+    host = run_cmd_setup.host
+    _task_for(host, tmp_path / "gone")  # the folder the task names is gone
+    assert run_cmd_setup(None) == 0
+    assert host.location_writes == [host.default.resolve()]
+    assert not (tmp_path / "gone").exists()
+
+
+def test_setup_falls_back_to_the_default_when_the_task_cant_be_read(tmp_path, run_cmd_setup):
+    host = run_cmd_setup.host
+    host.status_error = True
+    assert run_cmd_setup(None) == 0
+    assert host.location_writes == [host.default.resolve()]
+
+
+def test_setup_prefers_the_record_and_the_argument_over_the_task(tmp_path, run_cmd_setup):
+    host = run_cmd_setup.host
+    task_folder = tmp_path / "task"
+    task_folder.mkdir()
+    (task_folder / "config.toml").write_text("docker_available = false\n", encoding="utf-8")
+    _task_for(host, task_folder)
+    asked = tmp_path / "asked"
+    assert run_cmd_setup(asked) == 0
+    assert (asked / "hearthkeep.db").is_file() and not (task_folder / "hearthkeep.db").exists()
+
+
+def test_setup_keeps_hearthkeep_warnings_out_of_its_window(
+    tmp_path, capsys, monkeypatch, run_cmd_setup
+):
+    """Setup's window is the owner's: a warning Hearthkeep's code logs while setup runs (with
+    no logging set up, Python prints it through logging.lastResort) does not reach it."""
+    import logging
+
+    monkeypatch.setattr(logging.getLogger(), "handlers", [])  # as in the real console
+    real_build_app = cli.build_app
+
+    def noisy_build_app(*args, **kwargs):
+        logging.getLogger("hearthkeep.somewhere").warning("noisy technical warning")
+        return real_build_app(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "build_app", noisy_build_app)
+    assert run_cmd_setup(tmp_path / "data") == 0
+    captured = capsys.readouterr()
+    assert "noisy technical warning" not in captured.err + captured.out
+    logger = logging.getLogger("hearthkeep")
+    assert logger.propagate and not any(
+        isinstance(h, logging.NullHandler) for h in logger.handlers
+    )  # put back as it was once setup is done
+
+
 def test_setup_with_another_folder_keeps_a_live_record(tmp_path, run_cmd_setup):
     host = run_cmd_setup.host
     live = tmp_path / "live"
@@ -631,11 +709,31 @@ def test_setup_protects_a_new_data_folder_before_writing_in_it(tmp_path, run_cmd
 
 
 def test_setup_leaves_an_existing_data_folder_as_it_is(tmp_path, run_cmd_setup):
+    """An install that has been used (it has its database) keeps its permissions (C2)."""
     data = tmp_path / "data"
     data.mkdir()
     (data / "config.toml").write_text("docker_available = false\n", encoding="utf-8")
+    db.connect(data / DB_FILE).close()
     assert run_cmd_setup(data) == 0
     assert run_cmd_setup.host.protected == []
+
+
+def test_setup_uses_a_tailscale_config_made_before_it_runs(tmp_path, run_cmd_setup):
+    """The supported way to use Hearthkeep through Tailscale from the first passkey: the
+    owner writes config.toml in the data folder first. Setup keeps it, opens the setup page on
+    that address, and still protects the folder (nothing of the owner's is in it yet)."""
+    host = run_cmd_setup.host
+    host.default.mkdir()
+    (host.default / "config.toml").write_text(
+        'public_origin = "https://homepc.example.ts.net"\nrp_id = "homepc.example.ts.net"\n',
+        encoding="utf-8",
+    )
+    run_cmd_setup.run_server.enroll = False  # the fake browser here only speaks localhost
+    run_cmd_setup(None)
+    secret = run_cmd_setup.run_server.secret
+    assert run_cmd_setup.opened == [f"https://homepc.example.ts.net/setup#{secret}"]
+    assert host.protected == [host.default.resolve()]
+    assert "homepc.example.ts.net" in (host.default / "config.toml").read_text("utf-8")
 
 
 def test_setup_protects_the_program_folder_of_a_release_only(tmp_path, run_cmd_setup):
