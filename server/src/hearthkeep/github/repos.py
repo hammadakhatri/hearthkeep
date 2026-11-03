@@ -205,6 +205,7 @@ class RepoStore:
         self._secrets = secrets
         # Run before a repo's rows and folder go (Task 5 removes its dependency volumes).
         self.on_remove: list[Callable[[Repo], Awaitable[None]]] = []
+        self._token_saved: bool | None = None  # None: not looked at since the last change
 
     def list(self) -> list[Repo]:
         rows = self.conn.execute("SELECT * FROM repos ORDER BY created_at, id").fetchall()
@@ -227,6 +228,22 @@ class RepoStore:
             return self._secrets.get(TOKEN_SECRET)
         except SecretStoreError:
             return None
+
+    def token_saved(self) -> bool:
+        """Whether a token is saved. The secret store is read once and the answer kept until
+        `token_changed()`, so the GitHub add-on's checks don't read it on every call. A store
+        that can't be read counts as no token, and is read again next time."""
+        if self._token_saved is None:
+            try:
+                saved = self._secrets.get(TOKEN_SECRET) is not None
+            except SecretStoreError:
+                return False
+            self._token_saved = saved
+        return self._token_saved
+
+    def token_changed(self) -> None:
+        """The token was saved or removed: look at the secret store again next time."""
+        self._token_saved = None
 
     async def add(self, full_name: str) -> Repo:
         token = self.token()
