@@ -680,6 +680,19 @@ async def test_status_is_cached_for_thirty_seconds(fake, monkeypatch):
     assert (await runner.status()).image is False
 
 
+async def test_fresh_status_skips_the_cache(fake, monkeypatch):
+    runner = fake.runner()
+    clock = [1000.0]
+    monkeypatch.setattr(runner_mod.time, "monotonic", lambda: clock[0])
+    assert (await runner.status()).image is True
+    monkeypatch.setenv("FAKE_DOCKER_NO_IMAGE", "1")
+    clock[0] += 1
+    assert (await runner.status()).image is True  # cached
+    assert (await runner.status(fresh=True)).image is False
+    monkeypatch.delenv("FAKE_DOCKER_NO_IMAGE")
+    assert (await runner.status()).image is False  # the fresh result is cached in turn
+
+
 async def test_sweep_removes_leftover_containers(fake, monkeypatch):
     monkeypatch.setenv("FAKE_DOCKER_PS", "abc123 def456")
     leftover = fake.jobs_root() / "old-run"

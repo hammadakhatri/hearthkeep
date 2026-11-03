@@ -7,10 +7,11 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Literal, Protocol
 
 from hearthkeep.images import ImageStore
 from hearthkeep.models.cards import CardError, ModelCard
+from hearthkeep.models.runtime import RuntimeConfig
 from hearthkeep.providers.scheduled_chat import ScheduledChatClient
 from hearthkeep.runtime.gpu import Backend, GpuScheduler
 from hearthkeep.tools.images import GenerateImageTool
@@ -35,6 +36,10 @@ class ModelStack:
     `managed` are the cards the GPU scheduler handles (each provider needs a backend);
     `chat_model_id` is set when Hearthkeep runs the chat model itself, so every chat stream
     takes a lease on it. `processes` are stopped when the app shuts down.
+
+    `chat_mode` says where chat comes from: a llama-server Hearthkeep runs ("owned"), a chat
+    server the owner runs ("external"), or nothing set up ("none"). `runtime` is the
+    models.toml config the stack was built from, so the add-on checks can find its files.
     """
 
     cards: dict[str, ModelCard] = field(default_factory=dict)
@@ -47,6 +52,8 @@ class ModelStack:
     default_image_model: str | None = None
     gpu_vram_gb: float | None = None
     detect_vram: Callable[[], float | None] | None = None
+    chat_mode: Literal["owned", "external", "none"] = "external"
+    runtime: RuntimeConfig | None = None
 
     async def build_gpu(self) -> GpuScheduler:
         """The scheduler over the managed cards. GPU memory: the configured value, else what

@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import shutil
 import subprocess
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -23,6 +22,7 @@ from pathlib import Path
 from typing import Protocol
 
 from hearthkeep.models.cards import ModelCard
+from hearthkeep.procutil import NO_WINDOW, find_executable
 from hearthkeep.runtime.supervisor import ManagedProcess, ProcessError
 
 RESERVED_GB = 1.5  # kept free for the CUDA contexts, the desktop and fragmentation
@@ -33,22 +33,14 @@ log = logging.getLogger(__name__)
 
 
 def _nvidia_smi_path() -> Path | None:
-    """nvidia-smi as an absolute path: from PATH (a match in the current folder or through a
-    relative PATH entry is ignored), else the driver's usual install places; None if absent."""
-    found = shutil.which("nvidia-smi")
-    if found:
-        path = Path(found)
-        if path.is_absolute() and path.parent.resolve() != Path.cwd().resolve():
-            return path
+    """nvidia-smi as an absolute path: from PATH (never the current folder), else the
+    driver's usual install places; None if absent."""
     candidates = []
     if root := os.environ.get("SystemRoot"):
         candidates.append(Path(root) / "System32" / "nvidia-smi.exe")
     if program_files := os.environ.get("ProgramFiles"):
         candidates.append(Path(program_files) / "NVIDIA Corporation" / "NVSMI" / "nvidia-smi.exe")
-    for candidate in candidates:
-        if candidate.is_absolute() and candidate.is_file():
-            return candidate
-    return None
+    return find_executable("nvidia-smi", candidates)
 
 
 def detect_vram_gb() -> float | None:
@@ -63,7 +55,7 @@ def detect_vram_gb() -> float | None:
             text=True,
             timeout=5,
             check=False,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            creationflags=NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -230,6 +222,10 @@ class GpuScheduler:
 
     def resident(self) -> list[str]:
         return list(self._resident)
+
+    def loading(self) -> str | None:
+        """The id of the model being loaded right now, if any."""
+        return self._loading
 
     def status(self) -> dict:
         used = sum(self._cards[m].vram_gb for m in self._resident)

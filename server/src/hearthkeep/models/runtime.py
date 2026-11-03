@@ -7,11 +7,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from hearthkeep.config import ConfigError
+from hearthkeep.models.cards import ModelCard
 
 _PATH_KEYS = ("llama_server_exe", "comfyui_python", "comfyui_main", "comfyui_model_root")
 _PORT_KEYS = ("llama_port", "comfyui_port")
 _STR_KEYS = ("default_chat_model", "default_image_model")
 _KEYS = {*_PATH_KEYS, *_PORT_KEYS, *_STR_KEYS, "gpu_vram_gb", "model_dirs"}
+# Where ComfyUI looks for each image file, under comfyui_model_root.
+IMAGE_FILE_FOLDERS = {"unet": "diffusion_models", "text_encoder": "text_encoders", "vae": "vae"}
 
 
 @dataclass(frozen=True)
@@ -83,3 +86,17 @@ def load_runtime(data_dir: Path) -> RuntimeConfig:
                 dirs[card_id] = resolved
         values["model_dirs"] = dirs
     return RuntimeConfig(**values)  # type: ignore[arg-type]
+
+
+def card_file_paths(card: ModelCard, rt: RuntimeConfig) -> tuple[Path, ...] | None:
+    """Where a card's files live on this PC: a chat card's in `model_dirs[card.id]`, an image
+    card's in the ComfyUI model folder for each file. None when that folder isn't configured."""
+    if card.kind == "chat":
+        folder = rt.model_dirs.get(card.id)
+        if folder is None:
+            return None
+        return tuple(folder / name for name in card.files.values())
+    root = rt.comfyui_model_root
+    if root is None:
+        return None
+    return tuple(root / IMAGE_FILE_FOLDERS[key] / name for key, name in card.files.items())
