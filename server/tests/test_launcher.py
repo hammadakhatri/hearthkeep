@@ -2,6 +2,7 @@
 and `open` starts the launcher only when Hearthkeep isn't answering. Processes, clocks and
 sleeps are fakes: nothing real is started."""
 
+import io
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -479,7 +480,7 @@ def test_open_returns_at_once_when_the_server_answers(tmp_path):
         (1, launcher.LAUNCHER_GAVE_UP),  # kept crashing, or the port is held
     ],
 )
-def test_open_says_so_when_the_launcher_it_started_has_died(tmp_path, capsys, exit_code, message):
+def test_open_says_so_when_the_launcher_it_started_has_died(tmp_path, exit_code, message):
     settings = Settings(data_dir=tmp_path, port=8799, public_origin="http://localhost:8799")
     clock = FakeClock()
     slept = []
@@ -488,13 +489,47 @@ def test_open_says_so_when_the_launcher_it_started_has_died(tmp_path, capsys, ex
     wait = lambda base, **kw: wait_for_health(  # noqa: E731
         base, probe=lambda b: None, sleep=waiting(clock, slept), clock=clock, **kw
     )
-    result = open_app(settings, host, probe=lambda b: None, open_url=opened.append, wait=wait)
+    told = []
+    result = open_app(
+        settings, host, probe=lambda b: None, open_url=opened.append, wait=wait, notify=told.append
+    )
     assert result == 1 and clock.now < 5
-    err = capsys.readouterr().err
-    assert message in err
+    assert told == [message]
     for text in (launcher.LAUNCHER_NOT_READY, launcher.LAUNCHER_GAVE_UP):
         assert text.isascii() and forbidden_in(text) == [], text
-    assert opened == ["http://localhost:8799"]  # the app's own "can't reach" page explains
+    assert opened == []  # nothing to open: the launcher is gone
+
+
+def test_open_still_opens_the_browser_when_the_launcher_is_alive_at_the_deadline(tmp_path):
+    settings = Settings(data_dir=tmp_path, port=8799, public_origin="http://localhost:8799")
+    clock = FakeClock()
+    opened, told = [], []
+    host = RecordingHost(process=FakeLauncherProcess(None))
+    wait = lambda base, **kw: wait_for_health(  # noqa: E731
+        base, 5.0, probe=lambda b: None, sleep=waiting(clock, []), clock=clock, **kw
+    )
+    result = open_app(
+        settings, host, probe=lambda b: None, open_url=opened.append, wait=wait, notify=told.append
+    )
+    assert result == 0 and told == [] and opened == ["http://localhost:8799"]
+
+
+def test_show_message_uses_a_box_on_windows_and_prints_elsewhere(monkeypatch):
+    boxes, out = [], io.StringIO()
+    monkeypatch.setattr(startup, "is_windows", lambda: True)
+    launcher.show_message("hi", box=lambda title, text: boxes.append((title, text)), out=out)
+    assert boxes == [("Hearthkeep", "hi")] and out.getvalue() == ""
+    monkeypatch.setattr(startup, "is_windows", lambda: False)
+    launcher.show_message("hello", box=lambda *a: boxes.append(a), out=out)
+    assert len(boxes) == 1 and out.getvalue() == "hello\n"
+    # A box that cannot be shown falls back to printing.
+    monkeypatch.setattr(startup, "is_windows", lambda: True)
+
+    def broken(title, text):
+        raise OSError("no desktop")
+
+    launcher.show_message("last", box=broken, out=out)
+    assert out.getvalue().endswith("last\n")
 
 
 def test_open_and_launch_without_a_location_say_not_set_up(tmp_path, monkeypatch, capsys):

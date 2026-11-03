@@ -524,7 +524,7 @@ def create_app(
         return {
             "status": "ok",
             "chat_model": settings.chat_model,
-            "setup_mode": server_control.setup_mode,
+            "setup_mode": services(request).control.setup_mode,
             **await services(request).chat_model_status(),
         }
 
