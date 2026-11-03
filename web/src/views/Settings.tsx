@@ -2,6 +2,7 @@ import { useEffect, useId, useState } from 'react'
 import { api } from '../api/client'
 import { DevicesPanel } from '../components/DevicesPanel'
 import { FoldersPanel } from '../components/FoldersPanel'
+import { GitHubPanel } from '../components/GitHubPanel'
 import { NotificationToggle } from '../components/NotificationToggle'
 import { AlertIcon, CopyIcon } from '../shell/icons'
 
@@ -92,6 +93,7 @@ export function Settings() {
     <div className="settings">
       <DevicesPanel />
       <FoldersPanel />
+      <GitHubPanel />
       <section className="settings-section" aria-labelledby={notifyId}>
         <h2 id={notifyId}>Notifications</h2>
         <NotificationToggle />

@@ -113,4 +113,37 @@ describe('ApprovalCard', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Approve' })).toBeEnabled())
     expect(calls).toHaveLength(0)
   })
+
+  it('approval card shows diff for push and keeps JSON for other tools', () => {
+    mockFetch({})
+    const push: ApprovalRequest = {
+      approval_id: 'p1',
+      tool: 'github',
+      summary: 'Push hearthkeep/fix to GitHub',
+      detail: {
+        repo: 'octo/widgets',
+        branch: 'hearthkeep/fix',
+        head_sha: 'abcdef1234567890abcdef1234567890abcdef12',
+        commits: ['abc123 Fix the thing'],
+        diff: ['diff --git a/a.py b/a.py', '--- a/a.py', '+++ b/a.py', '@@ -1 +1 @@', '-old', '+new'].join('\n'),
+        note: 'Push the branch first. This request will be refused.',
+      },
+      requires_step_up: true,
+    }
+    const { unmount } = render(<ApprovalCard request={push} status="pending" />)
+    expect(screen.getByText('octo/widgets')).toBeInTheDocument()
+    expect(screen.getByText('hearthkeep/fix')).toBeInTheDocument()
+    expect(screen.getByText('abc123 Fix the thing')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'a.py' })).toBeInTheDocument()
+    expect(screen.getByText('new').closest('[data-kind]')).toHaveAttribute('data-kind', 'add')
+    expect(
+      screen.getByText('Push the branch first. This request will be refused.').closest('[role="note"]'),
+    ).toBeInTheDocument()
+    expect(screen.getByText('abcdef1')).toBeInTheDocument()
+    expect(screen.queryByTestId('approval-detail')).toBeNull()
+    unmount()
+
+    render(<ApprovalCard request={request} status="pending" />)
+    expect(screen.getByTestId('approval-detail')).toHaveTextContent('"text": "Buy milk"')
+  })
 })

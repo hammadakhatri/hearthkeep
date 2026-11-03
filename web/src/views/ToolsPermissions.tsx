@@ -21,6 +21,7 @@ const NAMES: Record<string, string> = {
   python: 'Python',
   images: 'Image generation',
   github: 'GitHub',
+  github_tests: 'GitHub tests',
   demo: 'Demo tools',
 }
 
