@@ -54,7 +54,7 @@ from hearthkeep.runtime.supervisor import (
 from hearthkeep.sandbox import image as sandbox_image
 from hearthkeep.secrets import SecretStore, SecretStoreError
 from hearthkeep.setupmode import SetupMode, setup_url
-from hearthkeep.shortcut import SHORTCUT_FAILED
+from hearthkeep.shortcut import SHORTCUT_NOT_MADE as SHORTCUT_FAILED
 from hearthkeep.upgrade import UpgradeReport, run_upgrade
 from hearthkeep.webbundle import ensure_web_bundle, release_version
 

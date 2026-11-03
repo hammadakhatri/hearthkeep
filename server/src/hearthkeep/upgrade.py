@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 import hearthkeep
 from hearthkeep import audit, db
 from hearthkeep.permissions import DEFAULT_LEVELS
-from hearthkeep.shortcut import SHORTCUT_FAILED
+from hearthkeep.shortcut import SHORTCUT_NOT_MADE
 
 if TYPE_CHECKING:
     from hearthkeep.addons import Addons
@@ -49,7 +49,7 @@ NOTE_ITEMS: dict[str, tuple[str, str | None]] = {
         "Settings › Add-ons.",
         "startup",
     ),
-    "shortcut_failed": (SHORTCUT_FAILED, None),
+    "shortcut_failed": (SHORTCUT_NOT_MADE, None),
 }
 
 # The note item each step leaves when it fails (steps without one only log).
