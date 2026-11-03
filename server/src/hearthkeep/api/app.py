@@ -75,6 +75,7 @@ from hearthkeep.secrets import SecretStore, SecretStoreError
 from hearthkeep.sent import SentStore
 from hearthkeep.tools.base import ToolRegistry
 from hearthkeep.tools.files import FilesTool
+from hearthkeep.tools.github import GitHubTool
 from hearthkeep.tools.python import PythonTool, analysis_context
 from hearthkeep.tools.read_pages import ReadPagesTool
 from hearthkeep.tools.repo import RepoEditTool, RepoReadTool
@@ -372,6 +373,8 @@ def create_app(
                 registry.register(RepoReadTool(repo_store))
             if registry.get(RepoEditTool.name) is None:
                 registry.register(RepoEditTool(repo_store))
+            if registry.get(GitHubTool.name) is None:
+                registry.register(GitHubTool(repo_store, github))
             # Dependencies: one volume per lock file, removed with the repo.
             deps = DepsCache(conn, sandbox_image.DOCKER, sandbox_image.repo_image_tag())
             repo_store.on_remove.append(deps.remove_for)

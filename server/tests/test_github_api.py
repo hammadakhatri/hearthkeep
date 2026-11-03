@@ -121,6 +121,30 @@ async def test_request_allows_user_and_repo_paths(client, fake_github):
     assert fake_github.requests[-1].url.params["state"] == "open"
 
 
+async def test_request_refuses_methods_other_than_get_post_patch_put(client, fake_github):
+    for method in ("DELETE", "delete", "HEAD", "OPTIONS", "TRACE", "CONNECT", ""):
+        with pytest.raises(GitHubError) as e:
+            await client.request(method, "/repos/acme/widgets/pulls/1")
+        assert e.value.reason == "refused", method
+    assert fake_github.requests == []
+    fake_github.routes[("PATCH", "/repos/acme/widgets/issues/1")] = (200, {"number": 1})
+    assert await client.request("PATCH", "/repos/acme/widgets/issues/1", json={}) == {"number": 1}
+
+
+async def test_request_can_ask_for_a_diff_as_text(client, fake_github):
+    path = "/repos/acme/widgets/pulls/3"
+    fake_github.routes[("GET", path)] = (200, {"number": 3})
+    fake_github.routes[("GET", path, "application/vnd.github.diff")] = (200, "diff --git a b\n")
+    got = await client.request("GET", path, accept="application/vnd.github.diff")
+    assert got == "diff --git a b\n"
+    assert fake_github.requests[-1].headers["accept"] == "application/vnd.github.diff"
+    assert await client.request("GET", path) == {"number": 3}  # default header unchanged
+    assert fake_github.requests[-1].headers["accept"] == "application/vnd.github+json"
+    with pytest.raises(GitHubError) as e:
+        await client.request("GET", path, accept="text/html")
+    assert e.value.reason == "refused"
+
+
 async def test_error_message_never_contains_token(client, fake_github):
     fake_github.fail_next(401, body={"message": "Bad credentials " + TOKEN})
     with pytest.raises(GitHubError) as e:

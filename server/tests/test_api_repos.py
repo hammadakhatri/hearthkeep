@@ -170,3 +170,4 @@ def test_repo_list_shows_dependency_state(harness, api_client):
     listed = api_client.get("/api/repos").json()["repos"]
     assert listed[0]["deps"] == "needed"  # nothing installed yet; docker is never asked
     assert hk.registry.get("repo_install") is not None
+    assert hk.registry.get("github") is not None

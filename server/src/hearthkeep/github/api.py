@@ -22,6 +22,8 @@ REPO_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}"
 API_BASE = "https://api.github.com"
 API_VERSION = "2022-11-28"
 TIMEOUT_SECONDS = 20
+METHODS = frozenset({"GET", "POST", "PATCH", "PUT"})
+DIFF_MEDIA_TYPE = "application/vnd.github.diff"
 
 Reason = Literal["unauthorized", "not_found", "forbidden", "rate_limited", "unavailable", "refused"]
 
@@ -107,11 +109,12 @@ class GitHubClient:
         path: str,
         params: dict | None = None,
         json: dict | None = None,
+        accept: str | None = None,
     ) -> Any:
         if token is None:
             raise GitHubError("unauthorized")
         headers = {
-            "Accept": "application/vnd.github+json",
+            "Accept": accept or "application/vnd.github+json",
             "X-GitHub-Api-Version": API_VERSION,
             "User-Agent": "Hearthkeep",
             "Authorization": f"Bearer {token}",
@@ -131,6 +134,8 @@ class GitHubClient:
             raise GitHubError("unavailable") from None
         if response.status_code >= 300:
             raise _error_for(response)
+        if accept is not None:
+            return response.text  # a diff: plain text, never parsed
         if response.status_code == 204 or not response.content:
             return None
         try:
@@ -139,11 +144,21 @@ class GitHubClient:
             raise GitHubError("unavailable", response.status_code) from None
 
     async def request(
-        self, method: str, path: str, *, params: dict | None = None, json: dict | None = None
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict | None = None,
+        json: dict | None = None,
+        accept: str | None = None,
     ) -> Any:
-        if not _path_allowed(path):
+        """One call to GitHub. Only GET, POST, PATCH and PUT (nothing here ever deletes).
+        `accept` may ask for a diff (`application/vnd.github.diff`), returned as text."""
+        if method not in METHODS or not _path_allowed(path):
             raise GitHubError("refused")
-        return await self._send(self._token(), method, path, params, json)
+        if accept is not None and accept != DIFF_MEDIA_TYPE:
+            raise GitHubError("refused")
+        return await self._send(self._token(), method, path, params, json, accept)
 
     async def user(self, token: str | None = None) -> GitHubUser:
         """The account the token belongs to; `token` checks one that is not saved yet."""

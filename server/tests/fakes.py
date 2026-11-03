@@ -254,7 +254,7 @@ class FakeGitHub:
     (status, json); every request is kept in `requests`. `GET /user` answers "octo" (id 42)."""
 
     def __init__(self) -> None:
-        self.routes: dict[tuple[str, str], tuple[int, object]] = {
+        self.routes: dict[tuple[str, ...], tuple[int, object]] = {
             ("GET", "/user"): (200, {"login": "octo", "id": 42}),
         }
         self.requests: list[httpx.Request] = []
@@ -265,11 +265,19 @@ class FakeGitHub:
         self._failures.append((status, body if body is not None else {"message": "failed"}))
 
     def _handle(self, request: httpx.Request) -> httpx.Response:
+        """A route keyed (method, path, accept) wins over (method, path); a str body is sent
+        as plain text (a diff), anything else as JSON."""
         self.requests.append(request)
         if self._failures:
             status, body = self._failures.pop(0)
         else:
+            accept = request.headers.get("accept", "")
             status, body = self.routes.get(
-                (request.method, request.url.path), (404, {"message": "Not Found"})
+                (request.method, request.url.path, accept),
+                self.routes.get(
+                    (request.method, request.url.path), (404, {"message": "Not Found"})
+                ),
             )
+        if isinstance(body, str):
+            return httpx.Response(status, text=body)
         return httpx.Response(status, json=body)
