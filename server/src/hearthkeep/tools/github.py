@@ -50,6 +50,7 @@ PR_HEAD_MOVED = "The branch changed after you approved it. No pull request was o
 PUSH_FIRST = "Push the branch first."
 NEEDS_STEP_UP = "Publishing to GitHub needs the owner's approval with a passkey. Nothing was sent."
 NOT_AS_APPROVED = "This isn't what the owner approved. Nothing was sent."
+PUSH_FIRST_NOTE = "Push the branch first. This request will be refused."
 MERGE_MOVED = "The pull request changed after you approved it. Nothing was merged."
 MERGE_REFUSED = (
     "GitHub won't merge this pull request now (conflicts, or required checks or reviews). "
@@ -59,6 +60,10 @@ NOT_A_WORK_BRANCH = (
     "Only a hearthkeep/ branch can be published, never the default branch. "
     'Create one with repo_edit action "branch".'
 )
+KIND_MISMATCH = {
+    "issue": "#{n} is a pull request, not an issue. Nothing was closed.",
+    "pr": "#{n} is an issue, not a pull request. Nothing was closed.",
+}
 NOT_CHECKED_OUT = "Switch to that branch first: only the checked-out branch is pushed."
 MISSING_CLONE = "The local copy of that repo is missing. Remove it and add it again."
 UNTRUSTED_NOTE = (
@@ -109,6 +114,10 @@ def _login(item: dict) -> str:
 def _number(args: dict) -> int | None:
     n = args.get("number")
     return n if isinstance(n, int) and not isinstance(n, bool) and n >= 1 else None
+
+
+def _is_pr(item: dict) -> bool:
+    return "pull_request" in item
 
 
 def _ref_ok(ref: object) -> bool:
@@ -364,7 +373,15 @@ class GitHubTool:
         if head is None:
             return detail
         base = await self._base(repo, clone, None, head)  # what the PR brings to the default
-        detail["head_sha"] = head
+        try:
+            remote = await self._remote_sha(repo, branch)
+        except GitHubError:
+            remote = None
+        if remote != head:
+            # The run would refuse: no head_sha to approve, and the card says why.
+            detail["note"] = PUSH_FIRST_NOTE
+        else:
+            detail["head_sha"] = head
         detail["diff"] = await self._diff(clone, base, head)
         return detail
 
@@ -381,7 +398,9 @@ class GitHubTool:
             return detail  # no head_sha: `run` refuses
         sha = str(_dict(pr.get("head")).get("sha") or "")
         detail["title"] = _line(pr.get("title"), TITLE_MAX)
-        if _SHA.fullmatch(sha):
+        base = _dict(pr.get("base")).get("ref")
+        if _SHA.fullmatch(sha) and isinstance(base, str) and base:
+            detail["base"] = base
             detail["head_sha"] = sha
         detail["diff"] = cap_diff(diff if isinstance(diff, str) else "")
         return detail
@@ -390,13 +409,18 @@ class GitHubTool:
         detail: dict = {"repo": repo.full_name, "kind": kind, "number": n, "title": ""}
         if n is None or kind not in ("pr", "issue"):
             return detail
-        segment = "pulls" if kind == "pr" else "issues"
         try:
-            item = _dict(await self._api.request("GET", self._path(repo, f"/{segment}/{n}")))
-            detail["title"] = _line(item.get("title"), TITLE_MAX)
+            item = await self._issue_or_pr(repo, n)
         except GitHubError:
-            pass  # closed by number all the same; the card shows no title
+            return detail  # `run` asks again and refuses if it still can't tell
+        detail["title"] = _line(item.get("title"), TITLE_MAX)
+        if _is_pr(item) != (kind == "pr"):
+            detail["note"] = KIND_MISMATCH[kind].format(n=n) + " This request will be refused."
         return detail
+
+    async def _issue_or_pr(self, repo: Repo, n: int) -> dict:
+        """`GET /issues/{n}`, which answers for pull requests too (with `pull_request`)."""
+        return _dict(await self._api.request("GET", self._path(repo, f"/issues/{n}")))
 
     # -- run -----------------------------------------------------------------------------------
 
@@ -645,9 +669,15 @@ class GitHubTool:
         problem = self._approval_problem(ctx, number=n, method=method)
         if problem is not None:
             return _fail(problem)
-        sha = str(_dict(ctx.approved_detail).get("head_sha") or "")
-        if not _SHA.fullmatch(sha):
+        approved = _dict(ctx.approved_detail)
+        sha = str(approved.get("head_sha") or "")
+        base = approved.get("base")
+        if not _SHA.fullmatch(sha) or not isinstance(base, str) or not base:
             return _fail(NOT_AS_APPROVED)
+        # GitHub's `sha` binds only the head: a PR retargeted since the card is refused here.
+        pr = _dict(await self._api.request("GET", self._path(repo, f"/pulls/{n}")))
+        if _dict(pr.get("base")).get("ref") != base:
+            return _fail(MERGE_MOVED)
         try:
             # GitHub refuses (409) when the PR's head is no longer the approved sha.
             await self._api.request(
@@ -672,6 +702,8 @@ class GitHubTool:
         problem = self._approval_problem(ctx, number=n, kind=kind)
         if problem is not None:
             return _fail(problem)
+        if _is_pr(await self._issue_or_pr(repo, n)) != (kind == "pr"):
+            return _fail(KIND_MISMATCH[kind].format(n=n))
         segment = "pulls" if kind == "pr" else "issues"
         await self._api.request(
             "PATCH", self._path(repo, f"/{segment}/{n}"), json={"state": "closed"}
