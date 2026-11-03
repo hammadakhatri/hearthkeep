@@ -130,14 +130,21 @@ def test_argv_is_locked_down(runner, tmp_path):
     ]  # fmt: skip
     mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "--mount"]
     assert mounts == [
-        f"type=bind,source={tree.resolve()},target=/repo",
+        f"type=bind,source={tree.resolve()},target=/src,readonly",  # the PC's copy: read-only
+        "type=volume,target=/repo",  # the container's own copy, removed with it (--rm)
         f"type=volume,source={plan.volume},target=/repo/node_modules,readonly",
     ]
     assert argv[argv.index("--name") + 1] == "hk-repo-r1"
     assert argv[argv.index("--label") + 1] == "hearthkeep.repo=1"
     envs = [argv[i + 1] for i, a in enumerate(argv) if a == "--env"]
     assert envs == ["HOME=/tmp", "CI=1"]
-    assert argv[-4:] == [TAG, "sh", "-c", "npm test"]
+    # the copy first, then the command: given as its own argument ($1), never in the script
+    assert argv[-6:] == [TAG, "sh", "-c", testrun.COPY_THEN_RUN, "sh", "npm test"]
+    assert testrun.COPY_THEN_RUN == (
+        'cp -R --preserve=mode,timestamps /src/. /repo/ && cd /repo && exec sh -c "$1"'
+    )
+    assert "npm test" not in testrun.COPY_THEN_RUN
+    assert argv[argv.index("--workdir") + 1] == "/repo"
     assert "--gpus" not in argv and not any("docker.sock" in a for a in argv)
 
     (root / "pyproject.toml").write_text(UV_PROJECT)
@@ -145,14 +152,17 @@ def test_argv_is_locked_down(runner, tmp_path):
     uv = runner.deps.plan(a_repo(), root)
     argv = runner.argv("r2", tree, uv, "uv run --no-sync pytest -q")
     mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "--mount"]
-    assert mounts[1] == f"type=volume,source={uv.volume},target=/deps,readonly"
+    assert mounts[2] == f"type=volume,source={uv.volume},target=/deps,readonly"
     envs = [argv[i + 1] for i, a in enumerate(argv) if a == "--env"]
     assert envs == ["HOME=/tmp", "CI=1", "UV_PROJECT_ENVIRONMENT=/deps/venv"]
 
     argv = runner.argv("r3", tree, None, "make test")
     assert [argv[i + 1] for i, a in enumerate(argv) if a == "--mount"] == [
-        f"type=bind,source={tree.resolve()},target=/repo"
+        f"type=bind,source={tree.resolve()},target=/src,readonly",
+        "type=volume,target=/repo",
     ]
+    quoted = "echo \"a b\" 'c' $HOME"
+    assert runner.argv("r4", tree, None, quoted)[-2:] == ["sh", quoted]
     with pytest.raises(ValueError):
         runner.argv("../x", tree, None, "make test")
 
@@ -301,7 +311,7 @@ async def test_default_commands_and_the_run_saved(repo_fixture, fake_docker, mon
     got = await f.tool.run({"repo": R, "command": "make test"}, ctx(f.store))
     assert got.ok and "passed" in got.content and "exit code 0" in got.content
     assert "3 passed" in got.content
-    assert runs_started(fake_docker)[-1][-3:] == ["sh", "-c", "make test"]
+    assert runs_started(fake_docker)[-1][-2:] == ["sh", "make test"]
 
     expected = {
         "npm": "npm test",
@@ -315,18 +325,18 @@ async def test_default_commands_and_the_run_saved(repo_fixture, fake_docker, mon
     got = await f.tool.run({"repo": R}, ctx(f.store, chat="c2"))
     assert got.ok and "failed" in got.content and "exit code 1" in got.content
     argv = runs_started(fake_docker)[-1]
-    assert argv[-3:] == ["sh", "-c", expected["npm"]]
+    assert argv[-2:] == ["sh", expected["npm"]]
     assert not (f.clone / "node_modules").exists()
     (f.clone / "requirements.txt").write_text("pytest\n")
     install(f.deps, f.repo, f.clone, fake_docker)
     await f.tool.run({"repo": R}, ctx(f.store))
-    assert runs_started(fake_docker)[-1][-3:] == ["sh", "-c", expected["pip"]]
+    assert runs_started(fake_docker)[-1][-2:] == ["sh", expected["pip"]]
     (f.clone / "pyproject.toml").write_text(UV_PROJECT)
     (f.clone / "uv.lock").write_text("version = 1\n")
     install(f.deps, f.repo, f.clone, fake_docker)
     await f.tool.run({"repo": R}, ctx(f.store))
     argv = runs_started(fake_docker)[-1]
-    assert argv[-3:] == ["sh", "-c", expected["uv"]]
+    assert argv[-2:] == ["sh", expected["uv"]]
     assert "UV_PROJECT_ENVIRONMENT=/deps/venv" in argv
 
     runs = f.runner.runs(f.repo.id)
@@ -347,7 +357,8 @@ async def test_a_run_never_mounts_the_clone_or_git(repo_fixture, fake_docker):
     await f.tool.run({"repo": R, "command": "true"}, ctx(f.store))
     argv = runs_started(fake_docker)[-1]
     mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "--mount"]
-    assert len(mounts) == 1 and mounts[0].endswith(",target=/repo")
+    assert len(mounts) == 2 and mounts[0].endswith(",target=/src,readonly")
+    assert mounts[1] == "type=volume,target=/repo"
     source = mounts[0].split("source=")[1].split(",target=")[0]
     assert Path(source).parent.parent == (f.data / "runtime" / "repo-jobs").resolve()
     assert str(f.clone.resolve()) not in " ".join(argv)
@@ -378,27 +389,41 @@ async def test_a_refused_tree_is_an_error_run(repo_fixture, fake_docker, monkeyp
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
-def test_job_folder_is_private_while_the_tree_stays_writable(runner, tmp_path):
-    """The tree is opened up for the container's user (10001), so the job folder around it
-    is 0o700: no other local user can reach the copy. Docker mounts the tree itself."""
-    src = tmp_path / "src"
-    (src / "pkg").mkdir(parents=True)
-    (src / "pkg" / "mod.py").write_text("print(1)\n")
+def test_job_folder_is_private_and_the_tree_only_readable(runner, tmp_path):
+    """The container only reads the PC's copy (at /src): folders and executables 0o755, files
+    0o644, nothing group- or world-writable, and no node_modules folder in it (the npm volume
+    is mounted at /repo/node_modules in the container's own copy). The job folder is 0o700."""
     jobs = runner.data_dir / "runtime" / "repo-jobs"
     jobs.mkdir(parents=True)
     jobs.chmod(0o755)  # left from an older version: tightened too
     job = jobs / "0123abcd"
     tree = job / "tree"
-    old_umask = os.umask(0o022)
+    src = tmp_path / "src"
+    old_umask = os.umask(0o000)  # no umask: the clone's own files are world-writable too
     try:
-        runner._prepare(src, job, tree, None)
+        (src / "pkg").mkdir(parents=True)
+        (src / "pkg" / "mod.py").write_text("print(1)\n")
+        (src / "run.sh").write_text("#!/bin/sh\n")
+        (src / "run.sh").chmod(0o700)  # executable: 0o755 in the copy
+        (src / "open.txt").write_text("x")
+        npm_files(src)
+        assert stat.S_IMODE((src / "open.txt").stat().st_mode) & stat.S_IWOTH
+        plan = runner.deps.plan(a_repo(), src)
+        runner._prepare(src, job, tree, plan)
     finally:
         os.umask(old_umask)
     assert stat.S_IMODE(jobs.stat().st_mode) == 0o700
     assert stat.S_IMODE(job.stat().st_mode) == 0o700
-    assert stat.S_IMODE(tree.stat().st_mode) == 0o777
-    assert stat.S_IMODE((tree / "pkg").stat().st_mode) == 0o777
-    assert stat.S_IMODE((tree / "pkg" / "mod.py").stat().st_mode) == 0o666
+    assert not (tree / "node_modules").exists()
+    modes = {
+        p.relative_to(tree).as_posix(): stat.S_IMODE(p.stat().st_mode) for p in tree.rglob("*")
+    }
+    modes["."] = stat.S_IMODE(tree.stat().st_mode)
+    assert modes == {
+        ".": 0o755, "pkg": 0o755, "pkg/mod.py": 0o644, "run.sh": 0o755, "open.txt": 0o644,
+        "package.json": 0o644, "package-lock.json": 0o644,
+    }  # fmt: skip
+    assert all(mode & (stat.S_IWGRP | stat.S_IWOTH) == 0 for mode in modes.values())
 
 
 async def test_sweep_removes_left_jobs_and_containers(runner, fake_docker, monkeypatch):
@@ -475,6 +500,105 @@ async def test_hanging_tests_stop_and_keep_tail(tmp_path, docker_or_skip, monkey
         # the chat carries on: the next run works
         again = await f.runner.run(f.repo, "c1", "echo ok")
         assert again.status == "passed" and "ok" in again.output
+    finally:
+        f.store.conn.close()
+
+
+@pytest.mark.docker
+async def test_a_run_writes_its_own_copy_and_never_the_pcs(tmp_path, docker_or_skip, monkeypatch):
+    """The PC's copy is read-only at /src; the run works on the container's own copy at /repo
+    (a volume Docker removes with the container), so it can write files there."""
+    f = await make_fixture(tmp_path, ("docker",), docker_or_skip)
+    seen: dict[str, dict[str, bytes]] = {}
+    remove = testrun.remove_tree
+
+    def snapshot_then_remove(job):
+        tree = Path(job) / "tree"
+        if tree.is_dir():
+            seen["tree"] = {
+                p.relative_to(tree).as_posix(): (p.read_bytes() if p.is_file() else b"/")
+                for p in tree.rglob("*")
+            }
+        remove(job)
+
+    monkeypatch.setattr(testrun, "remove_tree", snapshot_then_remove)
+    try:
+        expected = {
+            p.relative_to(f.clone).as_posix(): (p.read_bytes() if p.is_file() else b"/")
+            for p in f.clone.rglob("*")
+            if ".git" not in p.relative_to(f.clone).parts
+        }
+        command = (
+            "touch made && ls made && echo changed > app.py && cat app.py && pwd && "
+            "{ touch /src/x 2>/dev/null || echo src-is-read-only; }"
+        )
+        run = await f.runner.run(f.repo, "c1", command)
+        assert run.status == "passed", run.output
+        assert "made" in run.output and "changed" in run.output and "/repo" in run.output
+        assert "src-is-read-only" in run.output
+        assert seen["tree"] == expected  # the PC's copy is as it was copied
+        assert (f.clone / "app.py").read_text() == "print(1)\n"
+        again = await f.runner.run(f.repo, "c1", "test -e made || echo fresh; cat app.py")
+        assert again.status == "passed" and "fresh" in again.output, again.output
+        assert "print(1)" in again.output  # each run starts from a new copy
+        assert list((f.data / "runtime" / "repo-jobs").glob("*")) == []
+    finally:
+        f.store.conn.close()
+
+
+@pytest.mark.docker
+async def test_a_command_with_quotes_and_dollars_runs_as_written(tmp_path, docker_or_skip):
+    f = await make_fixture(tmp_path, ("docker",), docker_or_skip)
+    try:
+        command = (
+            "printf '%s|' \"a  b\" 'it'\"'\"'s' \"$HOME\" '$HOME' \"$1\"; echo; "
+            "echo 'x\"; exit 9'"
+        )
+        run = await f.runner.run(f.repo, "c1", command)
+        assert run.status == "passed", run.output
+        lines = run.output.splitlines()
+        assert lines[0] == "a  b|it's|/tmp|$HOME||"
+        assert lines[1] == 'x"; exit 9'
+    finally:
+        f.store.conn.close()
+
+
+@pytest.mark.docker
+def test_a_failed_copy_fails_the_run_with_its_own_words(tmp_path, docker_or_skip):
+    """No volume at /repo: the read-only root refuses the copy, and the command never runs."""
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tree / "a.txt").write_text("x")
+    proc = subprocess.run(
+        ["docker", "run", "--rm", "--network", "none", "--read-only", "--user", "10001:10001",
+         "--mount", f"type=bind,source={tree.resolve()},target=/src,readonly",
+         docker_or_skip, "sh", "-c", testrun.COPY_THEN_RUN, "sh", "echo ran"],
+        capture_output=True, text=True, timeout=120,
+    )  # fmt: skip
+    assert proc.returncode != 0
+    assert "cp:" in proc.stderr and "ran" not in proc.stdout
+
+
+@pytest.mark.docker
+async def test_an_npm_run_sees_its_dependencies(tmp_path, docker_or_skip):
+    f = await make_fixture(tmp_path, ("docker",), docker_or_skip)
+    try:
+        npm_files(f.clone)
+        plan = f.deps.plan(f.repo, f.clone)
+        job = tmp_path / "install-job"
+        f.deps.stage(plan, f.clone, job)
+        ok, out = await f.deps.install(f.repo, plan, job)
+        assert ok, out
+        try:
+            run = await f.runner.run(
+                f.repo, "c1",
+                "ls -a node_modules && touch made && "
+                "{ touch node_modules/x 2>/dev/null || echo deps-read-only; }",
+            )  # fmt: skip
+            assert run.status == "passed", run.output
+            assert ".package-lock.json" in run.output and "deps-read-only" in run.output
+        finally:
+            await f.deps.remove_for(f.repo)
     finally:
         f.store.conn.close()
 
