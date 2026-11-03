@@ -260,3 +260,40 @@ def test_file_diff_shapes():
     assert file_diff("a", None, "x\n").startswith("--- /dev/null\n+++ b/a\n")
     assert file_diff("a", "x\n", None).startswith("--- a/a\n+++ /dev/null\n")
     assert "\\ No newline at end of file" in file_diff("a", "x", "y")
+
+
+async def test_commit_card_leaves_index_alone_and_matches_commit(setup):
+    store, repo, tool = setup
+    await on_branch(tool, store)
+    clone = store.dir(repo)
+    await edit(tool, store, action="write", path="a.txt", content="new\n")
+    await edit(tool, store, action="replace", path="app.py", old="1", new="2")
+    await edit(tool, store, action="delete", path="README.md")
+    before = git_out(store, repo, "status", "--porcelain=v1")
+    index_before = (clone / ".git" / "index").read_bytes()
+    detail = await tool.approval_detail(
+        {"repo": R, "action": "commit", "message": "Change things"}, ctx_for(store)
+    )
+    assert git_out(store, repo, "status", "--porcelain=v1") == before
+    assert (clone / ".git" / "index").read_bytes() == index_before
+    assert git_out(store, repo, "diff", "--cached", "--name-only") == ""
+    assert not list(store.git.home.glob("index-*"))
+    got = await edit(tool, store, action="commit", message="Change things")
+    assert got.ok, got.content
+    shown = git_out(store, repo, "show", "--format=", "HEAD")
+    assert detail["diff"].rstrip() == shown.rstrip()
+
+
+async def test_delete_binary_and_large_files(setup):
+    store, repo, tool = setup
+    await on_branch(tool, store)
+    clone = store.dir(repo)
+    (clone / "pic.png").write_bytes(b"\x89PNG\x00\x01")
+    (clone / "big.txt").write_bytes(b"a" * (512 * 1024 + 1))
+    for path in ("pic.png", "big.txt"):
+        detail = await tool.approval_detail(
+            {"repo": R, "action": "delete", "path": path}, ctx_for(store)
+        )
+        assert detail["diff"] == f"Binary or large file {path} deleted\n"
+        got = await edit(tool, store, action="delete", path=path)
+        assert got.ok and not (clone / path).exists()
