@@ -399,7 +399,8 @@ def test_setup_secret_and_code_never_logged(tmp_path, caplog, capsys, run_cmd_se
     assert host.spawned[0][5] == str(data.resolve())
     assert run_cmd_setup.run_server.calls == [("127.0.0.1", 8765)]
     # The window is the owner's: no uvicorn banner or access-log lines in it.
-    assert run_cmd_setup.run_server.kwargs == [{"log_level": "warning", "access_log": False}]
+    # critical: not even uvicorn's raw bind error or a traceback reaches the owner's window.
+    assert run_cmd_setup.run_server.kwargs == [{"log_level": "critical", "access_log": False}]
 
 
 def test_setup_opens_the_browser_without_printing_the_link(tmp_path, capsys, run_cmd_setup):
@@ -431,10 +432,24 @@ def test_setup_stopped_before_passkey_says_so(tmp_path, capsys, run_cmd_setup):
 
 def test_setup_server_that_never_starts_says_the_port_is_busy(tmp_path, capsys, run_cmd_setup):
     run_cmd_setup.run_server.never_starts = True
-    assert run_cmd_setup(tmp_path / "data") == 1
+    answers = iter([True, False])  # free at the check, taken when the server tried to bind
+    assert run_cmd_setup(tmp_path / "data", free=lambda host, port: next(answers)) == 1
     out = capsys.readouterr().out
     assert PORT_BUSY.format(port=8765) in out and STOPPED_EARLY not in out
     assert run_cmd_setup.host.spawned == []
+
+
+def test_setup_start_failure_with_a_free_port_is_not_called_a_busy_port(
+    tmp_path, capsys, run_cmd_setup
+):
+    """uvicorn also exits with STARTUP_FAILURE when the app's own startup fails: with the port
+    still free, the owner is not told to close another program."""
+    run_cmd_setup.run_server.never_starts = True
+    probes = []
+    assert run_cmd_setup(tmp_path / "data", free=lambda h, p: probes.append(p) or True) == 1
+    out = capsys.readouterr().out
+    assert STOPPED_EARLY in out and PORT_BUSY.format(port=8765) not in out
+    assert probes == [8765, 8765]  # checked again after the failed start
 
 
 def test_setup_says_at_once_when_the_launcher_cant_start(tmp_path, capsys, run_cmd_setup):
@@ -483,7 +498,10 @@ def test_setup_with_a_real_server_on_a_taken_port_says_the_port_is_busy(
         (data / "config.toml").write_text(
             f"port = {port}\npublic_origin = 'http://localhost:{port}'\n", encoding="utf-8"
         )
-        assert run_cmd_setup(data, free=lambda host, p: True) == 1
+        checks = iter([True])  # the first check misses it; after the failed start the
+        # real bind test sees the port taken
+        free = lambda host, p: next(checks, None) or cli.port_free(host, p)  # noqa: E731
+        assert run_cmd_setup(data, free=free) == 1
     out = capsys.readouterr().out
     assert PORT_BUSY.format(port=port) in out and STOPPED_EARLY not in out
     assert run_cmd_setup.host.spawned == []
@@ -743,6 +761,19 @@ def test_setup_protects_the_program_folder_of_a_release_only(tmp_path, run_cmd_s
     assert run_cmd_setup(data, program_folder=lambda: program) == 0
     assert run_cmd_setup.host.protected == [data.resolve(), program]
     assert cli._release_program_folder() is None  # this checkout is the developers' version
+
+
+@pytest.mark.parametrize("clone", [False, True])
+def test_release_program_folder_is_never_a_git_clone(tmp_path, clone):
+    """A git clone of a release tag has a release version too, but it is a developer's
+    checkout (node_modules and all): only an unzipped release folder is protected."""
+    root = tmp_path / "hearthkeep"
+    root.mkdir()
+    if clone:
+        (root / ".git").mkdir()
+    found = cli._release_program_folder(root=root, version="0.1.0")
+    assert found == (None if clone else root)
+    assert cli._release_program_folder(root=root, version="0.0.0") is None
 
 
 def test_setup_carries_on_when_a_folder_cant_be_protected(tmp_path, capsys, run_cmd_setup):
