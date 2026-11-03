@@ -88,6 +88,8 @@ def harness(tmp_path):
             addon_probes=None,
             registry=None,
             control=None,
+            setup=None,
+            peer=("127.0.0.1", 50000),
         ):
             self.chat = FakeChatClient(list(scripts))
 
@@ -111,8 +113,10 @@ def harness(tmp_path):
                 git=git,
                 addon_probes=addon_probes,
                 control=control,
+                setup=setup,
             )
-            client = TestClient(app, base_url=ORIGIN)
+            # The TCP peer: this PC by default (setup mode answers only to it).
+            client = TestClient(app, base_url=ORIGIN, client=peer)
             client.__enter__()
             clients.append(client)
             return client

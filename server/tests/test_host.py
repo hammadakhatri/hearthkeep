@@ -15,6 +15,7 @@ from hearthkeep.host import (
     DEFAULT_DATA_DIR,
     LOCATION_FILE,
     MAX_DATA_DIR_CHARS,
+    NOT_LOCAL,
     REPO_ROOT,
     UNSUPPORTED_HOST,
     HostUnsupported,
@@ -291,3 +292,37 @@ def test_system32_exe(monkeypatch):
 def test_pythonw_path(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "executable", str(tmp_path / "venv" / "python.exe"))
     assert startup.pythonw_path() == tmp_path / "venv" / "pythonw.exe"
+
+
+# ---- mapped network drives ----------------------------------------
+
+
+def test_mapped_network_drive_is_refused(tmp_path, no_path_rules):
+    """A mapped drive (Z:) passes the path rules; Windows says it is remote."""
+    asked = []
+
+    class Mapped(WindowsHost):
+        def drive_type(self, root):
+            asked.append(root)
+            return host_module.DRIVE_REMOTE
+
+    assert Mapped().on_network_drive(PureWindowsPath(r"Z:\Hearthkeep\data"))
+    assert asked == ["Z:\\"]
+    host = Mapped()
+    host.on_network_drive = lambda path: True
+    assert host.check_data_dir(tmp_path / "data") == NOT_LOCAL
+
+
+def test_local_or_unknown_drive_is_not_network(tmp_path, no_path_rules):
+    class Fixed(WindowsHost):
+        def drive_type(self, root):
+            return 3  # DRIVE_FIXED
+
+    class Broken(WindowsHost):
+        def drive_type(self, root):
+            raise OSError("no kernel32 here")
+
+    assert not Fixed().on_network_drive(PureWindowsPath(r"C:\Hearthkeep\data"))
+    assert not Broken().on_network_drive(PureWindowsPath(r"C:\Hearthkeep\data"))
+    assert not Fixed().on_network_drive(PureWindowsPath(r"relative\data"))  # no drive: not asked
+    assert Fixed().check_data_dir(tmp_path / "data") is None

@@ -19,6 +19,7 @@ import shutil
 import stat
 import subprocess
 import zipfile
+import zlib
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -60,6 +61,14 @@ BUNDLE_UNUSABLE = (
     "The downloaded web app couldn't be unpacked, so it wasn't used. "
     "Double-click Setup.cmd to try again."
 )
+BUNDLE_SWAP_FAILED = (
+    "Hearthkeep's web app couldn't be put in place. Close Hearthkeep, then double-click "
+    "Setup.cmd again."
+)
+BUNDLE_NOT_PUBLISHED = (
+    "Hearthkeep's web app for this version isn't on its release page yet. Try again in a "
+    "little while: double-click Setup.cmd again."
+)
 NO_BUNDLE_NO_REPO = (
     "This copy of Hearthkeep is missing its web app. Download hearthkeep-{v}.zip from the "
     "Releases page of the Hearthkeep project on GitHub, unzip it, and double-click Setup.cmd "
@@ -76,7 +85,7 @@ MAIN_IS_FOR_DEVELOPERS = (
 )
 RELEASES_PAGE_FALLBACK = "the Releases page of the Hearthkeep project on GitHub"
 
-_RELEASE_VERSION = re.compile(r"^\d+\.\d+\.\d+$")
+_RELEASE_VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 _NAME = r"[A-Za-z0-9_.-]+"
 _ORIGIN_FORMS = (
     re.compile(rf"^https://github\.com/({_NAME})/({_NAME}?)(?:\.git)?$"),
@@ -99,7 +108,7 @@ class _NotFound(BundleError):
 
 def release_version(version: str = hearthkeep.__version__) -> str | None:
     """`version` when it is a release (`x.y.z`, not `0.0.0`), else None."""
-    if _RELEASE_VERSION.match(version) and version != "0.0.0":
+    if _RELEASE_VERSION.fullmatch(version) and version != "0.0.0":
         return version
     return None
 
@@ -306,7 +315,15 @@ def safe_extract(zip_path: Path, dest: Path) -> None:
                         if written > MAX_BUNDLE_BYTES:
                             raise BundleError("the bundle is too large")
                         out.write(chunk)
-    except (zipfile.BadZipFile, zipfile.LargeZipFile, EOFError) as exc:
+    except (
+        zipfile.BadZipFile,
+        zipfile.LargeZipFile,
+        EOFError,
+        zlib.error,  # corrupt compressed data
+        RuntimeError,  # an encrypted entry
+        NotImplementedError,  # a compression method zipfile can't read
+        ValueError,  # anything else zipfile finds wrong with an entry
+    ) as exc:
         raise BundleError("the bundle is not a readable zip") from exc
 
 
@@ -348,6 +365,11 @@ def _ensure_release(
     find: Callable[[str], Path | None],
     cache: Path,
 ) -> BundleOutcome:
+    old = dist.with_name(dist.name + ".old")
+    if not dist.exists() and old.is_dir():
+        # A swap stopped between its two renames: put the previous app back first.
+        with contextlib.suppress(OSError):
+            old.rename(dist)
     if verify_dist(dist, v):
         return "ready"
     repo = github_repo(run=run, find=find)
@@ -366,6 +388,9 @@ def _ensure_release(
     try:
         try:
             download(base + asset, zip_path, client=client)
+        except _NotFound:
+            say(BUNDLE_NOT_PUBLISHED)
+            return "failed"
         except BundleError:
             say(BUNDLE_DOWNLOAD_FAILED)
             return "failed"
@@ -384,9 +409,13 @@ def _ensure_release(
             _remove(new)
             safe_extract(zip_path, new)
             write_manifest(new, v)
-            _swap_in(new, dist)
         except (BundleError, OSError):
             say(BUNDLE_UNUSABLE)
+            return "failed"
+        try:
+            _swap_in(new, dist)
+        except OSError:  # most often a file in use by a running Hearthkeep
+            say(BUNDLE_SWAP_FAILED)
             return "failed"
         say(BUNDLE_READY)
         return "downloaded"

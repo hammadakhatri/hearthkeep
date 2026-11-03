@@ -8,6 +8,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 from hearthkeep.api.common import (
     ENROLLMENT_CODE_TTL_MINUTES,
@@ -27,6 +28,7 @@ from hearthkeep.approvals import ApprovalError
 from hearthkeep.auth.credentials import DEVICE_NAME_MAX, Credential, complete_enrollment
 from hearthkeep.auth.sessions import Session
 from hearthkeep.auth.webauthn import VerificationError, b64url_decode
+from hearthkeep.lifecycle import EXIT_STOPPED
 
 router = APIRouter(prefix="/api")
 
@@ -167,7 +169,14 @@ async def enroll_verify(body: EnrollVerifyBody, request: Request) -> JSONRespons
         raise ApiError(409, "credential_exists") from None
     if cred is None:
         raise _enroll_failed(hk, request, "invalid_code", "verify")
-    return _signed_in(hk, request, cred, status=201)
+    response = _signed_in(hk, request, cred, status=201)
+    if purpose == "first_device" and hk.setup is not None and hk.setup.active:
+        # Setup is finished: the secret goes now, and once this answer is sent the setup
+        # server stops so `hearthkeep setup` can hand over to the launcher.
+        hk.setup.complete()
+        if hk.control is not None:
+            response.background = BackgroundTask(hk.control.request, EXIT_STOPPED)
+    return response
 
 
 # ---- login / logout ---------------------------------------------------------------------

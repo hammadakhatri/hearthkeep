@@ -1,8 +1,10 @@
-"""Command line: `hearthkeep serve | launch | open | enroll-code | secrets set/list |
+"""Command line: `hearthkeep setup | serve | launch | open | enroll-code | secrets set/list |
 sandbox build/status | startup enable/disable/status`.
 
-`launch` keeps `serve` running in the background (start at login runs it); `open` opens
-Hearthkeep in the browser, starting the launcher if needed (the Start menu shortcut runs it)."""
+`setup` (run by Setup.cmd) gets the web app ready, runs the server in setup mode until the
+first passkey exists, then hands over to the launcher. `launch` keeps `serve` running in the
+background (start at login runs it); `open` opens Hearthkeep in the browser, starting the
+launcher if needed (the Start menu shortcut runs it)."""
 
 from __future__ import annotations
 
@@ -10,6 +12,7 @@ import argparse
 import dataclasses
 import getpass
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -19,7 +22,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from hearthkeep import db, launcher, startup
+from hearthkeep import db, launcher, shortcut, startup
 from hearthkeep.api.app import DB_FILE
 from hearthkeep.api.common import ENROLLMENT_CODE_TTL_MINUTES
 from hearthkeep.auth.enrollment import EnrollmentCodes, EnrollmentError, first_device_allowed
@@ -38,6 +41,8 @@ from hearthkeep.runtime.supervisor import (
 )
 from hearthkeep.sandbox import image as sandbox_image
 from hearthkeep.secrets import SecretStore, SecretStoreError
+from hearthkeep.setupmode import SetupMode, setup_url
+from hearthkeep.webbundle import ensure_web_bundle
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -60,6 +65,40 @@ NO_PASSKEY_YET = (
 )
 NOT_SET_UP = (
     "Hearthkeep isn't set up on this PC yet. Double-click Setup.cmd in the Hearthkeep folder."
+)
+
+# `hearthkeep setup` console copy: plain ASCII (the Windows console code page), no commands.
+SETUP_INTRO = (
+    "Setting up Hearthkeep\n=====================\nThis window sets up Hearthkeep on this PC."
+)
+STEP_WEB = "Step 2 of 3: Getting Hearthkeep's web app ready..."
+STEP_START = "Step 3 of 3: Starting Hearthkeep..."
+BROWSER_OPENING = "Your browser is opening Hearthkeep's setup page."
+KEEP_OPEN = "Keep this window open until setup is finished. Closing it stops setup."
+BROWSER_FAILED = (
+    "Your browser didn't open. Open this link in your browser to continue setup. It works "
+    "only while this window is open:"
+)
+ALREADY_SET_UP = "Hearthkeep is already set up on this PC. Opening it in your browser..."
+PORT_BUSY = (
+    "Another program on this PC is using Hearthkeep's address (port {port}). Close it, or "
+    "restart the PC, then double-click Setup.cmd again."
+)
+STOPPED_EARLY = "Setup stopped before it was finished. Double-click Setup.cmd to start again."
+SHORTCUT_FAILED = (
+    "The Start menu shortcut couldn't be made. You can still open Hearthkeep by "
+    "double-clicking Setup.cmd."
+)
+FINISHED = (
+    "Setup is finished. Hearthkeep keeps running in the background; open it from the Start "
+    "menu any time. You can close this window now."
+)
+FINISHED_SLOW = (
+    "Setup is finished, but Hearthkeep is taking a while to start. Open it from the Start "
+    "menu in a minute. You can close this window now."
+)
+LOCATION_NOT_SAVED = (
+    "Hearthkeep couldn't note where its data folder is on this PC. Setup carries on without it."
 )
 
 startup_run = subprocess.run  # how `startup` runs schtasks; replaced in tests
@@ -319,13 +358,14 @@ def build_app(
     *,
     verifier: Verifier,
     control: ServerControl,
+    setup: SetupMode | None = None,
     make_llama: Callable = build_llama_process,
     make_comfy: Callable = build_comfyui_process,
     detect_vram: Callable[[], float | None] = detect_vram_gb,
 ) -> tuple[FastAPI, list[str]]:
     """The app `serve` runs, and the startup lines to print. Builds nothing that runs yet and
-    never issues an enrollment code (only `cmd_serve` does, on a console). Raises
-    ProcessError when a model server can't be set up."""
+    never issues an enrollment code (only `cmd_serve` does, on a console). `setup` turns on
+    setup mode. Raises ProcessError when a model server can't be set up."""
     from hearthkeep.api.app import create_app
 
     secrets = SecretStore(settings.data_dir)
@@ -340,6 +380,7 @@ def build_app(
         secrets=secrets,
         models=stack,
         control=control,
+        setup=setup,
     )
     return app, lines
 
@@ -420,6 +461,138 @@ def cmd_serve(
     # shutdown, which stops every model server Hearthkeep started.
     host = "127.0.0.1" if settings.host == "localhost" else settings.host
     return run_server(app, host, settings.port, control=control)
+
+
+def port_free(host: str, port: int) -> bool:
+    """Whether `port` can be bound on `host` now: a bind test on a socket closed at once."""
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+def _is_data_folder(path: Path) -> bool:
+    """Whether `path` already holds a Hearthkeep data folder (an install to keep as it is)."""
+    return any((path / name).exists() for name in ("config.toml", DB_FILE))
+
+
+def _has_passkey(settings: Settings) -> bool:
+    conn = _connect(settings)
+    try:
+        return not first_device_allowed(conn)
+    finally:
+        conn.close()
+
+
+def cmd_setup(
+    args: argparse.Namespace,
+    *,
+    host: Host | None = None,
+    open_url: Callable[[str], bool] = webbrowser.open,
+    ensure_bundle: Callable = ensure_web_bundle,
+    make_verifier: Callable[[Settings], Verifier] | None = None,
+    wait: Callable = launcher.wait_for_health,
+    opener: Callable = launcher.open_app,
+    free: Callable[[str, int], bool] = port_free,
+    make_llama: Callable = build_llama_process,
+    make_comfy: Callable = build_comfyui_process,
+    detect_vram: Callable[[], float | None] = detect_vram_gb,
+) -> int:
+    """Set Hearthkeep up on this PC (Setup.cmd runs this; the arguments after `args` are seams
+    for tests). A re-run once a passkey exists only opens the app. Otherwise it gets the web app
+    ready, serves in setup mode until the first passkey is made in the browser, then installs
+    the Start menu shortcut and starts the launcher in the background."""
+    print(SETUP_INTRO)
+    host = host or current_host()
+    if not host.supported:
+        print(UNSUPPORTED_HOST)
+        return EXIT_USAGE
+
+    # The folder: the one asked for, else the one setup recorded, else the default.
+    recorded = host.read_location()
+    data = Path(args.data) if args.data else (recorded or host.default_data_dir())
+    # The folder rules are for a new folder; an existing install is used where it is.
+    if not _is_data_folder(data):
+        problem = host.check_data_dir(data)
+        if problem:
+            print(problem)
+            return 1
+    data = data.resolve()
+    settings = _settings(data)  # creates the folder and its config on first run
+    if recorded is None:  # never repoint a record whose folder still exists
+        try:
+            host.write_location(data)
+        except OSError:
+            print(LOCATION_NOT_SAVED)
+
+    # Before the web app step: a re-run must not rebuild files a running Hearthkeep serves.
+    if _has_passkey(settings):
+        print(ALREADY_SET_UP)
+        # In this window a problem is printed, not shown in a message box.
+        return opener(settings, host, open_url=open_url, notify=print)
+
+    print(STEP_WEB)
+    if ensure_bundle(say=print) == "failed":
+        return 1
+
+    host_ip = "127.0.0.1" if settings.host == "localhost" else settings.host
+    if not free(host_ip, settings.port):
+        print(PORT_BUSY.format(port=settings.port))
+        return 1
+
+    print(STEP_START)
+    if make_verifier is None:
+        from hearthkeep.auth.webauthn import PyWebAuthnVerifier
+
+        make_verifier = PyWebAuthnVerifier
+    setup = SetupMode()
+    control = ServerControl(supervised=False, setup_mode=True)
+    try:
+        # Its startup lines are not printed: model details mean nothing at first setup.
+        app, _lines = build_app(
+            settings, verifier=make_verifier(settings), control=control, setup=setup,
+            make_llama=make_llama, make_comfy=make_comfy, detect_vram=detect_vram,
+        )  # fmt: skip
+    except ProcessError as exc:
+        print(exc.user_message)
+        return 1
+
+    def announce() -> None:
+        secret = setup.secret
+        if secret is None:
+            return
+        link = setup_url(settings.public_origin, secret)
+        try:
+            opened = bool(open_url(link))
+        except Exception:  # no browser at all: the same as one that didn't open
+            opened = False
+        if opened:
+            print(BROWSER_OPENING)
+            print(KEEP_OPEN)
+        else:
+            # The only time the link (and so the secret) is shown: in this window alone.
+            print(BROWSER_FAILED)
+            print(link)
+
+    run_server(app, host_ip, settings.port, control=control, on_started=announce)
+    if not setup.completed:
+        print(STOPPED_EARLY)
+        return 1
+
+    try:
+        host.install_shortcut(data)
+    except (shortcut.ShortcutError, OSError):
+        print(SHORTCUT_FAILED)
+    try:
+        process = host.spawn_detached(launcher.launcher_argv(data))
+    except OSError:
+        process = None
+    base = f"http://127.0.0.1:{settings.port}"
+    print(FINISHED if wait(base, want_setup_mode=False, process=process) else FINISHED_SLOW)
+    return 0
 
 
 def _host_data(args: argparse.Namespace, host: Host) -> Path | None:
@@ -613,6 +786,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--log-file", metavar="PATH", help="append everything printed to PATH (UTF-8)"
     )
     serve.set_defaults(func=cmd_serve)
+
+    setup = sub.add_parser("setup", help="set up Hearthkeep on this PC (used by Setup.cmd)")
+    setup.add_argument("--data", help="path to your Hearthkeep data folder")
+    setup.set_defaults(func=cmd_setup)
 
     launch = sub.add_parser(
         "launch", help="keep Hearthkeep running in the background (used by start at login)"

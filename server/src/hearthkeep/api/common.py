@@ -42,6 +42,7 @@ from hearthkeep.sandbox.inspect import Inspector
 from hearthkeep.sandbox.runs import RunStore
 from hearthkeep.secrets import SecretStore
 from hearthkeep.sent import SentStore
+from hearthkeep.setupmode import SetupMode
 from hearthkeep.tools.base import ToolRegistry
 
 SESSION_COOKIE = "hk_session"
@@ -159,6 +160,7 @@ class Services:
     repo_tests: RepoTestRunner | None = None  # each repo's test runs
     addons: Addons | None = None  # what each add-on can do right now
     control: ServerControl | None = None  # restart and stop requests
+    setup: SetupMode | None = None  # set while `hearthkeep setup` runs this server
     chat_mode: Literal["owned", "external", "none"] = "external"
     health_cache: tuple[float, bool] | None = None
     health_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
