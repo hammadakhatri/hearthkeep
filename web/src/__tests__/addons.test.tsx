@@ -139,6 +139,21 @@ describe('Add-ons', () => {
     expect(screen.getAllByRole('button', { name: 'Shared folders' })).toHaveLength(1)
   })
 
+  it.each(['not_set_up', 'docker_stopped', 'needs_image'])(
+    'analysis %s shows no Shared folders button: it would not fix the problem',
+    async (state) => {
+      mockFetch({ 'GET /api/addons': addonsWith({ analysis: state }) })
+      render(<AddonsPanel />)
+      const analysis = await waitFor(() => {
+        expect(card('analysis')).not.toBeNull()
+        return card('analysis')
+      })
+      expect(within(analysis).getByText(addonList({ analysis: state })[1].message)).toBeInTheDocument()
+      expect(within(analysis).queryByRole('button')).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Shared folders' })).toBeNull()
+    },
+  )
+
   it('openSettings from the shell focuses the add-on card', async () => {
     mockFetch({
       ...settingsRoutes,

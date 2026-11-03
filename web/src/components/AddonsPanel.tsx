@@ -109,6 +109,8 @@ function AddonsView({ state, onNavigate, onLoaded }: Props & { state: AddonsStat
           {addons.map((addon) => {
             const badge = badgeFor(addon)
             const label = actionLabel(addon)
+            // Only once Analysis works: the folders it reads don't fix anything else.
+            const folders = addon.id === 'analysis' && addon.ready
             return (
               <article key={addon.id} id={`addon-${addon.id}`} className="tile addon" tabIndex={-1}>
                 <div className="addon-top">
@@ -118,14 +120,14 @@ function AddonsView({ state, onNavigate, onLoaded }: Props & { state: AddonsStat
                 <p className="addon-about">{addon.about}</p>
                 <p className="addon-needs">Needs: {addon.requires}</p>
                 {!addon.ready && <p className="addon-message">{addon.message}</p>}
-                {(label || addon.id === 'analysis') && (
+                {(label || folders) && (
                   <div className="settings-actions">
                     {label && (
                       <button type="button" className="btn" onClick={() => go(actionTarget(addon))}>
                         {label}
                       </button>
                     )}
-                    {addon.id === 'analysis' && (
+                    {folders && (
                       <button type="button" className="btn ghost" onClick={() => go('settings-folders')}>
                         Shared folders
                       </button>

@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Addon } from '../api/addons'
+import { chatBlocks, type Addon } from '../api/addons'
 import { SetUpPanel } from '../components/SetUpPanel'
 import { Composer } from '../shell/Composer'
 import { GitHubPanel } from '../components/GitHubPanel'
@@ -34,6 +34,14 @@ function chatRoutes(extra: Parameters<typeof mockFetch>[0] = {}) {
     ...extra,
   })
 }
+
+describe('chatBlocks', () => {
+  it('blocks only when the chat model is not set up, offline or in error', () => {
+    expect(chatBlocks(null)).toBe(false) // unknown never blocks
+    for (const state of ['not_set_up', 'offline', 'error']) expect(chatBlocks(addon('chat', { chat: state }))).toBe(true)
+    for (const state of ['ready', 'starting']) expect(chatBlocks(addon('chat', { chat: state }))).toBe(false)
+  })
+})
 
 describe('the composer follows the chat add-on', () => {
   it('is disabled with visible text when no chat model is set up', async () => {
@@ -230,6 +238,49 @@ describe('Images', () => {
     expect(screen.queryByRole('button', { name: 'Create' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Set up Chat model' }))
     expect(openSettings).toHaveBeenCalledWith('addon-chat')
+  })
+
+  it('images ready and the chat model loading keeps the Create form', async () => {
+    mockFetch({ 'GET /api/models': noModels, 'GET /api/images?limit=24': { body: { images: [] } } })
+    renderWithAddons(<Images />, addons({ chat: 'starting' }))
+    expect(await screen.findByRole('textbox', { name: 'Describe the image you want' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Create' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Set up Chat model' })).toBeNull()
+  })
+
+  it.each(['offline', 'error'])('images ready but chat %s shows the chat set-up panel', async (state) => {
+    mockFetch({ 'GET /api/models': noModels, 'GET /api/images?limit=24': { body: { images: [] } } })
+    renderWithAddons(<Images />, addons({ chat: state }))
+    expect(await screen.findByRole('button', { name: 'Set up Chat model' })).toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: 'Describe the image you want' })).toBeNull()
+  })
+
+  it('add-ons unknown and no image cards: no Create form, the Images set-up panel instead', async () => {
+    mockFetch({ 'GET /api/models': noModels, 'GET /api/images?limit=24': { body: { images: [] } } })
+    render(<Images />)
+    const panel = await screen.findByRole('region', { name: 'Set up Images' })
+    expect(within(panel).getByText("ComfyUI and an image model aren't set up on this PC.")).toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: 'Describe the image you want' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Create' })).toBeNull()
+    expect(forbiddenIn(panel.textContent ?? '')).toEqual([])
+  })
+
+  it('add-ons unknown with image cards: the Create form shows as before', async () => {
+    mockFetch({
+      'GET /api/models': {
+        body: {
+          models: [
+            { id: 'z', name: 'Z', kind: 'image', capabilities: [], vram_gb: 1, source: 'owner', resident: false, managed: true },
+          ],
+          errors: [],
+          gpu: { resident: [] },
+        },
+      },
+      'GET /api/images?limit=24': { body: { images: [] } },
+    })
+    render(<Images />)
+    expect(await screen.findByRole('textbox', { name: 'Describe the image you want' })).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Set up Images' })).toBeNull()
   })
 
   it('a 409 chat_not_set_up from Create shows the server message', async () => {
