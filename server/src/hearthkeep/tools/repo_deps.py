@@ -1,10 +1,15 @@
-"""`repo_install`: install a repo's dependencies once per lock file, in the repo sandbox.
+"""`repo_install`: install a repo's dependencies once per lock file, in the repo sandbox;
+`repo_test`: run its tests there, on a throwaway copy of its working tree.
 
 Outward while the dependencies for the current lock file are not cached (the install has the
 internet), Look once they are (running it again does nothing). An install runs only with an
 approval for exactly the lock hash it would install: a lock file that changed after the card
 was shown, or after the call was classified, is refused. Without Docker or the repo image
 nothing runs on the host.
+
+`repo_test` is Look (it is sandboxed: no network, only a copy of the tree, never `.git`) under
+its own level key, `github_tests`. It runs only once the dependencies for the current lock
+file are installed.
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ from hearthkeep.github.deps import (
     remove_job,
 )
 from hearthkeep.github.repos import RepoStore
+from hearthkeep.github.testrun import DEPS_MISSING, TEST_TIMEOUT_S, RepoRun, RepoTestRunner
 from hearthkeep.permissions import ActionClass
 from hearthkeep.tools.base import ToolContext, ToolResult
 from hearthkeep.tools.repo import GITHUB_LEVEL_KEY, UNKNOWN_REPO, github_ready
@@ -155,3 +161,120 @@ class RepoInstallTool:
                 content=f"Installed the {plan.ecosystem} dependencies.\n{output}".rstrip("\n"),
             )
         return ToolResult(ok=False, content=f"The install failed.\n{output}".rstrip("\n"))
+
+
+# -- repo_test -----------------------------------------------------------------------------
+
+TESTS_LEVEL_KEY = "github_tests"
+COMMAND_MAX_CHARS = 500
+DEFAULT_COMMANDS = {
+    "uv": "uv run --no-sync pytest -q",
+    "pip": "/deps/venv/bin/python -m pytest -q",
+    "npm": "npm test",
+}
+NO_COMMAND = (
+    "This repo has no uv.lock (with pyproject.toml), requirements.txt or package-lock.json "
+    "(with package.json), so there is no default test command. Pass 'command', like "
+    '"make test".'
+)
+_STATUS_WORDS = {
+    "passed": "The tests passed",
+    "failed": "The tests failed",
+    "timed_out": f"The tests were stopped after {TEST_TIMEOUT_S} s",
+    "error": "The tests couldn't run",
+}
+
+
+def _report(run: RepoRun) -> str:
+    seconds = run.duration_ms / 1000
+    if run.status == "error":
+        return f"{_STATUS_WORDS['error']}: {run.output}"
+    code = "no exit code" if run.exit_code is None else f"exit code {run.exit_code}"
+    head = f"{_STATUS_WORDS[run.status]} ({code}, {seconds:.1f} s). Command: {run.command}"
+    return f"{head}\n{run.output}".rstrip("\n") if run.output else head
+
+
+class RepoTestTool:
+    name = "repo_test"
+    level_key = TESTS_LEVEL_KEY
+    description = (
+        "Run one of the owner's GitHub repos' tests in Hearthkeep's repo sandbox, on a "
+        "throwaway copy of its working tree (no .git, no network, at most 10 minutes). The "
+        "default command is pytest for uv and pip projects and npm test for npm ones; pass "
+        "'command' for anything else. Install the dependencies first with repo_install."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "repo": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 140,
+                "description": "The repo as owner/name.",
+            },
+            "command": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": COMMAND_MAX_CHARS,
+                "description": "A shell command run in the repo's top folder, like "
+                '"pytest -q tests/test_api.py". Default: the project\'s usual test command.',
+            },
+        },
+        "required": ["repo"],
+        "additionalProperties": False,
+    }
+
+    def __init__(self, repos: RepoStore, deps: DepsCache, runner: RepoTestRunner) -> None:
+        self._repos = repos
+        self._deps = deps
+        self._runner = runner
+
+    def is_available(self) -> bool:
+        return github_ready(self._repos)
+
+    def classify(self, args: dict) -> ActionClass:
+        return ActionClass.LOOK
+
+    def summarize(self, args: dict) -> str:
+        return f"Run the tests of {args.get('repo', 'a repo')}"
+
+    async def _command(self, repo, clone: Path, given: str | None) -> str | None:
+        if given:
+            return given
+        try:
+            plan = await asyncio.to_thread(self._deps.plan, repo, clone)
+        except (DepsTooLarge, ValueError, OSError):
+            return None
+        return DEFAULT_COMMANDS[plan.ecosystem] if plan is not None else None
+
+    async def approval_detail(self, args: dict, ctx: ToolContext) -> dict | None:
+        repo = self._repos.by_name(args["repo"])
+        if repo is None:
+            return None
+        command = await self._command(repo, self._repos.dir(repo), args.get("command"))
+        if command is None:
+            return None
+        return {"repo": repo.full_name, "command": command}
+
+    async def run(self, args: dict, ctx: ToolContext) -> ToolResult:
+        repo = self._repos.by_name(args["repo"])
+        if repo is None:
+            return _fail(UNKNOWN_REPO)
+        clone = self._repos.dir(repo)
+        if not clone.is_dir():
+            return _fail(MISSING_CLONE)
+        given = args.get("command")
+        if given is not None and (
+            not isinstance(given, str) or not given.strip() or len(given) > COMMAND_MAX_CHARS
+        ):
+            return _fail(f"'command' must be 1 to {COMMAND_MAX_CHARS} characters.")
+        missing = await self._deps.unavailable()
+        if missing is not None:
+            return _fail(missing)
+        if await self._deps.current_state(repo, clone) in ("needed", "outdated"):
+            return _fail(DEPS_MISSING)
+        command = await self._command(repo, clone, given)
+        if command is None:
+            return _fail(NO_COMMAND)
+        run = await self._runner.run(repo, ctx.chat_id, command)
+        return ToolResult(ok=run.status != "error", content=_report(run))

@@ -61,6 +61,7 @@ from hearthkeep.github.api import TOKEN_SECRET, GitHubClient
 from hearthkeep.github.deps import DepsCache
 from hearthkeep.github.git import GitRunner
 from hearthkeep.github.repos import RepoStore, sweep_repo_folders
+from hearthkeep.github.testrun import RepoTestRunner
 from hearthkeep.images import ImageStore
 from hearthkeep.numbercheck import NumberChecker
 from hearthkeep.push import PushSender, PushSubscriptions, VapidKeys
@@ -77,7 +78,7 @@ from hearthkeep.tools.files import FilesTool
 from hearthkeep.tools.python import PythonTool, analysis_context
 from hearthkeep.tools.read_pages import ReadPagesTool
 from hearthkeep.tools.repo import RepoEditTool, RepoReadTool
-from hearthkeep.tools.repo_deps import RepoInstallTool
+from hearthkeep.tools.repo_deps import RepoInstallTool, RepoTestTool
 from hearthkeep.tools.send import SendToDevicesTool
 
 DB_FILE = "hearthkeep.db"
@@ -376,6 +377,18 @@ def create_app(
             repo_store.on_remove.append(deps.remove_for)
             if registry.get(RepoInstallTool.name) is None:
                 registry.register(RepoInstallTool(repo_store, deps, Path(settings.data_dir)))
+            # Test runs: a throwaway copy each; what a stop cut short is removed first.
+            repo_tests = RepoTestRunner(
+                conn, Path(settings.data_dir), sandbox_image.DOCKER, deps.image_tag, deps
+            )
+            try:
+                repo_tests.sweep_jobs()
+                if settings.docker_available:
+                    await repo_tests.sweep_containers()
+            except Exception as exc:
+                _log.warning("could not sweep repo test runs: %s", type(exc).__name__)
+            if registry.get(RepoTestTool.name) is None:
+                registry.register(RepoTestTool(repo_store, deps, repo_tests))
             loop = AgentLoop(
                 chat,
                 registry,
@@ -425,6 +438,7 @@ def create_app(
                 github=github,
                 repos=repo_store,
                 deps=deps,
+                repo_tests=repo_tests,
             )
             yield
         finally:

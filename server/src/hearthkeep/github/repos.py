@@ -110,6 +110,22 @@ def _remove_tree(path: Path) -> bool:
     return not os.path.lexists(path)
 
 
+def clone_dir(data_dir: Path, repo_id: str) -> Path:
+    """Where a repo's clone lives: `<data>/workspace/repos/<id>`."""
+    return Path(data_dir) / "workspace" / "repos" / repo_id
+
+
+def is_link(path: Path) -> bool:
+    """A symlink or (Windows) reparse point, such as a junction; also when it can't be told."""
+    return _is_link(path)
+
+
+def remove_tree(path: Path) -> bool:
+    """Remove a folder filled from a clone (a test run's copy, say) the way a clone is
+    removed: read-only files too, never through a link. True once it is gone."""
+    return _remove_tree(path)
+
+
 def _own_dir(folder: Path) -> bool:
     """`folder` is a real directory, with no link on the way from the data folder."""
     return folder.is_dir() and not _is_link(folder)
@@ -204,7 +220,7 @@ class RepoStore:
         return _row(row) if row else None
 
     def dir(self, repo: Repo) -> Path:
-        return self._data_dir / "workspace" / "repos" / repo.id
+        return clone_dir(self._data_dir, repo.id)
 
     def token(self) -> str | None:
         try:
