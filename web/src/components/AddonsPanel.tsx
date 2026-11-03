@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { useAddons, type Addon, type AddonsState } from '../api/addons'
 import { actionTarget, useAddonsState, useOpenSettings, type SettingsAnchor } from '../shell/AddonsContext'
 import { AlertIcon } from '../shell/icons'
+import { RestartNotice } from './RestartNotice'
 
 type Badge = { label: string; green?: boolean }
 
@@ -87,6 +88,7 @@ function AddonsView({ state, onNavigate, onLoaded }: Props & { state: AddonsStat
           Check again
         </button>
       </div>
+      <RestartNotice />
       <p className="settings-lede">What Hearthkeep can use on this PC, and what each part still needs.</p>
       <p className="settings-lede" role="status" aria-live="polite">
         {checked ? 'Checked just now' : ''}

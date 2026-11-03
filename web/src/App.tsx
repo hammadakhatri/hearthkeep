@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, isApiError, UNAUTHENTICATED_EVENT } from './api/client'
 import { AppShell } from './shell/AppShell'
+import { SetupPage } from './views/SetupPage'
 import { SignIn } from './views/SignIn'
 
 type Auth = 'checking' | 'unreachable' | 'signed-out' | 'signed-in'
@@ -11,6 +12,8 @@ function serverAway(error: unknown): boolean {
 }
 
 export default function App() {
+  // First-run setup comes before any session: there is no passkey to sign in with yet.
+  const [onSetup, setOnSetup] = useState(() => window.location.pathname === '/setup')
   const [auth, setAuth] = useState<Auth>('checking')
   const alive = useRef(true)
 
@@ -23,6 +26,7 @@ export default function App() {
 
   useEffect(() => {
     alive.current = true
+    if (onSetup) return
     checkSession()
     const expired = () => setAuth('signed-out')
     window.addEventListener(UNAUTHENTICATED_EVENT, expired)
@@ -30,7 +34,7 @@ export default function App() {
       alive.current = false
       window.removeEventListener(UNAUTHENTICATED_EVENT, expired)
     }
-  }, [checkSession])
+  }, [checkSession, onSetup])
 
   async function signOut() {
     try {
@@ -41,6 +45,16 @@ export default function App() {
     setAuth('signed-out')
   }
 
+  if (onSetup) {
+    return (
+      <SetupPage
+        onLeave={() => {
+          window.history.replaceState(null, '', '/')
+          setOnSetup(false)
+        }}
+      />
+    )
+  }
   if (auth === 'checking') {
     return (
       <div className="splash" aria-busy="true" aria-label="Opening Hearthkeep">

@@ -25,7 +25,7 @@ export function guessDeviceName(ua = navigator.userAgent, touch = navigator.maxT
   return 'This device'
 }
 
-function Note({ kind, children }: { kind: 'error' | 'info'; children: string }) {
+export function Note({ kind, children }: { kind: 'error' | 'info'; children: string }) {
   const Icon = kind === 'error' ? AlertIcon : InfoIcon
   return (
     <div className={`note ${kind}`} role={kind === 'error' ? 'alert' : 'status'}>
