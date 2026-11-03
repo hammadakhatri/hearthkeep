@@ -1246,3 +1246,84 @@ async def test_approved_step_up_is_false_without_a_card(conn, settings, approval
     assert "approval_required" not in types(events)
     assert tool.ran == 1 and tool.seen_ctx.approved_step_up is False
     assert tool.seen_ctx.approved_detail is None
+
+
+# -- final review: a huge tool result can't break the chat; availability re-checked ---------
+
+
+class HugeTool:
+    name = "huge"
+    level_key = "demo"
+    description = "Returns a lot."
+    parameters = {"type": "object", "properties": {"n": {"type": "integer"}}}
+
+    def classify(self, args):
+        return ActionClass.LOOK
+
+    def summarize(self, args):
+        return "Return a lot"
+
+    async def run(self, args, ctx):
+        return ToolResult(ok=True, content="a" * args["n"])
+
+
+@pytest.mark.parametrize("size", [19_999, 20_000, 50_000])
+async def test_a_huge_tool_result_is_cut_before_the_model_sees_it(
+    conn, settings, approvals, registry, size
+):
+    registry.register(HugeTool())
+    set_level(conn, "demo", ToolLevel.ALLOWED)
+    client = FakeChatClient(
+        [
+            [call("huge", {"n": size}), StreamDone("tool_calls")],
+            [TextDelta("ok"), StreamDone("stop")],
+        ]
+    )
+    loop = make_loop(client, registry, approvals, conn, settings)
+    await drain(loop, user("go"))
+    sent = tool_messages(client.calls[1]["messages"])[0]["content"]
+    saved = tool_messages(load_history(conn, CHAT))[0]["content"]
+    assert sent == saved
+    if size <= 20_000:
+        assert sent == "a" * size  # untouched
+    else:
+        assert sent == "a" * 20_000 + f"\n… cut: the tool returned {size} characters …"
+
+
+async def test_a_tool_that_became_unavailable_is_denied_when_called(
+    conn, settings, approvals, registry
+):
+    class Gated(OutwardTool):
+        name = "gated"
+        level_key = "demo"
+        up = True
+
+        def classify(self, args):
+            return ActionClass.LOOK
+
+        def is_available(self):
+            return self.up
+
+    gated = Gated()
+    registry.register(gated)
+    set_level(conn, "demo", ToolLevel.ALLOWED)
+
+    class GoesAway(FakeChatClient):
+        async def stream(self, messages, tools, think):
+            async for event in super().stream(messages, tools, think):
+                gated.up = False  # offered this round, gone by the time it is called
+                yield event
+
+    client = GoesAway(
+        [
+            [call("gated", {"to": "x"}), StreamDone("tool_calls")],
+            [TextDelta("ok"), StreamDone("stop")],
+        ]
+    )
+    loop = make_loop(client, registry, approvals, conn, settings)
+    events = await drain(loop, user("go"))
+    assert "gated" in {t["function"]["name"] for t in client.calls[0]["tools"]}
+    assert gated.ran == 0
+    finished = [e for e in events if e["type"] == "step_finished"]
+    assert finished[0]["ok"] is False and "turned off" in finished[0]["preview"]
+    assert approvals.pending() == []

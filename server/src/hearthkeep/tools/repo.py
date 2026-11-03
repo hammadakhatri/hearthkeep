@@ -14,6 +14,7 @@ from pathlib import Path
 from secrets import token_hex
 
 from hearthkeep.github.api import GitHubUser, noreply_email
+from hearthkeep.github.deps import MODEL_OUTPUT_CHARS, for_model
 from hearthkeep.github.diff import cap_diff, file_diff
 from hearthkeep.github.git import GitError
 from hearthkeep.github.paths import BRANCH_PREFIX, BRANCH_SLUG, PathRefused, safe_path
@@ -42,6 +43,18 @@ _REPARSE_POINT = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT: junctions and other Wind
 _REF = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._/@^~{}-]*")
 _SHA = re.compile(r"[0-9a-f]{40,64}")
 _ACTIONS = ["list", "read", "search", "status", "diff", "log", "fetch"]
+# The model's context is small and every tool message is replayed each turn, so nothing
+# repo_read returns is longer than for_model's 8,000 characters; what was cut says how to
+# ask for less.
+READ_BUDGET_CHARS = MODEL_OUTPUT_CHARS - 200  # room for the "read on" line
+_NARROW = {
+    "list": "narrow it with 'path'",
+    "read": "read on with 'start_line'",
+    "search": "narrow it with a longer 'query' or a 'path'",
+    "diff": "narrow it with 'path'",
+    "log": "narrow it with 'ref'",
+    "status": "see one folder's changes with diff and a 'path'",
+}
 
 
 def github_ready(repos: RepoStore | None) -> bool:
@@ -82,12 +95,14 @@ class RepoReadTool:
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 400,
-                "description": "A path inside the repo, like src/app.py (list, read, search).",
+                "description": "A path inside the repo, like src/app.py (list, read, search, "
+                "diff).",
             },
             "start_line": {
                 "type": "integer",
                 "minimum": 1,
-                "description": "First line to read (read); at most 400 lines come back.",
+                "description": "First line to read (read); at most 400 lines or about "
+                "8,000 characters come back.",
             },
             "query": {
                 "type": "string",
@@ -136,6 +151,11 @@ class RepoReadTool:
         if not clone.is_dir():
             return _fail("The local copy of that repo is missing. Remove it and add it again.")
         action = args["action"]
+        result = await self._action(repo, clone, action, args)
+        narrow = _NARROW.get(action, "ask for less")
+        return ToolResult(ok=result.ok, content=for_model(result.content, narrow))
+
+    async def _action(self, repo: Repo, clone: Path, action: str, args: dict) -> ToolResult:
         try:
             if action == "list":
                 return await asyncio.to_thread(self._list, clone, args.get("path"))
@@ -148,7 +168,7 @@ class RepoReadTool:
             if action == "status":
                 return await self._status(repo)
             if action == "diff":
-                return await self._diff(repo, clone, args.get("ref"))
+                return await self._diff(repo, clone, args.get("ref"), args.get("path"))
             if action == "log":
                 return await self._log(clone, args.get("ref"))
             if action == "fetch":
@@ -226,11 +246,16 @@ class RepoReadTool:
         first = start_line - 1
         if first >= len(lines):
             return _fail(f"The file has only {len(lines)} lines.")
-        window = lines[first : first + READ_MAX_LINES]
-        text = "\n".join(
-            f"{first + i + 1}\t{_cut(line, READ_LINE_CHARS)}" for i, line in enumerate(window)
-        )
-        last = first + len(window)
+        shown: list[str] = []
+        used = 0
+        for number in range(first, min(first + READ_MAX_LINES, len(lines))):
+            row = f"{number + 1}\t{_cut(lines[number], READ_LINE_CHARS)}"
+            if shown and used + len(row) + 1 > READ_BUDGET_CHARS:
+                break  # whole lines only: the next read starts where this one stopped
+            shown.append(row)
+            used += len(row) + 1
+        text = "\n".join(shown)
+        last = first + len(shown)
         if last < len(lines):
             text += f"\n… {len(lines) - last} more lines; read on with start_line={last + 1}."
         return ToolResult(ok=True, content=text)
@@ -284,8 +309,14 @@ class RepoReadTool:
             raise GitError("That branch, tag or commit isn't in the repo.")
         return sha
 
-    async def _diff(self, repo: Repo, clone: Path, ref: str | None) -> ToolResult:
+    async def _diff(
+        self, repo: Repo, clone: Path, ref: str | None, rel: str | None = None
+    ) -> ToolResult:
         git = self._repos.git
+        scope: list[str] = []
+        if rel:
+            safe_path(clone, rel)
+            scope = [f":(literal){rel}"]
         if ref:
             base = await self._resolve(clone, ref)
         else:
@@ -303,11 +334,11 @@ class RepoReadTool:
                 return _fail("This branch shares no history with the default branch.")
             base = merge.out.strip()
         diff = await git.run(
-            clone, "diff", "--no-color", "--no-ext-diff", "--no-textconv", base, "--",
+            clone, "diff", "--no-color", "--no-ext-diff", "--no-textconv", base, "--", *scope,
             timeout=GIT_TIMEOUT_S,
         )  # fmt: skip
         untracked = await git.run(
-            clone, "ls-files", "--others", "--exclude-standard", "-z", check=False
+            clone, "ls-files", "--others", "--exclude-standard", "-z", "--", *scope, check=False
         )
         new_files = [n for n in untracked.out.split("\0") if n]
         parts = [diff.out] if diff.out.strip() else []
@@ -316,7 +347,7 @@ class RepoReadTool:
             parts.append(f"Untracked files ({len(new_files)}):\n{names}")
         if not parts:
             return ToolResult(ok=True, content="No changes.")
-        return ToolResult(ok=True, content=cap_diff("\n".join(parts)))
+        return ToolResult(ok=True, content="\n".join(parts))  # cut for the model by `run`
 
     async def _log(self, clone: Path, ref: str | None) -> ToolResult:
         start = await self._resolve(clone, ref or "HEAD")

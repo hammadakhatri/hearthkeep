@@ -2,7 +2,10 @@
 locked-down container that has the network but only the dependency files, and asked about
 again (Outward) whenever the lock file changes."""
 
+# ruff: noqa: F811  (the harness fixture is imported from test_api)
+
 import asyncio
+import contextlib
 import json
 import shutil
 import subprocess
@@ -12,6 +15,7 @@ from secrets import token_hex
 
 import pytest
 from fakes import FakeGitHub
+from test_api import harness  # noqa: F401  (a fixture)
 from test_git import REPO, make_origin, make_store
 
 from hearthkeep.db import connect
@@ -21,10 +25,11 @@ from hearthkeep.github.deps import (
     DepsCache,
     cap_output,
 )
+from hearthkeep.github.deps import REPO_NO_DOCKER as NO_DOCKER_MESSAGE
+from hearthkeep.github.deps import REPO_NO_IMAGE as NO_IMAGE_MESSAGE
 from hearthkeep.github.repos import Repo
 from hearthkeep.permissions import ActionClass
 from hearthkeep.sandbox import image as sandbox_image
-from hearthkeep.sandbox.runner import NO_DOCKER_MESSAGE, NO_IMAGE_MESSAGE
 from hearthkeep.tools.base import ToolContext
 from hearthkeep.tools.repo import UNKNOWN_REPO
 from hearthkeep.tools.repo_deps import (
@@ -369,7 +374,8 @@ async def test_lock_change_needs_new_approval(repo_fixture, fake_docker):
         "network": NETWORK_NOTE,
     }
     assert NETWORK_NOTE == (
-        "This install has internet access. Only the dependency files are given to it."
+        "This install has full network access, like any program on your PC, including your "
+        "home network; it sees only the dependency files, never your token or your other files."
     )
     assert tool.classify(args) == ActionClass.LOOK  # after a recorded install
     again = await tool.run(args, ctx(store))
@@ -417,7 +423,12 @@ async def test_without_docker_or_image_nothing_runs_on_the_host(
     monkeypatch.setenv("FAKE_DOCKER_NO_IMAGE", "1")
     _, got = await approve_and_run(tool, store, args)
     assert not got.ok and got.content == NO_IMAGE_MESSAGE
-    assert "hearthkeep sandbox build" in got.content
+    assert NO_IMAGE_MESSAGE == (
+        "Installing or testing a repo needs the repo sandbox image (hearthkeep-repo), which "
+        "isn't built yet. Build it once with: hearthkeep sandbox build --data <data>"
+    )
+    assert "Python" not in NO_IMAGE_MESSAGE and "Python" not in NO_DOCKER_MESSAGE
+    assert NO_DOCKER_MESSAGE.startswith("Installing or testing a repo needs Docker")
     monkeypatch.setenv("FAKE_DOCKER_NO_DAEMON", "1")
     _, got = await approve_and_run(tool, store, args)
     assert not got.ok and got.content == NO_DOCKER_MESSAGE
@@ -548,3 +559,133 @@ async def test_install_shows_the_model_at_most_8000_characters(
     assert status == "Installed the npm dependencies."
     assert head == printed[:MODEL_HEAD_CHARS] and tail == printed[-MODEL_TAIL_CHARS:]
     assert note == "… 92000 characters cut …"
+
+
+# -- final review: what a stopped Hearthkeep left behind is swept at startup ----------------
+
+KEPT = "hk-deps-0123456789abcdef-aaaaaaaaaaaa"
+ORPHAN = "hk-deps-0123456789abcdef-bbbbbbbbbbbb"
+GONE_REPO = "hk-deps-gone_repo-cccccccccccc"
+
+
+def _row(conn, volume, lock="h1"):
+    conn.execute(
+        "INSERT INTO repo_deps (repo_id, lock_hash, ecosystem, volume, installed_at) "
+        "VALUES ('0123456789abcdef', ?, 'npm', ?, 'x')",
+        (lock, volume),
+    )
+    conn.commit()
+
+
+async def test_sweep_removes_install_containers_and_volumes_without_a_row(
+    cache, conn, fake_docker, monkeypatch
+):
+    _row(conn, KEPT)
+    fake_docker.state.joinpath("volumes.json").write_text(
+        json.dumps([KEPT, ORPHAN, GONE_REPO, "someone-elses-volume", "hk-deps-not-a-hash"])
+    )
+    monkeypatch.setenv("FAKE_DOCKER_PS", "abc123 def456")
+    await cache.sweep()
+    calls = fake_docker.calls()
+    assert ["ps", "-aq", "--filter", "label=hearthkeep.install=1"] in calls
+    assert ["rm", "-f", "abc123", "def456"] in calls
+    assert fake_docker.volumes() == sorted([KEPT, "someone-elses-volume", "hk-deps-not-a-hash"])
+
+
+async def test_sweep_never_fails_without_docker(cache, conn):
+    cache.docker = ("hearthkeep-test-no-such-docker",)
+    await cache.sweep()  # nothing to say: Docker is down, startup goes on
+
+
+def test_sweep_install_jobs_removes_left_folders(tmp_path):
+    from hearthkeep.github.deps import install_jobs_dir, sweep_install_jobs
+
+    jobs = install_jobs_dir(tmp_path)
+    assert jobs == tmp_path / "runtime" / "deps"
+    (jobs / "0123abcd" / "src").mkdir(parents=True)
+    (jobs / "0123abcd" / "src" / "uv.lock").write_text("x")
+    sweep_install_jobs(tmp_path)
+    assert jobs.is_dir() and list(jobs.iterdir()) == []
+    sweep_install_jobs(tmp_path / "nowhere")  # no folder yet: nothing to do
+
+
+def test_startup_sweeps_install_leftovers(harness, fake_docker, monkeypatch, tmp_path):
+    from fakes import FakeSandbox
+
+    from hearthkeep.api.app import DB_FILE
+
+    c = connect(harness.data / DB_FILE)
+    _row(c, KEPT)
+    c.close()
+    fake_docker.state.joinpath("volumes.json").write_text(json.dumps([KEPT, ORPHAN]))
+    left = harness.data / "runtime" / "deps" / "0123456789abcdef"
+    (left / "src").mkdir(parents=True)
+    monkeypatch.setattr(sandbox_image, "DOCKER", fake_docker.argv)
+    harness.start(sandbox=FakeSandbox(tmp_path / "fake-sandbox"))
+    assert not left.exists()
+    assert ["ps", "-aq", "--filter", "label=hearthkeep.install=1"] in fake_docker.calls()
+    assert fake_docker.volumes() == [KEPT]
+
+
+# -- final review: classify never waits on Docker; the Look card says nothing is installed ---
+
+
+def inspects(fake_docker):
+    return [c for c in fake_docker.calls() if c[:2] == ["volume", "inspect"]]
+
+
+async def test_classify_never_asks_docker(repo_fixture, fake_docker):
+    store, repo, cache, tool = repo_fixture
+    npm_files(store.dir(repo))
+    args = {"repo": R}
+    _, got = await approve_and_run(tool, store, args)
+    assert got.ok
+    cache._volumes.clear()  # no fresh answer (the 30 s ran out)
+    before = len(inspects(fake_docker))
+    assert tool.classify(args) == ActionClass.OUTWARD  # fail closed, without asking Docker
+    assert len(inspects(fake_docker)) == before
+    again = await tool.run(args, ctx(store))  # run still asks afresh
+    assert again.ok and again.content == ALREADY_INSTALLED
+    assert len(inspects(fake_docker)) == before + 1
+    assert tool.classify(args) == ActionClass.LOOK  # that fresh answer is remembered
+    assert len(inspects(fake_docker)) == before + 1
+
+
+async def test_look_card_says_nothing_will_be_installed(repo_fixture, fake_docker):
+    store, repo, cache, tool = repo_fixture
+    npm_files(store.dir(repo))
+    args = {"repo": R}
+    _, got = await approve_and_run(tool, store, args)
+    assert got.ok
+    assert tool.classify(args) == ActionClass.LOOK
+    detail = await tool.approval_detail(args, ctx(store))
+    assert detail["note"] == (
+        "Dependencies are already installed for this lock file. Nothing will be installed."
+    )
+    assert "command" not in detail and "network" not in detail and "lock_hash" not in detail
+    assert not any("internet" in str(v) or "network" in str(v) for v in detail.values())
+
+
+async def test_a_timed_out_run_keeps_its_output_even_if_the_pipe_stays_open(
+    fake_docker, monkeypatch
+):
+    """After the kill, run_container waits only briefly for the end of the output; what was
+    read by then is kept, never dropped (a helper process may hold the pipe open)."""
+    import os
+    import signal
+
+    from hearthkeep.github.deps import run_container
+
+    monkeypatch.setenv("FAKE_DOCKER_MODE", "held")
+    monkeypatch.setenv("FAKE_DOCKER_OUTPUT", "collected 3 items\nstill going\n")
+    try:
+        ran = await run_container(
+            fake_docker.argv, [*fake_docker.argv, "run", "x"], "hk-repo-held", timeout=2
+        )
+    finally:
+        held = fake_docker.state / "held.pid"
+        if held.exists():
+            with contextlib.suppress(OSError):
+                os.kill(int(held.read_text()), signal.SIGTERM)
+    assert ran.timed_out and ran.code is None
+    assert ran.output() == "collected 3 items\nstill going\n"

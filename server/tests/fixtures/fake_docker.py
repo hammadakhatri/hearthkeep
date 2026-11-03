@@ -8,6 +8,8 @@ Every call appends its argv (as one JSON line) to $FAKE_DOCKER_LOG.
   - `tar_then_hang`: writes that tar, closes stdout, then waits like `sleep`;
   - `endless`: writes zeros to stdout until the pipe breaks or the container is killed;
   - `sleep`: waits up to ten minutes for the container to be killed.
+  - `held`: writes $FAKE_DOCKER_OUTPUT, starts a helper that keeps stdout open for 30 s (its
+    pid in $FAKE_DOCKER_STATE/held.pid), then waits for the kill: the pipe outlives the client.
   Like the real client, a killed run exits 137. It also writes its pid to
   $FAKE_DOCKER_STATE/run.pid and the sorted names in the folder mounted at /job to
   $FAKE_DOCKER_STATE/job.json. $FAKE_DOCKER_STDERR goes to stderr.
@@ -28,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -148,6 +151,18 @@ def _run(argv: list[str]) -> int:
                 out.write(chunk)
             return KILLED_EXIT
         if mode == "sleep":
+            return _wait_for_kill(600)
+        if mode == "held":
+            out.write(os.environ.get("FAKE_DOCKER_OUTPUT", "").encode("utf-8"))
+            out.flush()
+            helper = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                stdin=subprocess.DEVNULL,
+                stdout=out.fileno(),
+                stderr=subprocess.DEVNULL,
+            )
+            if state is not None:
+                (state / "held.pid").write_text(str(helper.pid), encoding="ascii")
             return _wait_for_kill(600)
     except OSError:  # the reader went away
         return 1

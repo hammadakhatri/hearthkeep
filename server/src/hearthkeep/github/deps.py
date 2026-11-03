@@ -6,7 +6,8 @@ The lock hash covers the ecosystem, the repo image's tag and each dependency fil
 bytes, so a changed lock file or a new image names a new volume, `hk-deps-<repo id>-<hash12>`.
 
 The install container is the repo image with the test sandbox's limits, except that it has
-the default bridge network (installing needs the internet) and more processes. It is given
+the default bridge network (installing needs the internet; that is full network access, like
+any program on the PC, the home network included) and more processes. It is given
 only copies of the dependency files (read-only, at `/src`) and the volume: never the clone,
 never the GitHub token or any other secret. Python lands in `/deps/venv`, Node in
 `node_modules`. Repo names never reach a log here: only repo ids.
@@ -31,9 +32,9 @@ from typing import Literal
 
 from hearthkeep import db
 from hearthkeep.github.paths import PathRefused, safe_path
-from hearthkeep.github.repos import Repo
+from hearthkeep.github.repos import Repo, is_link, remove_tree
 from hearthkeep.sandbox import image as sandbox_image
-from hearthkeep.sandbox.runner import DATA_PATH_MESSAGE, NO_DOCKER_MESSAGE, NO_IMAGE_MESSAGE
+from hearthkeep.sandbox.runner import DATA_PATH_MESSAGE
 
 _log = logging.getLogger(__name__)
 
@@ -54,6 +55,8 @@ VOLUME_PREFIX = "hk-deps-"
 CONTAINER_PREFIX = "hk-install-"
 LABEL = "hearthkeep.install=1"
 _REPO_ID = re.compile(r"[A-Za-z0-9_-]{1,32}")
+_VOLUME = re.compile(re.escape(VOLUME_PREFIX) + r"[A-Za-z0-9_-]{1,32}-[0-9a-f]{12}")
+_CONTAINER_ID = re.compile(r"[0-9a-f]{1,64}")
 _UNSAFE_MOUNT = re.compile(r'[,"\'\n\r\x00]')
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -65,6 +68,15 @@ TIMED_OUT = f"The install stopped after {INSTALL_TIMEOUT_S} s."
 ALREADY_INSTALLED = "Dependencies are already installed for this lock file."
 NO_START = "The install container couldn't start."
 FILES_CHANGED = "The dependency files changed while they were being copied. Try again."
+# repo_install's and repo_test's own words (the analysis tool's mention Python).
+REPO_NO_DOCKER = (
+    "Installing or testing a repo needs Docker, and Docker isn't running on this PC. "
+    "Start Docker Desktop and try again."
+)
+REPO_NO_IMAGE = (
+    "Installing or testing a repo needs the repo sandbox image (hearthkeep-repo), which "
+    "isn't built yet. Build it once with: hearthkeep sandbox build --data <data>"
+)
 
 
 class DepsTooLarge(ValueError):
@@ -150,24 +162,40 @@ def cap_output(data: bytes, cut: bool = False) -> str:
     return f"{head}\n{OUTPUT_CUT}\n{tail}"
 
 
-async def read_head_tail(stream: asyncio.StreamReader | None) -> tuple[bytes, bool]:
-    """Read a stream to its end keeping only the first 64 KB and the last 192 KB; (those
-    bytes joined, whether anything between was dropped)."""
-    head = bytearray()
-    tail = bytearray()
-    dropped = False
-    if stream is None:
-        return b"", False
-    while chunk := await stream.read(65536):
-        room = OUTPUT_HEAD - len(head)
+class HeadTail:
+    """The first 64 KB and the last 192 KB of what was read so far. It lives outside the
+    reading task, so what was read is still there if that task is cancelled."""
+
+    def __init__(self) -> None:
+        self.head = bytearray()
+        self.tail = bytearray()
+        self.dropped = False
+
+    def add(self, chunk: bytes) -> None:
+        room = OUTPUT_HEAD - len(self.head)
         if room > 0:
-            head += chunk[:room]
+            self.head += chunk[:room]
             chunk = chunk[room:]
-        tail += chunk
-        if len(tail) > OUTPUT_TAIL:
-            del tail[: len(tail) - OUTPUT_TAIL]
-            dropped = True
-    return bytes(head + tail), dropped
+        self.tail += chunk
+        if len(self.tail) > OUTPUT_TAIL:
+            del self.tail[: len(self.tail) - OUTPUT_TAIL]
+            self.dropped = True
+
+    def result(self) -> tuple[bytes, bool]:
+        """(those bytes joined, whether anything between was dropped)."""
+        return bytes(self.head + self.tail), self.dropped
+
+
+async def read_head_tail(
+    stream: asyncio.StreamReader | None, kept: HeadTail | None = None
+) -> tuple[bytes, bool]:
+    """Read a stream to its end keeping only the first 64 KB and the last 192 KB (in `kept`,
+    when given); (those bytes joined, whether anything between was dropped)."""
+    kept = kept if kept is not None else HeadTail()
+    if stream is not None:
+        while chunk := await stream.read(65536):
+            kept.add(chunk)
+    return kept.result()
 
 
 def mount_source(path: Path) -> str:
@@ -255,7 +283,8 @@ async def run_container(
         stderr=asyncio.subprocess.STDOUT,
         **_spawn_flags(),
     )
-    reader = asyncio.ensure_future(read_head_tail(proc.stdout))
+    kept = HeadTail()
+    reader = asyncio.ensure_future(read_head_tail(proc.stdout, kept))
     timed_out = False
     try:
         try:
@@ -271,13 +300,45 @@ async def run_container(
                 await asyncio.shield(stop_container(docker, name, proc))
         reader.cancel()
         raise
-    data, dropped = b"", False
+    # The output normally ends as the client exits; something else may still hold the pipe,
+    # so wait only briefly. Whatever was read by then is kept either way, never dropped.
     done, _ = await asyncio.wait({reader}, timeout=2.0)
-    if done and not reader.cancelled() and reader.exception() is None:
-        data, dropped = reader.result()
-    else:
+    if not done:
         reader.cancel()
+        # Let the pipe go now (asyncio has no public way): it would otherwise linger open.
+        with contextlib.suppress(Exception):
+            proc._transport.close()  # type: ignore[attr-defined]
+    elif not reader.cancelled():
+        reader.exception()  # read (a broken pipe ends the output), so it is never logged
+    data, dropped = kept.result()
     return Ran(None if timed_out else proc.returncode, data, dropped, timed_out)
+
+
+async def remove_labelled(docker: Sequence[str], label: str) -> int:
+    """Kill and remove every container carrying `label` (running or not): what a stopped
+    Hearthkeep left behind. How many were removed; 0 when Docker can't be asked."""
+    code, out = await run_docker(docker, "ps", "-aq", "--filter", f"label={label}")
+    if code != 0:
+        return 0
+    ids = [i for i in out.decode("ascii", "replace").split() if _CONTAINER_ID.fullmatch(i)]
+    if not ids:
+        return 0
+    code, _ = await run_docker(docker, "rm", "-f", *ids)
+    return len(ids) if code == 0 else 0
+
+
+def install_jobs_dir(data_dir: Path) -> Path:
+    """Where each install stages its dependency files: `<data>/runtime/deps/<job>`."""
+    return Path(data_dir) / "runtime" / "deps"
+
+
+def sweep_install_jobs(data_dir: Path) -> None:
+    """Remove the job folders a stopped Hearthkeep left (at startup: no install is live)."""
+    jobs = install_jobs_dir(data_dir)
+    if not jobs.is_dir() or is_link(jobs):
+        return
+    for leftover in jobs.iterdir():
+        remove_tree(leftover)
 
 
 class DepsCache:
@@ -345,6 +406,14 @@ class DepsCache:
         self._volumes[volume] = (time.monotonic(), exists)
         return exists
 
+    def known_installed(self, repo: Repo, plan: DepsPlan) -> bool:
+        """A row for this lock hash, and Docker said the volume exists less than 30 s ago.
+        Never asks Docker (safe on the event loop): with no fresh answer, False."""
+        if not self._row(repo, plan):
+            return False
+        seen = self._volumes.get(plan.volume)
+        return seen is not None and time.monotonic() - seen[0] < VOLUME_CACHE_S and seen[1]
+
     def installed(self, repo: Repo, plan: DepsPlan) -> bool:
         """A row for this lock hash, and its volume still exists. Docker is asked only when
         there is a row, and then at most every 30 s."""
@@ -389,9 +458,9 @@ class DepsCache:
     async def unavailable(self) -> str | None:
         """Why nothing can be installed now (Docker or the repo image missing), or None."""
         if not await asyncio.to_thread(sandbox_image.docker_ok, self.docker):
-            return NO_DOCKER_MESSAGE
+            return REPO_NO_DOCKER
         if not await asyncio.to_thread(sandbox_image.image_present, self.image_tag, self.docker):
-            return NO_IMAGE_MESSAGE
+            return REPO_NO_IMAGE
         return None
 
     # -- installing ------------------------------------------------------------------------
@@ -526,6 +595,28 @@ class DepsCache:
         stale.discard(plan.volume)
         await self._remove_volumes(sorted(v for v in stale if v and v.startswith(VOLUME_PREFIX)))
         return True, output
+
+    # -- after a crash ---------------------------------------------------------------------
+
+    async def sweep(self) -> None:
+        """At startup (no install can be live): kill and remove install containers a stopped
+        Hearthkeep left running, and remove dependency volumes that have no `repo_deps` row
+        (half-filled by a cut-short install, or left when Docker was down as a repo went).
+        A volume with a row is never removed. Never raises: without Docker nothing happens."""
+        try:
+            await remove_labelled(self.docker, LABEL)
+            code, out = await self._docker(
+                "volume", "ls", "-q", "--filter", f"name={VOLUME_PREFIX}"
+            )
+            if code != 0:
+                return
+            kept = {r[0] for r in self.conn.execute("SELECT volume FROM repo_deps")}
+            names = out.decode("ascii", "replace").split()
+            await self._remove_volumes(
+                sorted(n for n in names if _VOLUME.fullmatch(n) and n not in kept)
+            )
+        except Exception as exc:
+            _log.warning("dependency leftovers not swept (%s)", type(exc).__name__)
 
     # -- a repo goes ------------------------------------------------------------------------
 

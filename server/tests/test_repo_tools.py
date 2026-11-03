@@ -210,3 +210,114 @@ def test_tool_shape_and_availability(tmp_path):
     store._secrets.delete("github_token")
     assert tool.is_available() is False  # no saved token
     store.conn.close()
+
+
+# -- final review: every result fits the model's context -----------------------------------
+
+MODEL_CAP = 8000
+
+
+async def test_read_stops_at_the_character_budget_on_a_whole_line(setup):
+    store, repo, tool = setup
+    body = "".join(f"{i:04d} " + "x" * 1990 + "\n" for i in range(1, 51))  # 50 lines, ~2 KB each
+    commit_local(store, repo, "wide.txt", body, "wide")
+    got = await read(tool, store, action="read", path="wide.txt")
+    assert got.ok and len(got.content) <= MODEL_CAP
+    rows = got.content.splitlines()
+    numbered = [r for r in rows if r.split("\t")[0].isdigit()]
+    last = int(numbered[-1].split("\t")[0])
+    assert 1 < last < 50
+    assert all(len(r.split("\t", 1)[1]) == 1995 for r in numbered)  # whole lines, never cut
+    assert rows[-1].endswith(f"read on with start_line={last + 1}.")
+    nxt = await read(tool, store, action="read", path="wide.txt", start_line=last + 1)
+    assert nxt.content.startswith(f"{last + 1}\t{last + 1:04d} ")
+
+
+async def test_every_action_is_capped_for_the_model(setup):
+    store, repo, tool = setup
+    await read(tool, store, action="fetch")
+    # Many long files and many long matching lines: list, search and diff all run long.
+    for i in range(120):
+        commit_dir = store.dir(repo) / "many" / f"{'n' * 60}{i:03d}"
+        commit_dir.mkdir(parents=True)
+        (commit_dir / "f.txt").write_text(("needle " + "z" * 280 + "\n") * 2)
+    plain_git(store.dir(repo), "add", "-A")
+    plain_git(store.dir(repo), "commit", "-q", "-m", "many")
+    for action, extra in (("list", {"path": "many"}), ("search", {"query": "needle"}),
+                          ("diff", {})):  # fmt: skip
+        got = await read(tool, store, action=action, **extra)
+        assert got.ok, action
+        assert len(got.content) <= MODEL_CAP + 200, (action, len(got.content))
+        assert "characters cut" in got.content, action
+        assert "narrow" in got.content, action
+
+
+async def test_diff_can_be_scoped_to_a_path(setup):
+    store, repo, tool = setup
+    await read(tool, store, action="fetch")
+    commit_local(store, repo, "src/one.py", "one = 1\n", "one")
+    commit_local(store, repo, "two.py", "two = 2\n", "two")
+    (store.dir(repo) / "src" / "loose.txt").write_text("x")
+    (store.dir(repo) / "other.txt").write_text("y")
+    got = await read(tool, store, action="diff", path="src")
+    assert got.ok
+    assert "+one = 1" in got.content and "two = 2" not in got.content
+    assert "src/loose.txt" in got.content and "other.txt" not in got.content
+    refused = await read(tool, store, action="diff", path=".git/config")
+    assert not refused.ok
+    assert refused.content == "That path is outside the repo or inside its .git folder."
+
+
+async def test_repo_read_is_denied_once_the_token_is_gone(tmp_path):
+    from datetime import UTC, datetime
+
+    from fakes import FakeChatClient
+
+    from hearthkeep.agent.loop import TURNED_OFF, AgentLoop
+    from hearthkeep.approvals import ApprovalStore
+    from hearthkeep.config import Settings
+    from hearthkeep.permissions import ToolLevel, set_level
+    from hearthkeep.providers.chat import StreamDone, TextDelta, ToolCallRequest
+    from hearthkeep.tools.base import ToolRegistry
+
+    data = tmp_path / "data"
+    data.mkdir()
+    store = make_store(data, None, FakeGitHub())
+    tool = RepoReadTool(store)
+    ran = []
+    real_run = tool.run
+
+    async def spy(args, ctx):
+        ran.append(args)
+        return await real_run(args, ctx)
+
+    tool.run = spy
+    registry = ToolRegistry()
+    registry.register(tool)
+    set_level(store.conn, "github", ToolLevel.ALLOWED)
+
+    class TokenRemoved(FakeChatClient):
+        async def stream(self, messages, tools, think):
+            async for event in super().stream(messages, tools, think):
+                store._secrets.delete("github_token")  # removed in Settings meanwhile
+                yield event
+
+    client = TokenRemoved(
+        [
+            [ToolCallRequest("c1", "repo_read", json.dumps({"repo": "acme/widgets",
+                                                             "action": "status"})),
+             StreamDone("tool_calls")],
+            [TextDelta("ok"), StreamDone("stop")],
+        ]
+    )  # fmt: skip
+    clock = lambda: datetime(2026, 1, 1, tzinfo=UTC)  # noqa: E731
+    approvals = ApprovalStore(store.conn, ttl_minutes=10, clock=clock, poll_interval=0.01)
+    loop = AgentLoop(client, registry, approvals, store.conn,
+                     Settings(data_dir=data, docker_available=False))  # fmt: skip
+    events = [e async for e in loop.run_turn("c", "t", [{"role": "user", "content": "x"}], False)]
+    assert [t["function"]["name"] for t in client.calls[0]["tools"]] == ["repo_read"]
+    assert ran == []
+    answer = [m for m in client.calls[1]["messages"] if m["role"] == "tool"][0]["content"]
+    assert json.loads(answer) == {"error": TURNED_OFF}
+    assert [e for e in events if e["type"] == "approval_required"] == []
+    store.conn.close()

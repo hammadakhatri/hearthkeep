@@ -138,6 +138,11 @@ def _work_branch_problem(repo: Repo, branch: str | None) -> str | None:
     return None
 
 
+def _refused_note(reason: str) -> str:
+    """A card's note for a request `run` will refuse: `This request will be refused: …`."""
+    return f"This request will be refused: {reason[:1].lower()}{reason[1:]}"
+
+
 class GitHubTool:
     name = "github"
     level_key = GITHUB_LEVEL_KEY
@@ -280,7 +285,15 @@ class GitHubTool:
             clone, "log", "-n", str(COMMITS_MAX), "--format=%h %s", span, "--",
             timeout=GIT_TIMEOUT_S,
         )  # fmt: skip
-        return [_cut(row, LINE_MAX) for row in result.out.splitlines() if row]
+        rows = [_cut(row, LINE_MAX) for row in result.out.splitlines() if row]
+        if len(rows) >= COMMITS_MAX:
+            counted = await self._repos.git.run(
+                clone, "rev-list", "--count", span, "--", timeout=GIT_TIMEOUT_S, check=False
+            )
+            total = counted.out.strip()
+            if counted.code == 0 and total.isdigit() and int(total) > len(rows):
+                rows.append(f"… and {int(total) - len(rows)} more")
+        return rows
 
     async def _diff(self, clone: Path, base: str | None, head: str) -> str:
         if base is None:
@@ -345,7 +358,12 @@ class GitHubTool:
     async def _push_detail(self, repo: Repo, clone: Path, args: dict) -> dict:
         branch = await self._branch_arg(clone, args)
         detail: dict = {"repo": repo.full_name, "branch": branch or ""}
-        if _work_branch_problem(repo, branch) or await self._current_branch(clone) != branch:
+        problem = _work_branch_problem(repo, branch)
+        if problem is None and await self._current_branch(clone) != branch:
+            problem = NOT_CHECKED_OUT
+        if problem is not None:
+            # The run would refuse: no head_sha to approve, and the card says why.
+            detail["note"] = _refused_note(problem)
             return detail
         assert branch is not None
         head = await self._rev(clone, "HEAD")
