@@ -527,6 +527,29 @@ async def test_look_approval_never_installs_when_the_volume_went(repo_fixture, f
     assert tool.classify(args) == ActionClass.OUTWARD  # the next call asks with a step-up
 
 
+async def test_an_approved_installed_card_never_installs_when_the_volume_went(
+    repo_fixture, fake_docker
+):
+    """The owner approves (with a step-up) the "already installed" card, which carries no
+    lock hash. The volume then disappears before `run`: nothing is installed, and the model
+    is told to call repo_install again."""
+    store, repo, cache, tool = repo_fixture
+    npm_files(store.dir(repo))
+    args = {"repo": R}
+    _, got = await approve_and_run(tool, store, args)
+    assert got.ok
+    detail = await tool.approval_detail(args, ctx(store))
+    assert "lock_hash" not in detail  # the installed card
+    fake_docker.state.joinpath("volumes.json").write_text("[]")  # docker volume prune
+    cache._volumes.clear()
+    runs_before = len([c for c in fake_docker.calls() if c[0] == "run"])
+    got = await tool.run(args, ctx(store, {**detail, "arguments": args}, step_up=True))
+    assert not got.ok and got.content == NO_LONGER_INSTALLED
+    assert "call repo_install again" in got.content.lower()
+    assert len([c for c in fake_docker.calls() if c[0] == "run"]) == runs_before
+    assert fake_docker.volumes() == []
+
+
 async def test_concurrent_installs_of_one_plan_start_one_container(cache, fake_docker, tmp_path):
     repo = a_repo()
     root = tmp_path / "clone"
@@ -670,7 +693,9 @@ async def test_a_timed_out_run_keeps_its_output_even_if_the_pipe_stays_open(
     fake_docker, monkeypatch
 ):
     """After the kill, run_container waits only briefly for the end of the output; what was
-    read by then is kept, never dropped (a helper process may hold the pipe open)."""
+    read by then is kept, never dropped (a helper process may hold the pipe open). The
+    timeout counts the fake client's start-up, so it is generous: under load nothing may be
+    killed before the first line is printed."""
     import os
     import signal
 
@@ -680,7 +705,7 @@ async def test_a_timed_out_run_keeps_its_output_even_if_the_pipe_stays_open(
     monkeypatch.setenv("FAKE_DOCKER_OUTPUT", "collected 3 items\nstill going\n")
     try:
         ran = await run_container(
-            fake_docker.argv, [*fake_docker.argv, "run", "x"], "hk-repo-held", timeout=2
+            fake_docker.argv, [*fake_docker.argv, "run", "x"], "hk-repo-held", timeout=5
         )
     finally:
         held = fake_docker.state / "held.pid"
