@@ -361,7 +361,7 @@ Then open your Tailscale address on the second device and check that you can sig
 
 ## 9. Optional: an API key for an external chat server
 
-Only for when Hearthkeep uses a chat server you run yourself (no `models.toml`) and that server needs a key. When Hearthkeep runs llama-server itself, it generates and stores its own key under the same name; you don't need to do anything.
+Only for when Hearthkeep uses a chat server you run yourself (no `models.toml`, and `chat_base_url` set in `config.toml`) and that server needs a key. When Hearthkeep runs llama-server itself, it generates and stores its own key under the same name; you don't need to do anything.
 
 1. Store the key. The value is read from a hidden prompt, so it never appears in your shell history:
 

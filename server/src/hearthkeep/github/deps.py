@@ -74,8 +74,8 @@ REPO_NO_DOCKER = (
     "Start Docker Desktop and try again."
 )
 REPO_NO_IMAGE = (
-    "Installing or testing a repo needs the repo sandbox image (hearthkeep-repo), which "
-    "isn't built yet. Build it once with: hearthkeep sandbox build --data <data>"
+    "Installing or testing a repo needs the repo sandbox image, which isn't built yet. "
+    "Open Settings › Add-ons to set it up."
 )
 
 

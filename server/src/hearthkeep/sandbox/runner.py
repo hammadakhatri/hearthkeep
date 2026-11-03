@@ -79,7 +79,7 @@ NO_DOCKER_MESSAGE = (
 )
 NO_IMAGE_MESSAGE = (
     "Running Python needs the sandbox image, which isn't built yet. "
-    "Build it once with: hearthkeep sandbox build --data <data>"
+    "Open Settings › Add-ons to set it up."
 )
 DATA_PATH_MESSAGE = (
     "Hearthkeep's data folder path contains a comma or quote, which Docker can't mount. "

@@ -14,6 +14,7 @@ import pytest
 
 from hearthkeep.sandbox import runner as runner_mod
 from hearthkeep.sandbox.runner import (
+    NO_IMAGE_MESSAGE,
     RawRun,
     SandboxLimits,
     SandboxRunner,
@@ -665,7 +666,7 @@ async def test_status_reports_image_missing(fake, monkeypatch):
     assert ["image", "inspect", TAG] in fake.calls()
     with pytest.raises(SandboxUnavailable) as caught:
         await run_script(runner)
-    assert "hearthkeep sandbox build" in caught.value.user_message
+    assert caught.value.user_message == NO_IMAGE_MESSAGE
 
 
 async def test_status_is_cached_for_thirty_seconds(fake, monkeypatch):

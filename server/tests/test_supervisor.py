@@ -131,8 +131,8 @@ async def test_start_refuses_foreign_listener(managed, tmp_path, listener):
         with pytest.raises(ProcessError) as exc:
             await proc.start()
         assert exc.value.user_message == (
-            f"Port {port} is already in use by another program. Change llama_port "
-            "(or comfyui_port) in <data>/models.toml, or stop that program."
+            f"Port {port} is already in use by another program. Close that program, "
+            "or change the port in models.toml in Hearthkeep's data folder."
         )
         assert not proc.running
         assert not (tmp_path / "logs" / "fake.log").exists()  # nothing was spawned
@@ -145,8 +145,11 @@ async def test_start_timeout_raises_and_kills_child(managed, tmp_path):
     with pytest.raises(ProcessError) as exc:
         await proc.start()
     assert not proc.running and not await proc.is_healthy()
-    assert "<data>/logs/fake.log" in exc.value.user_message
-    assert str(tmp_path) not in exc.value.user_message
+    assert exc.value.user_message == (
+        "fake didn't become ready within 1 seconds. Open Settings › Add-ons to check it."
+    )
+    assert "logs/fake.log" in str(exc.value)
+    assert str(tmp_path) not in exc.value.user_message + str(exc.value)
 
 
 async def test_child_exit_during_startup_fails_fast(managed, tmp_path):
@@ -155,8 +158,8 @@ async def test_child_exit_during_startup_fails_fast(managed, tmp_path):
     with pytest.raises(ProcessError) as exc:
         await proc.start()
     assert time.monotonic() - started < TIMEOUT - 1
-    assert exc.value.user_message == "fake couldn't start. See <data>/logs/fake.log."
-    assert str(tmp_path) not in exc.value.user_message
+    assert exc.value.user_message == "fake couldn't start. Open Settings › Add-ons to check it."
+    assert "logs/fake.log" in str(exc.value) and str(tmp_path) not in str(exc.value)
     assert not proc.running
     assert "--- exited with code 1 ---" in log_text(tmp_path)
 
@@ -172,7 +175,7 @@ async def test_missing_executable_raises_process_error(tmp_path):
     )
     with pytest.raises(ProcessError) as exc:
         await proc.start()
-    assert exc.value.user_message == "ghost couldn't start. See <data>/logs/ghost.log."
+    assert exc.value.user_message == ("ghost couldn't start. Open Settings › Add-ons to check it.")
 
 
 async def test_health_probe_ignores_env_proxies(monkeypatch, tmp_path):

@@ -8,7 +8,7 @@ from hearthkeep.providers.chat import ProviderError, StreamDone, TextDelta
 from hearthkeep.providers.scheduled_chat import ScheduledChatClient
 from hearthkeep.runtime.gpu import GpuScheduler
 
-LOG_HINT = "The chat model couldn't be started. Check <data>/logs/llama-server.log."
+LOG_HINT = "The chat model couldn't be started. Open Settings › Add-ons to check it."
 
 
 class FakeInner:

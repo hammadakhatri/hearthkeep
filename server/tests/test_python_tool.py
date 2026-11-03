@@ -218,7 +218,8 @@ async def test_without_docker_returns_plain_message_never_runs_on_host(env, monk
     assert env.sandbox.calls == []
     assert env.conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
     assert NO_DOCKER == (
-        "Python analysis needs Docker Desktop. Start Docker on the PC and ask again."
+        "Python analysis needs Docker Desktop running on this PC. "
+        "Open Settings › Add-ons to set it up."
     )
 
     # No sandbox at all (Docker was missing at startup): the same plain message.
@@ -233,7 +234,8 @@ async def test_without_image_message(env, monkeypatch):
     result = await env.tool.run(args(), env.ctx)
     assert (result.ok, result.content) == (False, NO_IMAGE)
     assert NO_IMAGE == (
-        "The Python sandbox isn't built yet. On the PC, run: hearthkeep sandbox build --data <data>"
+        "Python analysis needs the analysis sandbox, which isn't built yet. "
+        "Open Settings › Add-ons to set it up."
     )
     assert env.sandbox.calls == []
 

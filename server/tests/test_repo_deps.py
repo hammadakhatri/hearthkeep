@@ -424,8 +424,8 @@ async def test_without_docker_or_image_nothing_runs_on_the_host(
     _, got = await approve_and_run(tool, store, args)
     assert not got.ok and got.content == NO_IMAGE_MESSAGE
     assert NO_IMAGE_MESSAGE == (
-        "Installing or testing a repo needs the repo sandbox image (hearthkeep-repo), which "
-        "isn't built yet. Build it once with: hearthkeep sandbox build --data <data>"
+        "Installing or testing a repo needs the repo sandbox image, which isn't built yet. "
+        "Open Settings › Add-ons to set it up."
     )
     assert "Python" not in NO_IMAGE_MESSAGE and "Python" not in NO_DOCKER_MESSAGE
     assert NO_DOCKER_MESSAGE.startswith("Installing or testing a repo needs Docker")

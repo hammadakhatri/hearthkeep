@@ -41,11 +41,11 @@ Every tool call is classified into one of three action classes, and every tool h
 Other rules:
 
 - Unknown tools default to Ask. Anything the engine does not recognise is denied (it fails closed).
-- Tools that need a sandbox (Python, GitHub tests) are treated as Ask when Docker is not available.
+- Tools that need a sandbox (Python, GitHub tests) are not offered at all until Settings › Add-ons shows Analysis as ready. A call that still arrives is denied.
 - The level keys added in Phase 3 are `python` (Look, runs only in the sandbox, default Allowed; `read_pages` uses it too), `files` (Look, default Allowed) and `send` (Look, default Allowed).
 - The level keys added in Phase 4 are `github` (reading, editing, installing dependencies and the outward GitHub actions; default Ask) and `github_tests` (running a repo's tests in the sandbox, shown as *GitHub tests*; default Ask). Outward GitHub actions need an approval with a passkey at every level, `Allowed` included.
 - Lowering a level needs only a normal session. Raising one (Off to Ask, or Ask to Allowed) needs a step-up.
-- `generate_image` is Look.
+- Image generation (`generate_image`) is Look. It is offered only once Settings › Add-ons shows Images as ready.
 
 ## Approvals
 
