@@ -55,6 +55,20 @@ def memory_keyring():
     keyring.set_keyring(previous)
 
 
+@pytest.fixture(autouse=True)
+def hermetic_addon_probes(monkeypatch):
+    """The add-on registry never probes the real PC in tests: no Tailscale, no schtasks, and
+    Docker counts as not installed. Tests of `tailscale_state` call it with their own fake."""
+    from hearthkeep import addons
+    from hearthkeep.startup import StartupStatus
+
+    monkeypatch.setattr(
+        addons, "tailscale_state", lambda *a, **k: addons.TailscaleState(False, False, None)
+    )
+    monkeypatch.setattr(addons, "startup_status", lambda: StartupStatus(False, False, None))
+    monkeypatch.setattr(addons, "docker_installed", lambda: False)
+
+
 @pytest.fixture
 def sandbox_image():
     """The built sandbox image's tag; skips when Docker or the image is missing."""

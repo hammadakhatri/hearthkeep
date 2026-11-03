@@ -513,11 +513,12 @@ class SandboxRunner:
             raise
         return proc.returncode, out
 
-    async def status(self) -> SandboxStatus:
-        """Docker running, image present: cached for 30 s."""
+    async def status(self, fresh: bool = False) -> SandboxStatus:
+        """Docker running, image present: cached for 30 s. `fresh` looks again now (the
+        add-on checks use it, so "Check again" never reports a stale answer)."""
         async with self._status_lock:
             now = time.monotonic()
-            if self._status is not None and now - self._status[0] < STATUS_CACHE_S:
+            if not fresh and self._status is not None and now - self._status[0] < STATUS_CACHE_S:
                 return self._status[1]
             docker = await asyncio.to_thread(sandbox_image.docker_ok, self.docker)
             present = docker and await asyncio.to_thread(

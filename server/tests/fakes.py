@@ -208,7 +208,7 @@ class FakeSandbox:
     def queue_error(self, exc: BaseException) -> None:
         self.queue.append(("raise", exc, None))
 
-    async def status(self):
+    async def status(self, fresh: bool = False):
         from hearthkeep.sandbox.runner import SandboxStatus
 
         return SandboxStatus(docker=self.docker, image=self.image, tag=self.TAG)

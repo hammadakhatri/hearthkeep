@@ -5,6 +5,7 @@ from contextlib import AsyncExitStack
 import pytest
 from fakes import CHAT, IMAGE, FakeBackend, Holder, card, settle, until
 
+from hearthkeep import procutil
 from hearthkeep.models.cards import ModelCard
 from hearthkeep.runtime import gpu
 from hearthkeep.runtime.gpu import (
@@ -308,6 +309,19 @@ async def test_status_shape():
     await image.release()
 
 
+async def test_loading_reports_the_model_being_loaded():
+    sched, backend = scheduler(CHAT, IMAGE)
+    backend.gates["chat"] = asyncio.Event()
+    assert sched.loading() is None
+    chat = Holder(sched, "chat")
+    await until(lambda: sched.loading() == "chat")
+    assert not chat.entered.is_set()
+    backend.gates["chat"].set()
+    await asyncio.wait_for(chat.entered.wait(), 1)
+    assert sched.loading() is None and sched.resident() == ["chat"]
+    await chat.release()
+
+
 # --- backends --------------------------------------------------------------------------------
 
 
@@ -435,7 +449,7 @@ def smi(tmp_path, monkeypatch):
     exe = tmp_path / "driver" / "nvidia-smi.exe"
     exe.parent.mkdir()
     exe.write_bytes(b"")
-    monkeypatch.setattr(gpu.shutil, "which", lambda name: str(exe))
+    monkeypatch.setattr(procutil.shutil, "which", lambda name: str(exe))
     return exe
 
 
@@ -485,7 +499,7 @@ def test_nvidia_smi_fallbacks_and_never_a_bare_or_cwd_name(tmp_path, monkeypatch
     monkeypatch.chdir(_install(tmp_path, "cwd", "nvidia-smi.exe").parent)
     if which_result == "cwd":
         which_result = str(tmp_path / "cwd" / "nvidia-smi.exe")  # found in the current folder
-    monkeypatch.setattr(gpu.shutil, "which", lambda name: which_result)
+    monkeypatch.setattr(procutil.shutil, "which", lambda name: which_result)
     monkeypatch.setenv("SystemRoot", str(tmp_path / "win"))
     monkeypatch.setenv("ProgramFiles", str(tmp_path / "pf"))
     ran: list[list[str]] = []
@@ -504,7 +518,7 @@ def test_nvidia_smi_fallbacks_and_never_a_bare_or_cwd_name(tmp_path, monkeypatch
 
 
 def test_detect_vram_gb_none_without_any_location(monkeypatch):
-    monkeypatch.setattr(gpu.shutil, "which", lambda name: None)
+    monkeypatch.setattr(procutil.shutil, "which", lambda name: None)
     monkeypatch.delenv("SystemRoot", raising=False)
     monkeypatch.delenv("ProgramFiles", raising=False)
     monkeypatch.setattr(gpu.subprocess, "run", lambda *a, **k: pytest.fail("must not run"))
