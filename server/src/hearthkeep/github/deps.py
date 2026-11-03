@@ -125,6 +125,21 @@ def _read(root: Path, name: str) -> bytes | None:
         return None
 
 
+MODEL_OUTPUT_CHARS = 8000  # as much printed output as the model is shown (python's too)
+MODEL_HEAD_CHARS = 2000
+MODEL_TAIL_CHARS = MODEL_OUTPUT_CHARS - MODEL_HEAD_CHARS
+
+
+def for_model(output: str, kept_in: str | None = None) -> str:
+    """At most 8,000 characters of `output` for the model: the first 2,000 and the last
+    6,000, with a line saying how much was cut (and where the whole of it is, if anywhere)."""
+    if len(output) <= MODEL_OUTPUT_CHARS:
+        return output
+    cut = len(output) - MODEL_OUTPUT_CHARS
+    note = f"… {cut} characters cut; {kept_in} …" if kept_in else f"… {cut} characters cut …"
+    return f"{output[:MODEL_HEAD_CHARS]}\n{note}\n{output[-MODEL_TAIL_CHARS:]}"
+
+
 def cap_output(data: bytes, cut: bool = False) -> str:
     """The first 64 KB and the last 192 KB, with `… output cut …` between when more was
     printed (`cut` says so when the middle was already dropped while reading)."""

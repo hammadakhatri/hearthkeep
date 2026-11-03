@@ -21,12 +21,22 @@ from test_repo_deps import TAG, a_repo, fake_docker, npm_files  # noqa: F401
 from hearthkeep.db import utcnow
 from hearthkeep.github import testrun
 from hearthkeep.github.api import TOKEN_SECRET
-from hearthkeep.github.deps import OUTPUT_CUT, DepsCache
+from hearthkeep.github.deps import (
+    MODEL_HEAD_CHARS,
+    MODEL_OUTPUT_CHARS,
+    MODEL_TAIL_CHARS,
+    OUTPUT_CUT,
+    DepsCache,
+    for_model,
+)
 from hearthkeep.github.git import GitRunner
 from hearthkeep.github.testrun import (
+    DEPS_UNREADABLE,
     HEAD_BYTES,
     MAX_TREE_BYTES,
     MAX_TREE_FILES,
+    RUN_BROKE,
+    RUN_STOPPED,
     TAIL_BYTES,
     TEST_TIMEOUT_S,
     TREE_HAS_LINK,
@@ -497,3 +507,95 @@ def test_startup_sweeps_left_test_jobs(harness):
     (left / "tree" / "a.py").write_text("x")
     harness.start()
     assert not left.exists()
+
+
+# -- fix round 1: runs that stop, and what the model is shown ------------------------------
+
+
+async def test_a_cancelled_run_is_saved_and_cleaned_up(repo_fixture, fake_docker, monkeypatch):
+    import asyncio
+
+    f = repo_fixture
+    monkeypatch.setenv("FAKE_DOCKER_MODE", "sleep")
+    task = asyncio.ensure_future(f.runner.run(f.repo, "c1", "pytest -q"))
+    pid = fake_docker.state / "run.pid"
+    for _ in range(500):  # the container is up
+        if pid.exists():
+            break
+        await asyncio.sleep(0.02)
+    assert pid.exists()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    (run,) = f.runner.runs(f.repo.id)
+    assert (run.status, run.exit_code, run.command) == ("error", None, "pytest -q")
+    assert f.runner.get(run.id).output == RUN_STOPPED
+    kills = [c for c in fake_docker.calls() if c[0] == "kill"]
+    assert kills == [["kill", f"hk-repo-{run.id}"]]
+    assert list((f.data / "runtime" / "repo-jobs").glob("*")) == []
+
+
+async def test_a_broken_plan_is_an_error_run(repo_fixture, fake_docker, monkeypatch):
+    f = repo_fixture
+
+    def broken(repo, root):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(f.deps, "plan", broken)
+    run = await f.runner.run(f.repo, "c1", "true")
+    assert run.status == "error" and run.output == DEPS_UNREADABLE
+    got = await f.tool.run({"repo": R, "command": "true"}, ctx(f.store))
+    assert not got.ok and got.content == DEPS_UNREADABLE
+
+    async def boom(repo, plan):
+        raise RuntimeError("bug")
+
+    monkeypatch.undo()
+    npm_files(f.clone)
+    monkeypatch.setattr(f.deps, "is_installed", boom)
+    with pytest.raises(RuntimeError):
+        await f.runner.run(f.repo, "c1", "npm test")
+    newest = f.runner.get(f.runner.runs(f.repo.id)[0].id)
+    assert newest.status == "error" and newest.output == RUN_BROKE
+    assert runs_started(fake_docker) == []
+
+
+async def test_too_large_deps_say_so(repo_fixture, fake_docker, monkeypatch):
+    from hearthkeep.github import deps as deps_module
+
+    f = repo_fixture
+    npm_files(f.clone)
+    monkeypatch.setattr(deps_module, "MAX_DEP_FILE_BYTES", 10)
+    got = await f.tool.run({"repo": R}, ctx(f.store))
+    assert not got.ok and got.content.endswith("is over 50 MB.") and DEPS_MISSING not in got.content
+    run = await f.runner.run(f.repo, "c1", "npm test")
+    assert run.status == "error" and run.output.endswith("is over 50 MB.")
+    assert runs_started(fake_docker) == []
+
+
+async def test_no_orphan_row_when_the_repo_went_mid_run(repo_fixture, fake_docker):
+    f = repo_fixture
+    gone = a_repo("feedfacecafe0001")  # a clone folder but no row, as after a removal
+    folder = f.data / "workspace" / "repos" / gone.id
+    folder.mkdir(parents=True)
+    (folder / "a.py").write_text("x")
+    run = await f.runner.run(gone, "c1", "true")
+    assert run.status == "passed"
+    assert f.runner.get(run.id) is None and f.runner.runs(gone.id) == []
+
+
+async def test_the_model_sees_at_most_8000_characters(repo_fixture, fake_docker, monkeypatch):
+    f = repo_fixture
+    monkeypatch.setenv("FAKE_DOCKER_OUTPUT_BYTES", str(100_000))
+    printed = bytes(65 + i % 26 for i in range(100_000)).decode("ascii")
+    got = await f.tool.run({"repo": R, "command": "make test"}, ctx(f.store))
+    assert got.ok
+    status, _, shown = got.content.partition("\n")
+    assert status.startswith("The tests passed (exit code 0")
+    head, note, tail = shown.split("\n")
+    assert head == printed[:MODEL_HEAD_CHARS] and tail == printed[-MODEL_TAIL_CHARS:]
+    assert len(head) + len(tail) == MODEL_OUTPUT_CHARS == 8000
+    assert note == "… 92000 characters cut; the full output is in the Repos view …"
+    (run,) = f.runner.runs(f.repo.id)
+    assert f.runner.get(run.id).output == printed  # the row keeps all of it
+    assert for_model("short") == "short"

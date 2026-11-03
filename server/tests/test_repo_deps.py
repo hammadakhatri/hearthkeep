@@ -531,3 +531,20 @@ async def test_concurrent_installs_of_one_plan_start_one_container(cache, fake_d
     assert first[0] and second[0]
     assert ALREADY_INSTALLED in (first[1], second[1])  # the second waited, then found it
     assert len([c for c in fake_docker.calls() if c[0] == "run"]) == 1
+
+
+async def test_install_shows_the_model_at_most_8000_characters(
+    repo_fixture, fake_docker, monkeypatch
+):
+    from hearthkeep.github.deps import MODEL_HEAD_CHARS, MODEL_TAIL_CHARS
+
+    store, repo, cache, tool = repo_fixture
+    npm_files(store.dir(repo))
+    monkeypatch.setenv("FAKE_DOCKER_OUTPUT_BYTES", str(100_000))
+    printed = bytes(65 + i % 26 for i in range(100_000)).decode("ascii")
+    _, got = await approve_and_run(tool, store, {"repo": R})
+    assert got.ok
+    status, head, note, tail = got.content.split("\n")
+    assert status == "Installed the npm dependencies."
+    assert head == printed[:MODEL_HEAD_CHARS] and tail == printed[-MODEL_TAIL_CHARS:]
+    assert note == "… 92000 characters cut …"
