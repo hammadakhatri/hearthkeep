@@ -200,7 +200,7 @@ Tests need the repo's packages, and installing them needs the internet, so it is
 
 - Only three kinds of project are supported: `uv` (`uv.lock`), `pip` (`requirements.txt`, and `requirements-dev.txt` if present) and `npm` (`package-lock.json`).
 - An install that is not cached yet is **Outward**: it needs your approval with a passkey, at any level, and it runs only after that. The card shows the command and the lock file's hash.
-- The install container has Docker's default network, so it can reach package servers. It sees **only the dependency files**, copied in read-only, never the clone, and **never the token**. It writes only to its own volume, and it is stopped at 15 minutes.
+- The install container has Docker's default network. That is **full network access, like any program on your PC, including your home network** (your router, printers, other computers, and Hearthkeep's own PC). It sees **only the dependency files**, copied in read-only, never the clone, and **never your token or your other files**. It writes only to its own volume, and it is stopped at 15 minutes. If Hearthkeep stops in the middle of an install, the next start stops that container and removes its half-filled volume.
 - Dependencies are installed **once per lock file**. They are kept in a Docker volume named `hk-deps-<repo id>-<hash>`, and the hash covers the dependency files and the image. Change a lock file and the next install asks again; unchanged, `repo_install` is a *Look* and runs without asking. Older volumes of that repo are removed after a successful install.
 - The model sees at most 8,000 characters of install output.
 
@@ -237,6 +237,9 @@ Keep secrets out of `config.toml`; it holds only the name of the secret to use (
 | `<data>/workspace/chats/<chat-id>/runs/<run-id>/` | The outputs of that chat's analysis runs |
 | `<data>/workspace/repos/<repo-id>/` | One clone for each repo you added in Repos |
 | `<data>/runtime/sandbox/jobs/` | Temporary job folders for the sandbox, removed after each run |
+| `<data>/runtime/repo-jobs/` | Throwaway copies of a repo's working tree for its test runs, removed after each run |
+| `<data>/runtime/deps/` | The dependency files copied for an install, removed after each install |
+| `<data>/runtime/clone-<id>/` | A repo being cloned while you add it, moved into `workspace/repos/` when done |
 | `<data>/runtime/git-home/` | The home folder every Git command uses: an empty config and an empty hooks folder |
 | `<data>/logs/`, `<data>/private/` | Logs (the model servers' output, and `hearthkeep.log` when started at login) and private files |
 
