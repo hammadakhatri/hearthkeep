@@ -231,3 +231,27 @@ def test_another_folder_is_judged_on_the_resolved_path(tmp_path, monkeypatch):
     assert startup.on_for_another_folder(state, Path("data")) is False  # relative, same folder
     assert startup.on_for_another_folder(state, Path("other")) is True
     assert startup.on_for_another_folder(startup.StartupStatus(True, False, None), "x") is False
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    ["timeout", "oserror", "bad_xml"],
+)
+def test_strict_status_raises_when_the_task_cant_be_read(windows, outcome):
+    def run(argv, **kw):
+        if outcome == "timeout":
+            raise subprocess.TimeoutExpired("schtasks", 15)
+        if outcome == "oserror":
+            raise OSError("gone")
+        return subprocess.CompletedProcess(argv, 0, b"<Task><unclosed>", b"")
+
+    # The lenient read (the web app's) says "off"; the strict one (the upgrade's) refuses.
+    assert startup.status(run=run) == startup.StartupStatus(True, False, None)
+    with pytest.raises(startup.StartupError):
+        startup.status(run=run, strict=True)
+
+
+def test_strict_status_still_reads_a_missing_task_as_off(windows):
+    assert startup.status(run=FakeSchtasks(), strict=True) == startup.StartupStatus(
+        True, False, None
+    )

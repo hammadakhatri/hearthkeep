@@ -104,7 +104,7 @@ class FakeHost(WindowsHost):
         self.location = Path(data_dir).resolve()
         self.location_writes.append(self.location)
 
-    def startup_status(self, *, run=None) -> startup.StartupStatus:
+    def startup_status(self, *, run=None, strict=False) -> startup.StartupStatus:
         if self.task is None:
             return startup.StartupStatus(True, False, None)
         return startup._parse(self.task)

@@ -11,6 +11,7 @@ import pytest
 from copy_rules import forbidden_in
 
 from hearthkeep import cli, launcher, startup
+from hearthkeep import host as host_module
 from hearthkeep.config import Settings
 from hearthkeep.host import UNSUPPORTED_HOST, UnsupportedHost, WindowsHost
 from hearthkeep.launcher import (
@@ -572,6 +573,8 @@ def test_launch_and_open_use_the_recorded_location(tmp_path, monkeypatch):
 
 
 def test_open_and_launch_on_other_os_are_unsupported(tmp_path, monkeypatch, capsys):
+    # The real resolver (conftest pins the CLI to UnsupportedHost): the OS check is under test.
+    monkeypatch.setattr(cli, "current_host", host_module.current_host)
     monkeypatch.setattr(startup, "is_windows", lambda: False)
     popen = FakePopen(lambda: 0)
     opened = []

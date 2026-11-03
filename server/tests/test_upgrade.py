@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from xml.sax.saxutils import escape
@@ -141,11 +142,13 @@ class FakeWindowsHost(WindowsHost):
         self.shortcuts: list[Path] = []
         self.location: Path | None = None
         self.calls: list[str] = []
+        self.strict: list[bool] = []
 
     def drive_type(self, root: str) -> int:
         return 3
 
-    def startup_status(self, *, run=None):
+    def startup_status(self, *, run=None, strict=False):
+        self.strict.append(strict)
         if self.task is None:
             return startup.StartupStatus(True, False, None)
         return startup._parse(self.task)
@@ -180,7 +183,7 @@ class RecordingUnsupportedHost(UnsupportedHost):
         self.calls.append("write_location")
         return super().write_location(data_dir)
 
-    def startup_status(self, *, run=None):
+    def startup_status(self, *, run=None, strict=False):
         self.calls.append("startup_status")
         return super().startup_status()
 
@@ -205,7 +208,7 @@ def test_upgrade_moves_task_drops_placeholders_and_keeps_the_rest(tmp_path):
     report = run_upgrade(data, conn, host=host)
     assert report == UpgradeReport(True, ("location", "startup", "shortcut", "levels"), ())
     assert host.enabled == [data] and host.shortcuts == [data] and host.location == data
-    assert startup._parse(host.task).launcher and startup._parse(host.task).serves(data)
+    # What the task then runs: test_old_task_is_rewritten_to_launch_the_data_folder.
     assert levels(conn) == {"python": "ask"} and snapshot(data) == before
     assert update_note(conn, addons_with(analysis="ready")) == {
         "version": hearthkeep.__version__,
@@ -268,7 +271,7 @@ def test_a_failing_step_never_raises(tmp_path, caplog):
         def read_location(self):
             raise PermissionError("no")
 
-        def startup_status(self, *, run=None):
+        def startup_status(self, *, run=None, strict=False):
             raise RuntimeError("no")
 
     data = todays_install(tmp_path)
@@ -417,7 +420,7 @@ def test_serve_runs_the_upgrade_and_still_starts_when_it_fails(serve, monkeypatc
     assert serve() == 0
     conn = connect(serve.data / DB_FILE)
     level = conn.execute("SELECT value FROM app_state WHERE key = 'upgrade_level'").fetchone()
-    assert level[0] == str(UPGRADE_LEVEL) and len(events(conn, "upgrade.ran")) == 1
+    assert level[0] == str(UPGRADE_LEVEL)  # nothing to change here, so no audit row
     conn.close()
 
     def broken(*args, **kwargs):
@@ -454,3 +457,185 @@ def test_setup_rerun_makes_a_shortcut_that_failed_at_first(tmp_path, capsys, run
     opened = []
     assert run_cmd_setup(data, opener=lambda s, h, **kw: opened.append(1) or 0) == 0
     assert cli.SHORTCUT_FAILED in capsys.readouterr().out and opened == [1]
+
+
+# ---- fix round 1 ----------------------------------------
+
+
+class RealTaskHost(FakeWindowsHost):
+    """The real start-at-login code (schtasks through `run`); locator and shortcut in memory."""
+
+    def startup_status(self, *, run=None, strict=False):
+        return WindowsHost.startup_status(self, run=run, strict=strict)
+
+    def enable_startup(self, data_dir, *, run=None):
+        return WindowsHost.enable_startup(self, data_dir, run=run)
+
+
+class FakeSchtasks:
+    """Answers /Query with `task` (UTF-16, as schtasks does) and keeps what /Create was given."""
+
+    def __init__(self, task: str | None, *, query_error: Exception | None = None) -> None:
+        self.task = task
+        self.query_error = query_error
+        self.created: list[str] = []
+
+    def __call__(self, argv, **kw):
+        if "/Query" in argv:
+            if self.query_error is not None:
+                raise self.query_error
+            if self.task is None:
+                return subprocess.CompletedProcess(argv, 1, b"", b"ERROR: not found")
+            return subprocess.CompletedProcess(argv, 0, self.task.encode("utf-16"), b"")
+        if "/Create" in argv:
+            xml_file = Path(argv[argv.index("/XML") + 1])
+            self.created.append(xml_file.read_text(encoding="utf-16"))
+            self.task = self.created[-1]
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+        raise AssertionError(argv)
+
+
+def level_stored(conn) -> bool:
+    return (
+        conn.execute("SELECT 1 FROM app_state WHERE key = 'upgrade_level'").fetchone() is not None
+    )
+
+
+@pytest.fixture
+def windows(monkeypatch):
+    monkeypatch.setattr(startup, "is_windows", lambda: True)
+    startup.clear_cache()
+    yield
+    startup.clear_cache()
+
+
+def test_upgrade_reads_the_task_strictly(tmp_path):
+    data = todays_install(tmp_path)
+    host = FakeWindowsHost(task=old_task_xml(data))
+    run_upgrade(data, connect(data / DB_FILE), host=host)
+    assert host.strict == [True]
+
+
+def test_old_task_is_rewritten_to_launch_the_data_folder(tmp_path, windows, pythonw_beside_python):
+    data = todays_install(tmp_path)
+    schtasks = FakeSchtasks(old_task_xml(data))
+    conn = connect(data / DB_FILE)
+    report = run_upgrade(data, conn, host=RealTaskHost(), run=schtasks)
+    assert "startup" in report.changed and len(schtasks.created) == 1
+    assert f'-m hearthkeep launch --data "{escape(str(data))}"' in schtasks.created[0]
+    assert "hearthkeep serve" not in schtasks.created[0]
+
+
+@pytest.mark.parametrize(
+    "error", [subprocess.TimeoutExpired("schtasks", 15), OSError("schtasks is missing")]
+)
+def test_schtasks_that_cant_answer_is_a_failure_to_retry(tmp_path, windows, error):
+    data = todays_install(tmp_path)
+    schtasks = FakeSchtasks(old_task_xml(data), query_error=error)
+    conn = connect(data / DB_FILE)
+    report = run_upgrade(data, conn, host=RealTaskHost(), run=schtasks)
+    assert report.items == ("startup_not_moved",) and not level_stored(conn)
+    assert schtasks.created == []
+
+
+def test_retry_that_changes_nothing_writes_no_audit_row(tmp_path):
+    data = (tmp_path / "data").resolve()
+    init_data_dir(data)
+    host = FakeWindowsHost(task=old_task_xml(data), enable_fails=True)
+    conn = connect(data / DB_FILE)
+    assert run_upgrade(data, conn, host=host).items == ("startup_not_moved",)
+    assert len(events(conn, "upgrade.ran")) == 1
+    second = run_upgrade(data, conn, host=host)
+    assert second == UpgradeReport(True, (), ("startup_not_moved",))
+    assert len(events(conn, "upgrade.ran")) == 1
+
+
+def test_gives_up_after_three_attempts_and_keeps_the_note(tmp_path):
+    data = todays_install(tmp_path)
+    host = FakeWindowsHost(task=old_task_xml(data), enable_fails=True)
+    conn = connect(data / DB_FILE)
+    for _ in range(2):
+        assert run_upgrade(data, conn, host=host).items == ("startup_not_moved",)
+        assert not level_stored(conn)
+    assert run_upgrade(data, conn, host=host).items == ("startup_not_moved",)
+    assert level_stored(conn)
+    assert [i["id"] for i in update_note(conn, None)["items"]] == ["startup_not_moved"]
+    assert run_upgrade(data, conn, host=host).ran is False
+
+
+def test_failure_of_a_step_without_a_note_item_does_not_block(tmp_path, caplog):
+    class NoLocator(FakeWindowsHost):
+        def write_location(self, data_dir):
+            raise OSError("LOCALAPPDATA is not set")
+
+    data = todays_install(tmp_path)
+    conn = connect(data / DB_FILE)
+    caplog.set_level(logging.WARNING)
+    report = run_upgrade(data, conn, host=NoLocator())
+    assert report.ran and report.items == () and "location" not in report.changed
+    assert level_stored(conn) and "OSError" in caplog.text
+
+
+def test_run_that_another_finished_first_leaves_its_note_alone(tmp_path):
+    data = todays_install(tmp_path)
+
+    class Racing(FakeWindowsHost):
+        def install_shortcut(self, data_dir, *, run=None):
+            super().install_shortcut(data_dir, run=run)
+            other = connect(data / DB_FILE)  # the other run finishes meanwhile
+            other.execute("INSERT INTO app_state VALUES ('upgrade_level', '1')")
+            other.execute("INSERT INTO app_state VALUES ('update_note', ?)", (THEIR_NOTE,))
+            other.close()
+
+    conn = connect(data / DB_FILE)
+    report = run_upgrade(data, conn, host=Racing(task=old_task_xml(data), enable_fails=True))
+    assert report.ran is False
+    assert stored_note(conn)[0] == THEIR_NOTE and events(conn, "upgrade.ran") == []
+
+
+THEIR_NOTE = json.dumps({"version": "1.0.0", "items": []})
+
+
+def test_dismissed_note_does_not_come_back(tmp_path):
+    data = todays_install(tmp_path)
+    host = FakeWindowsHost(task=old_task_xml(data), enable_fails=True)
+    conn = connect(data / DB_FILE)
+    run_upgrade(data, conn, host=host)
+    assert dismiss_update_note(conn)
+    run_upgrade(data, conn, host=host)  # the same failure again: nothing new to say
+    assert update_note(conn, None) is None
+    host.enable_fails = False
+    assert "startup" in run_upgrade(data, conn, host=host).changed
+    assert update_note(conn, None) is None and level_stored(conn)
+
+
+def test_dismissed_note_comes_back_for_a_new_failure(tmp_path):
+    data = todays_install(tmp_path)
+    host = FakeWindowsHost(task=old_task_xml(data), enable_fails=True)
+    conn = connect(data / DB_FILE)
+    run_upgrade(data, conn, host=host)
+    dismiss_update_note(conn)
+    host.shortcut_fails = True
+    run_upgrade(data, conn, host=host)
+    assert [i["id"] for i in update_note(conn, None)["items"]] == [
+        "shortcut_failed",
+        "startup_not_moved",
+    ]
+
+
+@pytest.mark.real_levels
+def test_existing_is_decided_once_and_kept_for_retries(tmp_path):
+    data = todays_install(tmp_path)
+    raw = sqlite3.connect(data / DB_FILE, isolation_level=None)
+    raw.execute("DELETE FROM sessions")
+    raw.execute("DELETE FROM credentials")
+    raw.execute("DELETE FROM tool_levels WHERE tool != 'wallet'")
+    raw.close()
+    host = FakeWindowsHost(task=old_task_xml(data), enable_fails=True)
+    conn = connect(data / DB_FILE)
+    first = run_upgrade(data, conn, host=host)
+    assert "shortcut" in first.changed and "levels" in first.changed
+    assert levels(conn) == {}  # the row that made it an existing install is gone
+    host.enable_fails = False
+    second = run_upgrade(data, conn, host=host)
+    assert "shortcut" in second.changed and update_note(conn, None) is not None

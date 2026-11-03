@@ -96,7 +96,7 @@ class Host(Protocol):
 
     def check_data_dir(self, path: Path) -> str | None: ...
 
-    def startup_status(self, *, run=subprocess.run) -> StartupStatus: ...
+    def startup_status(self, *, run=subprocess.run, strict: bool = False) -> StartupStatus: ...
 
     def enable_startup(self, data_dir: Path, *, run=subprocess.run) -> None: ...
 
@@ -147,8 +147,8 @@ class WindowsHost:
             return NOT_LOCAL
         return message
 
-    def startup_status(self, *, run=subprocess.run) -> StartupStatus:
-        return startup.status(run=run)
+    def startup_status(self, *, run=subprocess.run, strict: bool = False) -> StartupStatus:
+        return startup.status(run=run, strict=strict)
 
     def enable_startup(self, data_dir: Path, *, run=subprocess.run) -> None:
         startup.enable(data_dir, run=run)
@@ -211,7 +211,7 @@ class UnsupportedHost:
     def check_data_dir(self, path: Path) -> str | None:
         return UNSUPPORTED_HOST
 
-    def startup_status(self, *, run=subprocess.run) -> StartupStatus:
+    def startup_status(self, *, run=subprocess.run, strict: bool = False) -> StartupStatus:
         return StartupStatus(False, False, None)
 
     def enable_startup(self, data_dir: Path, *, run=subprocess.run) -> None:
