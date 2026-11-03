@@ -31,7 +31,7 @@ UNSUPPORTED_HOST = (
 )
 NOT_LOCAL = "Choose a folder on this PC's own drive, like C:\\Hearthkeep\\data."
 TOO_LONG = (
-    "That folder path is too long. Choose one of 100 characters or fewer, "
+    f"That folder path is too long. Choose one of {MAX_DATA_DIR_CHARS} characters or fewer, "
     "like C:\\Hearthkeep\\data."
 )
 BAD_CHARACTERS = "Use only English letters, numbers, spaces and - _ . ( ) in the folder path."

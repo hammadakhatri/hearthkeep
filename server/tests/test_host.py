@@ -90,6 +90,14 @@ def test_each_rule_has_its_own_message():
     assert "English letters" in check_data_dir_text(r"C:\A&B\data")
 
 
+def test_too_long_message_takes_its_number_from_the_limit():
+    import re
+
+    assert re.findall(r"\d+", host_module.TOO_LONG) == [str(MAX_DATA_DIR_CHARS)]
+    source = Path(host_module.__file__).read_text(encoding="utf-8")
+    assert "100 characters" not in source  # not written into the message by hand
+
+
 def test_check_data_dir_refuses_repo_and_foreign_folders(tmp_path, no_path_rules):
     repo = tmp_path / "repo"
     (repo / "server").mkdir(parents=True)
