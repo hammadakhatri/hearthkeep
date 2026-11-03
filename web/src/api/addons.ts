@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './client'
 
 export type AddonId = 'chat' | 'analysis' | 'images' | 'github' | 'devices' | 'startup'
@@ -84,5 +84,8 @@ export function useAddons(): AddonsState {
     }
   }, [reload])
 
-  return { addons, failed, refreshing, reload, refresh }
+  return useMemo(
+    () => ({ addons, failed, refreshing, reload, refresh }),
+    [addons, failed, refreshing, reload, refresh],
+  )
 }

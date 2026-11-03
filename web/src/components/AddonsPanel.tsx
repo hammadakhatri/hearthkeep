@@ -1,4 +1,4 @@
-import { useEffect, useId } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { useAddons, type Addon, type AddonsState } from '../api/addons'
 import { actionTarget, useAddonsState, useOpenSettings, type SettingsAnchor } from '../shell/AddonsContext'
 import { AlertIcon } from '../shell/icons'
@@ -38,7 +38,7 @@ function actionLabel(addon: Addon): string | null {
 type Props = {
   /** Where a button sends the owner; the app shell's own when it provides one. */
   onNavigate?: (anchor: SettingsAnchor) => void
-  /** Called once the add-ons are on screen, so their cards can be focused. */
+  /** Called once loading has settled (the add-ons are on screen, or it failed), so a card can be focused or given up on. */
   onLoaded?: () => void
 }
 
@@ -60,8 +60,17 @@ function AddonsView({ state, onNavigate, onLoaded }: Props & { state: AddonsStat
   const { addons, failed, refreshing } = state
 
   useEffect(() => {
-    if (addons) onLoaded?.()
-  }, [addons, onLoaded])
+    if (addons || failed) onLoaded?.()
+  }, [addons, failed, onLoaded])
+
+  // "Checked just now" after a Check again that worked, for screen readers too.
+  const wasRefreshing = useRef(false)
+  const [checked, setChecked] = useState(false)
+  useEffect(() => {
+    if (refreshing) setChecked(false)
+    else if (wasRefreshing.current && !failed) setChecked(true)
+    wasRefreshing.current = refreshing
+  }, [refreshing, failed])
 
   return (
     <section id="settings-addons" className="settings-section" aria-labelledby={titleId} tabIndex={-1}>
@@ -79,6 +88,9 @@ function AddonsView({ state, onNavigate, onLoaded }: Props & { state: AddonsStat
         </button>
       </div>
       <p className="settings-lede">What Hearthkeep can use on this PC, and what each part still needs.</p>
+      <p className="settings-lede" role="status" aria-live="polite">
+        {checked ? 'Checked just now' : ''}
+      </p>
       {failed && (
         <div className="note error" role="alert">
           <AlertIcon />
@@ -87,7 +99,7 @@ function AddonsView({ state, onNavigate, onLoaded }: Props & { state: AddonsStat
       )}
       {addons === null ? (
         !failed && (
-          <div className="device-list skeleton" aria-busy="true" aria-label="Loading add-ons">
+          <div className="device-list skeleton" role="status" aria-busy="true" aria-label="Loading add-ons">
             <span className="bar w30" />
             <span className="bar w60" />
           </div>
