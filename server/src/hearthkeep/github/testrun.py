@@ -14,6 +14,7 @@ Only repo ids reach a log here, never names.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import re
@@ -71,7 +72,10 @@ TREE_HAS_LINK = (
 )
 TREE_UNREADABLE = "The repo's files couldn't be copied for a test run."
 DEPS_MISSING = "Dependencies aren't installed for the current lock file. Call repo_install first."
+DEPS_UNREADABLE = "The repo's dependency files couldn't be read."
 NO_START = "The test container couldn't start."
+RUN_STOPPED = "The run was stopped before it finished."
+RUN_BROKE = "The run stopped because of an error in Hearthkeep."
 
 
 class TreeRefused(ValueError):
@@ -253,35 +257,51 @@ class RepoTestRunner:
     async def run(self, repo: Repo, chat_id: str, command: str) -> RepoRun:
         """Copy the tree, run `command` on the copy (at most 600 s), save and return the run.
         Something that stops it running (a refused copy, the dependencies gone) is saved as
-        an error run; the job folder is removed whatever happens."""
+        an error run, and so is a run that is cancelled or breaks (then re-raised); the job
+        folder is removed whatever happens. No row is saved once the repo itself is gone."""
         run_id = token_hex(16)
         job = self._jobs / run_id
         started = time.monotonic()
+
+        def finished(status: RunStatus, code: int | None, output: str) -> RepoRun:
+            return RepoRun(
+                id=run_id,
+                repo_id=repo.id,
+                chat_id=chat_id,
+                command=command,
+                status=status,
+                exit_code=code,
+                duration_ms=int((time.monotonic() - started) * 1000),
+                output=output,
+                created_at=db.utcnow(),
+            )
+
         try:
-            status, code, output = await self._run(run_id, job, repo, command)
+            try:
+                status, code, output = await self._run(run_id, job, repo, command)
+            except BaseException as exc:
+                # Stopped (the turn was cancelled) or broken: still recorded, then raised on.
+                why = RUN_STOPPED if isinstance(exc, asyncio.CancelledError) else RUN_BROKE
+                with contextlib.suppress(BaseException):
+                    self._save(finished("error", None, why))
+                raise
         finally:
             await asyncio.to_thread(remove_tree, job)
-        duration_ms = int((time.monotonic() - started) * 1000)
-        run = RepoRun(
-            id=run_id,
-            repo_id=repo.id,
-            chat_id=chat_id,
-            command=command,
-            status=status,
-            exit_code=code,
-            duration_ms=duration_ms,
-            output=output,
-            created_at=db.utcnow(),
-        )
+        run = finished(status, code, output)
+        self._save(run)
+        _log.info("repo %s: test run %s %s", repo.id, run_id, status)
+        return run
+
+    def _save(self, run: RepoRun) -> None:
+        """Insert the run, unless its repo was removed while it ran (no orphan rows)."""
         with db.transaction(self.conn):
             self.conn.execute(
                 "INSERT INTO repo_runs (id, repo_id, chat_id, command, status, exit_code, "
-                "duration_ms, output, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "duration_ms, output, created_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? "
+                "WHERE EXISTS (SELECT 1 FROM repos WHERE id = ?)",
                 (run.id, run.repo_id, run.chat_id, run.command, run.status, run.exit_code,
-                 run.duration_ms, run.output, run.created_at),
+                 run.duration_ms, run.output, run.created_at, run.repo_id),
             )  # fmt: skip
-        _log.info("repo %s: test run %s %s", repo.id, run_id, status)
-        return run
 
     async def _run(
         self, run_id: str, job: Path, repo: Repo, command: str
@@ -289,8 +309,10 @@ class RepoTestRunner:
         clone = clone_dir(self.data_dir, repo.id)
         try:
             plan = await asyncio.to_thread(self.deps.plan, repo, clone)
-        except DepsTooLarge:
-            return "error", None, DEPS_MISSING
+        except DepsTooLarge as exc:
+            return "error", None, str(exc)
+        except (ValueError, OSError):
+            return "error", None, DEPS_UNREADABLE
         if plan is not None and not await self.deps.is_installed(repo, plan):
             # Never mount a volume that isn't there: Docker would make an empty one.
             return "error", None, DEPS_MISSING

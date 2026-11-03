@@ -23,10 +23,17 @@ from hearthkeep.github.deps import (
     DepsCache,
     DepsPlan,
     DepsTooLarge,
+    for_model,
     remove_job,
 )
 from hearthkeep.github.repos import RepoStore
-from hearthkeep.github.testrun import DEPS_MISSING, TEST_TIMEOUT_S, RepoRun, RepoTestRunner
+from hearthkeep.github.testrun import (
+    DEPS_MISSING,
+    DEPS_UNREADABLE,
+    TEST_TIMEOUT_S,
+    RepoRun,
+    RepoTestRunner,
+)
 from hearthkeep.permissions import ActionClass
 from hearthkeep.tools.base import ToolContext, ToolResult
 from hearthkeep.tools.repo import GITHUB_LEVEL_KEY, UNKNOWN_REPO, github_ready
@@ -155,12 +162,13 @@ class RepoInstallTool:
             await asyncio.to_thread(remove_job, job)
         if ok and output == ALREADY_INSTALLED:  # another call installed it meanwhile
             return ToolResult(ok=True, content=ALREADY_INSTALLED)
+        shown = for_model(output)  # the model's context is small: head and tail only
         if ok:
             return ToolResult(
                 ok=True,
-                content=f"Installed the {plan.ecosystem} dependencies.\n{output}".rstrip("\n"),
+                content=f"Installed the {plan.ecosystem} dependencies.\n{shown}".rstrip("\n"),
             )
-        return ToolResult(ok=False, content=f"The install failed.\n{output}".rstrip("\n"))
+        return ToolResult(ok=False, content=f"The install failed.\n{shown}".rstrip("\n"))
 
 
 # -- repo_test -----------------------------------------------------------------------------
@@ -185,13 +193,19 @@ _STATUS_WORDS = {
 }
 
 
+FULL_OUTPUT_AT = "the full output is in the Repos view"
+
+
 def _report(run: RepoRun) -> str:
+    """What the model is told: the status line and at most 8,000 characters of output (the
+    run's row keeps the whole capped output for the Repos view)."""
     seconds = run.duration_ms / 1000
+    output = for_model(run.output, FULL_OUTPUT_AT)
     if run.status == "error":
-        return f"{_STATUS_WORDS['error']}: {run.output}"
+        return f"{_STATUS_WORDS['error']}: {output}"
     code = "no exit code" if run.exit_code is None else f"exit code {run.exit_code}"
     head = f"{_STATUS_WORDS[run.status]} ({code}, {seconds:.1f} s). Command: {run.command}"
-    return f"{head}\n{run.output}".rstrip("\n") if run.output else head
+    return f"{head}\n{output}".rstrip("\n") if output else head
 
 
 class RepoTestTool:
@@ -238,22 +252,19 @@ class RepoTestTool:
     def summarize(self, args: dict) -> str:
         return f"Run the tests of {args.get('repo', 'a repo')}"
 
-    async def _command(self, repo, clone: Path, given: str | None) -> str | None:
-        if given:
-            return given
-        try:
-            plan = await asyncio.to_thread(self._deps.plan, repo, clone)
-        except (DepsTooLarge, ValueError, OSError):
-            return None
-        return DEFAULT_COMMANDS[plan.ecosystem] if plan is not None else None
-
     async def approval_detail(self, args: dict, ctx: ToolContext) -> dict | None:
         repo = self._repos.by_name(args["repo"])
         if repo is None:
             return None
-        command = await self._command(repo, self._repos.dir(repo), args.get("command"))
-        if command is None:
-            return None
+        command = args.get("command")
+        if not command:
+            try:
+                plan = await asyncio.to_thread(self._deps.plan, repo, self._repos.dir(repo))
+            except (DepsTooLarge, ValueError, OSError):
+                return None  # `run` gives the model the reason
+            if plan is None:
+                return None
+            command = DEFAULT_COMMANDS[plan.ecosystem]
         return {"repo": repo.full_name, "command": command}
 
     async def run(self, args: dict, ctx: ToolContext) -> ToolResult:
@@ -271,9 +282,16 @@ class RepoTestTool:
         missing = await self._deps.unavailable()
         if missing is not None:
             return _fail(missing)
-        if await self._deps.current_state(repo, clone) in ("needed", "outdated"):
+        try:
+            plan = await asyncio.to_thread(self._deps.plan, repo, clone)
+        except DepsTooLarge as exc:
+            return _fail(str(exc))
+        except (ValueError, OSError):
+            return _fail(DEPS_UNREADABLE)
+        # Needed or outdated: the current lock file's dependencies aren't there.
+        if plan is not None and not await self._deps.is_installed(repo, plan):
             return _fail(DEPS_MISSING)
-        command = await self._command(repo, clone, given)
+        command = given or (DEFAULT_COMMANDS[plan.ecosystem] if plan is not None else None)
         if command is None:
             return _fail(NO_COMMAND)
         run = await self._runner.run(repo, ctx.chat_id, command)
