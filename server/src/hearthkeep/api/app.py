@@ -30,6 +30,7 @@ from hearthkeep.api import (
     routes_chats,
     routes_files,
     routes_folders,
+    routes_github,
     routes_images,
     routes_models,
     routes_push,
@@ -56,6 +57,7 @@ from hearthkeep.config import LOOPBACK_HOSTS, Settings, detect_docker
 from hearthkeep.deletion import sweep_orphans
 from hearthkeep.files.store import ChatFileStore
 from hearthkeep.folders import FolderStore
+from hearthkeep.github.api import TOKEN_SECRET, GitHubClient
 from hearthkeep.images import ImageStore
 from hearthkeep.numbercheck import NumberChecker
 from hearthkeep.push import PushSender, PushSubscriptions, VapidKeys
@@ -65,7 +67,7 @@ from hearthkeep.sandbox.handle import SandboxHandle
 from hearthkeep.sandbox.inspect import Inspector
 from hearthkeep.sandbox.runner import SandboxRunner
 from hearthkeep.sandbox.runs import RunStore
-from hearthkeep.secrets import SecretStore
+from hearthkeep.secrets import SecretStore, SecretStoreError
 from hearthkeep.sent import SentStore
 from hearthkeep.tools.base import ToolRegistry
 from hearthkeep.tools.files import FilesTool
@@ -283,11 +285,13 @@ def create_app(
     models: ModelStack | None = None,
     sandbox: SandboxRunner | None = None,
     push_sender: PushSender | None = None,
+    github_transport: httpx.AsyncBaseTransport | None = None,
 ) -> FastAPI:
     """`sandbox`, when given (tests), is used as is; otherwise one is made when Docker is
     available. Without one the `python` tool is still offered and answers that Docker is
     needed: nothing ever runs on the host. `push_sender`, when given (tests: a fake, or one
-    on a mock transport), is used instead of the real one, so tests never touch the network."""
+    on a mock transport), is used instead of the real one, so tests never touch the network;
+    `github_transport` does the same for the GitHub client."""
     # The static files' types come from `mimetypes`, which on Windows reads the registry: a
     # .js mapped to text/plain there would stop the service worker from registering.
     mimetypes.add_type("text/javascript", ".js")
@@ -298,6 +302,12 @@ def create_app(
     check = health_check or chat_model_health_check(settings)
     stack = models or ModelStack()
     store = secrets or SecretStore(Path(settings.data_dir))
+
+    def github_token() -> str | None:
+        try:
+            return store.get(TOKEN_SECRET)
+        except SecretStoreError:
+            return None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -389,6 +399,8 @@ def create_app(
                 push=push,
                 subscriptions=subscriptions,
                 sent=sent,
+                secrets=store,
+                github=GitHubClient(github_token, transport=github_transport),
             )
             yield
         finally:
@@ -439,6 +451,7 @@ def create_app(
         routes_uploads,
         routes_files,
         routes_folders,
+        routes_github,
         routes_runs,
         routes_push,
         routes_sent,

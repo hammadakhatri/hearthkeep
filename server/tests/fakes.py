@@ -4,6 +4,8 @@ import asyncio
 import copy
 import secrets
 
+import httpx
+
 from hearthkeep.auth.webauthn import (
     NewCredential,
     StoredCredential,
@@ -245,3 +247,29 @@ class FakeSandbox:
                       duration_ms=1500, members=members, error=None, job_dir=job)  # fmt: skip
         values.update(fields)
         return RawRun(**values)
+
+
+class FakeGitHub:
+    """GitHub's REST API on an httpx mock transport: `routes` maps (method, path) to
+    (status, json); every request is kept in `requests`. `GET /user` answers "octo" (id 42)."""
+
+    def __init__(self) -> None:
+        self.routes: dict[tuple[str, str], tuple[int, object]] = {
+            ("GET", "/user"): (200, {"login": "octo", "id": 42}),
+        }
+        self.requests: list[httpx.Request] = []
+        self._failures: list[tuple[int, object]] = []
+        self.transport = httpx.MockTransport(self._handle)
+
+    def fail_next(self, status: int, body: object = None) -> None:
+        self._failures.append((status, body if body is not None else {"message": "failed"}))
+
+    def _handle(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        if self._failures:
+            status, body = self._failures.pop(0)
+        else:
+            status, body = self.routes.get(
+                (request.method, request.url.path), (404, {"message": "Not Found"})
+            )
+        return httpx.Response(status, json=body)

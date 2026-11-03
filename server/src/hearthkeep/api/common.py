@@ -25,6 +25,7 @@ from hearthkeep.auth.webauthn import ChallengeStore, Verifier
 from hearthkeep.config import LOOPBACK_HOSTS, Settings
 from hearthkeep.files.store import ChatFileStore
 from hearthkeep.folders import FolderStore
+from hearthkeep.github.api import GitHubClient
 from hearthkeep.images import ImageStore
 from hearthkeep.models.cards import CardError, ModelCard
 from hearthkeep.numbercheck import NumberChecker
@@ -33,6 +34,7 @@ from hearthkeep.runtime.gpu import GpuScheduler
 from hearthkeep.sandbox.handle import SandboxHandle
 from hearthkeep.sandbox.inspect import Inspector
 from hearthkeep.sandbox.runs import RunStore
+from hearthkeep.secrets import SecretStore
 from hearthkeep.sent import SentStore
 from hearthkeep.tools.base import ToolRegistry
 
@@ -144,6 +146,8 @@ class Services:
     push: PushSender | None = None  # None when the secret store can't be read
     subscriptions: PushSubscriptions | None = None
     sent: SentStore | None = None  # what was sent to each device
+    secrets: SecretStore | None = None
+    github: GitHubClient | None = None
     health_cache: tuple[float, bool] | None = None
     health_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
