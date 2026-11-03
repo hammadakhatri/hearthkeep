@@ -37,7 +37,7 @@ from hearthkeep.config import (
     load_settings,
     local_base_url,
 )
-from hearthkeep.host import UNSUPPORTED_HOST, Host, current_host
+from hearthkeep.host import DATA_MARKERS, REPO_ROOT, UNSUPPORTED_HOST, Host, current_host
 from hearthkeep.lifecycle import EXIT_USAGE, SUPERVISED_ENV, ServerControl
 from hearthkeep.providers.chat import NoChatModelClient, OpenAIChatClient
 from hearthkeep.runtime.gpu import detect_vram_gb
@@ -53,7 +53,7 @@ from hearthkeep.sandbox import image as sandbox_image
 from hearthkeep.secrets import SecretStore, SecretStoreError
 from hearthkeep.setupmode import SetupMode, setup_url
 from hearthkeep.upgrade import UpgradeReport, run_upgrade
-from hearthkeep.webbundle import ensure_web_bundle
+from hearthkeep.webbundle import ensure_web_bundle, release_version
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -112,6 +112,9 @@ LAUNCHER_NOT_STARTED = (
 )
 LOCATION_NOT_SAVED = (
     "Hearthkeep couldn't note where its data folder is on this PC. Setup carries on without it."
+)
+FOLDER_NOT_PROTECTED = (
+    "Hearthkeep couldn't limit who on this PC can open its folders. Setup carries on without it."
 )
 
 startup_run = subprocess.run  # how `startup` runs schtasks; replaced in tests
@@ -520,7 +523,23 @@ def port_free(host: str, port: int) -> bool:
 
 def _is_data_folder(path: Path) -> bool:
     """Whether `path` already holds a Hearthkeep data folder (an install to keep as it is)."""
-    return any((path / name).exists() for name in ("config.toml", DB_FILE))
+    return any((path / name).exists() for name in DATA_MARKERS)
+
+
+def _release_program_folder() -> Path | None:
+    """The Hearthkeep program folder when it is an unzipped release (left alone in a
+    developer's checkout), else None."""
+    return REPO_ROOT if release_version() is not None else None
+
+
+def _protect_folder(host: Host, path: Path) -> None:
+    """Let only the owner's account, SYSTEM and Administrators into `path` (ruling C24). A
+    failure is logged by type and never stops setup."""
+    try:
+        host.protect_folder(path)
+    except Exception as exc:
+        log.warning("a folder couldn't be protected: %s", type(exc).__name__)
+        print(FOLDER_NOT_PROTECTED)
 
 
 def _has_passkey(settings: Settings) -> bool:
@@ -548,6 +567,7 @@ def cmd_setup(
     wait: Callable = launcher.wait_for_health,
     opener: Callable = launcher.open_app,
     free: Callable[[str, int], bool] = port_free,
+    program_folder: Callable[[], Path | None] = _release_program_folder,
     make_llama: Callable = build_llama_process,
     make_comfy: Callable = build_comfyui_process,
     detect_vram: Callable[[], float | None] = detect_vram_gb,
@@ -567,13 +587,20 @@ def cmd_setup(
     data = Path(args.data) if args.data else (recorded or host.default_data_dir())
     # The folder rules are for a new folder. An existing Hearthkeep data folder skips all of
     # check_data_dir (controller ruling on C2): existing installs must keep working as they are.
-    if not _is_data_folder(data):
+    new_folder = not _is_data_folder(data)
+    if new_folder:
         problem = host.check_data_dir(data)
         if problem:
             print(problem)
             return 1
     data = data.resolve()
-    settings = _settings(data)  # creates the folder and its config on first run
+    if new_folder:  # protected before anything is written in it (an existing one is kept)
+        data.mkdir(parents=True, exist_ok=True)
+        _protect_folder(host, data)
+    program = program_folder()
+    if program is not None:
+        _protect_folder(host, program)
+    settings = _settings(data)  # creates the folder's files and its config on first run
     if recorded is None:  # never repoint a record whose folder still exists
         try:
             host.write_location(data)

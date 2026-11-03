@@ -25,7 +25,16 @@ DEFAULT_DATA_DIR = PureWindowsPath(r"C:\Hearthkeep\data")
 MAX_DATA_DIR_CHARS = 100
 LOCATION_FILE = "location.json"
 DRIVE_REMOTE = 4  # what GetDriveTypeW answers for a network (mapped) drive
-_DATA_MARKERS = ("config.toml", "hearthkeep.db")
+# The files that make a folder a Hearthkeep data folder (an install to keep as it is).
+DATA_MARKERS = ("config.toml", "hearthkeep.db")
+# Folder protection: full control for the owner's account, SYSTEM and Administrators only,
+# named by SID so it works whatever language Windows speaks.
+SID_SYSTEM = "S-1-5-18"
+SID_ADMINISTRATORS = "S-1-5-32-544"
+ACL_TIMEOUT_S = 300  # icacls passes the change down to every file already in the folder
+_SID = re.compile(r"S-1-[0-9]+(?:-[0-9]+)+")
+
+acl_run = subprocess.run  # how folder protection runs whoami and icacls; replaced in tests
 
 UNSUPPORTED_HOST = (
     "Setting up Hearthkeep and running it in the background is built in only on Windows for now."
@@ -81,11 +90,54 @@ def check_data_dir(path: Path, *, repo_root: Path = REPO_ROOT) -> str | None:
     if _inside(path.resolve(), Path(repo_root).resolve()):
         return INSIDE_PROGRAM
     if path.is_dir():
-        if any(path.iterdir()) and not any((path / name).exists() for name in _DATA_MARKERS):
+        if any(path.iterdir()) and not any((path / name).exists() for name in DATA_MARKERS):
             return NOT_EMPTY
     elif path.exists():
         return NOT_EMPTY
     return None
+
+
+class FolderProtectError(Exception):
+    """A folder's permissions couldn't be set; the message names no path."""
+
+
+def _acl_tool(name: str, argv: list[str], run) -> str:
+    """Run a System32 tool for folder protection; its output, or FolderProtectError."""
+    exe = procutil.system32_exe(name)
+    if exe is None:
+        raise FolderProtectError(f"{name} wasn't found: SystemRoot is not set.")
+    try:
+        result = run(
+            [str(exe), *argv],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=ACL_TIMEOUT_S,
+            check=False,
+            creationflags=procutil.NO_WINDOW,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise FolderProtectError(f"{name} couldn't run ({type(exc).__name__}).") from None
+    if result.returncode != 0:
+        raise FolderProtectError(f"{name} exit code {result.returncode}")
+    out = result.stdout or b""
+    return out.decode("ascii", "replace") if isinstance(out, bytes) else str(out)
+
+
+def current_user_sid(*, run=None) -> str:
+    """The SID of the account this process runs as (`whoami /user`)."""
+    text = _acl_tool("whoami.exe", ["/user", "/fo", "csv", "/nh"], run or acl_run)
+    sids = _SID.findall(text)
+    if not sids:
+        raise FolderProtectError("whoami didn't name a SID.")
+    return sids[-1]
+
+
+def protect_folder_argv(path: Path, user_sid: str) -> list[str]:
+    """icacls arguments (after the program) that leave `path` and everything in it to the
+    owner's account, SYSTEM and Administrators only: no inherited entries, full control for
+    those three, passed down to every folder and file inside."""
+    grants = [f"*{sid}:(OI)(CI)F" for sid in (user_sid, SID_SYSTEM, SID_ADMINISTRATORS)]
+    return [str(path), "/inheritance:r", "/grant:r", *grants, "/Q"]
 
 
 class Host(Protocol):
@@ -111,6 +163,8 @@ class Host(Protocol):
     def read_location(self) -> Path | None: ...
 
     def write_location(self, data_dir: Path) -> None: ...
+
+    def protect_folder(self, path: Path, *, run=None) -> None: ...
 
 
 def _drive_type(root: str) -> int:
@@ -200,6 +254,13 @@ class WindowsHost:
                 os.unlink(temp)
             raise
 
+    def protect_folder(self, path: Path, *, run=None) -> None:
+        """Let only this account, SYSTEM and Administrators into `path` (System32 icacls, by
+        SID). Raises FolderProtectError when it can't be done."""
+        run = run or acl_run
+        sid = current_user_sid(run=run)
+        _acl_tool("icacls.exe", protect_folder_argv(Path(path), sid), run)
+
 
 class UnsupportedHost:
     name = "unsupported"
@@ -231,6 +292,9 @@ class UnsupportedHost:
 
     def write_location(self, data_dir: Path) -> None:
         raise HostUnsupported()
+
+    def protect_folder(self, path: Path, *, run=None) -> None:
+        return None  # nothing is set up on this OS, so there is nothing to protect
 
 
 def current_host() -> Host:
