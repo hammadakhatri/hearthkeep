@@ -58,6 +58,7 @@ from hearthkeep.deletion import sweep_orphans
 from hearthkeep.files.store import ChatFileStore
 from hearthkeep.folders import FolderStore
 from hearthkeep.github.api import TOKEN_SECRET, GitHubClient
+from hearthkeep.github.deps import DepsCache
 from hearthkeep.github.git import GitRunner
 from hearthkeep.github.repos import RepoStore, sweep_repo_folders
 from hearthkeep.images import ImageStore
@@ -76,6 +77,7 @@ from hearthkeep.tools.files import FilesTool
 from hearthkeep.tools.python import PythonTool, analysis_context
 from hearthkeep.tools.read_pages import ReadPagesTool
 from hearthkeep.tools.repo import RepoEditTool, RepoReadTool
+from hearthkeep.tools.repo_deps import RepoInstallTool
 from hearthkeep.tools.send import SendToDevicesTool
 
 DB_FILE = "hearthkeep.db"
@@ -369,6 +371,11 @@ def create_app(
                 registry.register(RepoReadTool(repo_store))
             if registry.get(RepoEditTool.name) is None:
                 registry.register(RepoEditTool(repo_store))
+            # Dependencies: one volume per lock file, removed with the repo.
+            deps = DepsCache(conn, sandbox_image.DOCKER, sandbox_image.repo_image_tag())
+            repo_store.on_remove.append(deps.remove_for)
+            if registry.get(RepoInstallTool.name) is None:
+                registry.register(RepoInstallTool(repo_store, deps, Path(settings.data_dir)))
             loop = AgentLoop(
                 chat,
                 registry,
@@ -417,6 +424,7 @@ def create_app(
                 secrets=store,
                 github=github,
                 repos=repo_store,
+                deps=deps,
             )
             yield
         finally:

@@ -358,6 +358,14 @@ SANDBOX_BUILD_INTRO = (
 )
 
 
+def _sandbox_images() -> list[tuple[str, str, Path]]:
+    """(label, tag, folder) for each image `sandbox build` builds, in order."""
+    return [
+        ("Sandbox image", sandbox_image.image_tag(), sandbox_image.IMAGE_DIR),
+        ("Repo image", sandbox_image.repo_image_tag(), sandbox_image.REPO_IMAGE_DIR),
+    ]
+
+
 def cmd_sandbox_build(args: argparse.Namespace) -> int:
     _settings(Path(args.data))
     print(SANDBOX_BUILD_INTRO, flush=True)
@@ -367,12 +375,15 @@ def cmd_sandbox_build(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    tag = sandbox_image.image_tag()
-    code = sandbox_image.build_image(tag, sandbox_image.DOCKER)
-    if code != 0:
-        print(f"error: the sandbox image build failed (docker exit code {code}).", file=sys.stderr)
-        return 1
-    print(f"Sandbox image ready: {tag}")
+    for label, tag, folder in _sandbox_images():
+        code = sandbox_image.build_image(tag, sandbox_image.DOCKER, folder)
+        if code != 0:
+            print(
+                f"error: the {label.lower()} build failed (docker exit code {code}).",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"{label} ready: {tag}", flush=True)
     return 0
 
 
@@ -380,10 +391,10 @@ def cmd_sandbox_status(args: argparse.Namespace) -> int:
     _settings(Path(args.data))
     docker = sandbox_image.DOCKER
     running = sandbox_image.docker_ok(docker)
-    tag = sandbox_image.image_tag()
-    present = running and sandbox_image.image_present(tag, docker)
     print(f"Docker: {'running' if running else 'not found'}")
-    print(f"Sandbox image: {tag} ({'present' if present else 'missing'})")
+    for label, tag, _folder in _sandbox_images():
+        present = running and sandbox_image.image_present(tag, docker)
+        print(f"{label}: {tag} ({'present' if present else 'missing'})")
     return 0
 
 

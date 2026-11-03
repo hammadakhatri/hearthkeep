@@ -79,7 +79,8 @@ def test_add_list_and_errors(harness, api_client, fake_github):
     assert listed == [{**body}]
     assert listed[0]["branch"] == "main" and listed[0]["changed"] == []
     assert listed[0]["ahead"] == 0 and listed[0]["behind"] == 0
-    assert listed[0]["deps"] is None and listed[0]["last_run"] is None
+    # The origin has no dependency files; with them it would be "needed" until installed.
+    assert listed[0]["deps"] == "none" and listed[0]["last_run"] is None
 
     assert add(api_client).json()["reason"] == "already_added"
     assert add(api_client).status_code == 409
@@ -158,3 +159,14 @@ def test_startup_sweeps_left_clones(harness):
     staging = plant(harness.data / "runtime" / "clone-0123456789abcdef")
     harness.start()
     assert not orphan.exists() and not staging.exists()
+
+
+def test_repo_list_shows_dependency_state(harness, api_client):
+    added = add(api_client)
+    assert added.status_code == 201
+    hk = api_client.app.state.hk
+    clone = harness.data / "workspace" / "repos" / added.json()["id"]
+    (clone / "requirements.txt").write_text("requests==2.32.3\n")
+    listed = api_client.get("/api/repos").json()["repos"]
+    assert listed[0]["deps"] == "needed"  # nothing installed yet; docker is never asked
+    assert hk.registry.get("repo_install") is not None

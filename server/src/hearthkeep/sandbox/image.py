@@ -1,4 +1,6 @@
-"""The sandbox image: its content-hash tag, and checking for and building it with Docker."""
+"""The sandbox images, each named by a content hash of its folder, and checking for and
+building them with Docker: the Python sandbox (`hearthkeep-sandbox`) and the image repo
+dependencies are installed and repo tests run in (`hearthkeep-repo`)."""
 
 from __future__ import annotations
 
@@ -9,6 +11,8 @@ from pathlib import Path
 
 IMAGE_DIR = Path(__file__).resolve().parent / "image"
 IMAGE_NAME = "hearthkeep-sandbox"
+REPO_IMAGE_DIR = Path(__file__).resolve().parent / "repo_image"
+REPO_IMAGE_NAME = "hearthkeep-repo"
 DOCKER: tuple[str, ...] = ("docker",)
 DOCKER_INFO_TIMEOUT_S = 5
 DOCKER_INSPECT_TIMEOUT_S = 30
@@ -30,16 +34,21 @@ def _image_files(image_dir: Path) -> list[tuple[str, Path]]:
     return sorted(found)
 
 
-def image_tag(image_dir: Path = IMAGE_DIR) -> str:
-    """`hearthkeep-sandbox:<12 hex>`: a hash of every file's relative path and bytes, so any
-    change to the image's files names a new image."""
+def image_tag(image_dir: Path = IMAGE_DIR, name: str = IMAGE_NAME) -> str:
+    """`<name>:<12 hex>`: a hash of every file's relative path and bytes, so any change to
+    the image's files names a new image."""
     digest = hashlib.sha256()
     for rel, path in _image_files(Path(image_dir)):
         data = path.read_bytes()
         digest.update(rel.encode("utf-8") + b"\0")
         digest.update(str(len(data)).encode("ascii") + b"\0")
         digest.update(data)
-    return f"{IMAGE_NAME}:{digest.hexdigest()[:12]}"
+    return f"{name}:{digest.hexdigest()[:12]}"
+
+
+def repo_image_tag() -> str:
+    """`hearthkeep-repo:<12 hex>`, the image repo dependencies are installed and tested in."""
+    return image_tag(REPO_IMAGE_DIR, REPO_IMAGE_NAME)
 
 
 def _quiet(command: list[str], timeout: float) -> bool:
@@ -67,11 +76,11 @@ def image_present(tag: str, docker: Sequence[str] = DOCKER) -> bool:
     return _quiet([*docker, "image", "inspect", tag], DOCKER_INSPECT_TIMEOUT_S)
 
 
-def build_image(tag: str, docker: Sequence[str] = DOCKER) -> int:
-    """`docker build -t <tag> <IMAGE_DIR>` with its output shown as it runs."""
+def build_image(tag: str, docker: Sequence[str] = DOCKER, image_dir: Path = IMAGE_DIR) -> int:
+    """`docker build -t <tag> <image_dir>` with its output shown as it runs."""
     try:
         return subprocess.run(
-            [*docker, "build", "-t", tag, str(IMAGE_DIR)],
+            [*docker, "build", "-t", tag, str(image_dir)],
             stdin=subprocess.DEVNULL,
             check=False,
             creationflags=_NO_WINDOW,
