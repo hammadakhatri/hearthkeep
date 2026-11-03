@@ -47,6 +47,7 @@ from hearthkeep.setupmode import SetupMode, setup_url
 from hearthkeep.shortcut import ShortcutError
 
 SECRET = "s3cret-" + "x" * 30
+REAL_RUN_SERVER = cli.run_server  # the fixture replaces cli.run_server; some tests need uvicorn
 LOOPBACK_PEER = ("127.0.0.1", 50000)
 
 
@@ -432,6 +433,48 @@ def test_setup_says_at_once_when_the_launcher_cant_start(tmp_path, capsys, run_c
     assert FINISHED not in out and FINISHED_SLOW not in out
 
 
+def _held_port() -> socket.socket:
+    held = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    held.bind(("127.0.0.1", 0))
+    held.listen()
+    return held
+
+
+def test_run_server_returns_startup_failure_when_uvicorn_cant_bind():
+    """uvicorn's own startup calls sys.exit(3) when the bind fails: that is STARTUP_FAILURE,
+    not an exit of the whole process."""
+    from fastapi import FastAPI
+
+    from hearthkeep.lifecycle import ServerControl
+
+    with _held_port() as held:
+        port = held.getsockname()[1]
+        control = ServerControl(supervised=False)
+        code = REAL_RUN_SERVER(
+            FastAPI(), "127.0.0.1", port, control=control, log_level="critical", access_log=False
+        )
+    assert code == cli.STARTUP_FAILURE == 3
+
+
+def test_setup_with_a_real_server_on_a_taken_port_says_the_port_is_busy(
+    tmp_path, capsys, monkeypatch, run_cmd_setup
+):
+    """Something takes the port after the free-port check: the real uvicorn can't bind and
+    setup says the port is busy (not that setup stopped early, and no traceback)."""
+    monkeypatch.setattr(cli, "run_server", REAL_RUN_SERVER)
+    with _held_port() as held:
+        port = held.getsockname()[1]
+        data = tmp_path / "data"
+        data.mkdir()
+        (data / "config.toml").write_text(
+            f"port = {port}\npublic_origin = 'http://localhost:{port}'\n", encoding="utf-8"
+        )
+        assert run_cmd_setup(data, free=lambda host, p: True) == 1
+    out = capsys.readouterr().out
+    assert PORT_BUSY.format(port=port) in out and STOPPED_EARLY not in out
+    assert run_cmd_setup.host.spawned == []
+
+
 def test_setup_refuses_a_bad_data_folder_before_creating_it(tmp_path, capsys, run_cmd_setup):
     data = tmp_path / "my%data"
     assert run_cmd_setup(data) == 1
@@ -537,6 +580,29 @@ def test_setup_waits_for_the_launcher_and_says_when_it_is_slow(tmp_path, capsys,
     out = capsys.readouterr().out
     assert FINISHED_SLOW in out and FINISHED not in out
     assert waited == [("http://127.0.0.1:8765", False)]
+
+
+def test_setup_says_so_when_the_launcher_ended_before_hearthkeep_answered(
+    tmp_path, capsys, monkeypatch, run_cmd_setup
+):
+    class Ended:
+        def poll(self):
+            return 1  # the launcher gave up
+
+    monkeypatch.setattr(run_cmd_setup.host, "spawn_detached", lambda argv, **kw: Ended())
+    assert run_cmd_setup(tmp_path / "data", wait=lambda *a, **k: False) == 1
+    out = capsys.readouterr().out
+    assert LAUNCHER_NOT_STARTED in out and FINISHED_SLOW not in out and FINISHED not in out
+
+
+def test_setup_checks_health_on_the_configured_loopback_address(tmp_path, capsys, run_cmd_setup):
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "config.toml").write_text("host = '::1'\n", encoding="utf-8")
+    waited = []
+    assert run_cmd_setup(data, wait=lambda base, *a, **k: waited.append(base) or True) == 0
+    assert waited == ["http://[::1]:8765"]
+    assert run_cmd_setup.run_server.calls == [("::1", 8765)]
 
 
 def test_setup_on_other_os_creates_nothing(tmp_path, monkeypatch, capsys):

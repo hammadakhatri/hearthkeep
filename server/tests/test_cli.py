@@ -487,6 +487,7 @@ def test_run_server_returns_the_requested_exit_code(monkeypatch):
 
         def run(self):
             self.started = True
+            built["serving"].wait(5)  # serving until the started callback has run
             built["control"].request(EXIT_RESTART)
             built["should_exit"] = self.should_exit
 
@@ -494,6 +495,7 @@ def test_run_server_returns_the_requested_exit_code(monkeypatch):
     control = ServerControl(supervised=True)
     built["control"] = control
     started = threading.Event()
+    built["serving"] = started
     assert cli.run_server(object(), "127.0.0.1", 8765, control=control,
                           on_started=started.set) == EXIT_RESTART  # fmt: skip
     assert built["should_exit"] is True
@@ -521,6 +523,72 @@ def test_run_server_returns_the_requested_exit_code(monkeypatch):
 
     monkeypatch.setattr(uvicorn, "Server", Stops)
     assert cli.run_server(object(), "127.0.0.1", 8765) == 0
+
+
+def test_run_server_waits_for_a_slow_start_and_not_for_an_exit(monkeypatch):
+    """The started callback is not dropped after a fixed wait: a first start that takes long
+    still announces itself. A server that is exiting before it started never announces."""
+    import threading
+    import time
+
+    import uvicorn
+
+    monkeypatch.setattr(cli, "STARTED_POLL_S", 0.01)
+    monkeypatch.setattr(cli, "STARTED_WAIT_S", 0.05, raising=False)  # the old fixed wait
+    announced = threading.Event()
+
+    class SlowStart:
+        def __init__(self, config):
+            self.started = False
+            self.should_exit = False
+
+        def run(self):
+            time.sleep(0.3)  # longer than any fixed wait above
+            self.started = True
+            announced.wait(5)
+
+    monkeypatch.setattr(uvicorn, "Server", SlowStart)
+    assert cli.run_server(object(), "127.0.0.1", 8765, on_started=announced.set) == 0
+    assert announced.is_set()
+
+    calls = []
+
+    class ExitsFirst(SlowStart):
+        def run(self):
+            self.should_exit = True
+            time.sleep(0.1)
+
+    monkeypatch.setattr(uvicorn, "Server", ExitsFirst)
+    assert cli.run_server(object(), "127.0.0.1", 8765, on_started=lambda: calls.append(1)) == 3
+    time.sleep(0.05)
+    assert calls == []
+
+
+def test_run_server_reraises_an_exit_after_it_started(monkeypatch):
+    import uvicorn
+
+    class ExitsLater:
+        def __init__(self, config):
+            self.started = False
+            self.should_exit = False
+
+        def run(self):
+            self.started = True
+            raise SystemExit(1)
+
+    monkeypatch.setattr(uvicorn, "Server", ExitsLater)
+    with pytest.raises(SystemExit):
+        cli.run_server(object(), "127.0.0.1", 8765)
+
+
+def test_local_base_url_maps_localhost_and_brackets_ipv6(tmp_path):
+    from hearthkeep.config import Settings, bind_address, local_base_url
+
+    assert bind_address("localhost") == "127.0.0.1" and bind_address("::1") == "::1"
+    url = local_base_url
+    assert url(Settings(data_dir=tmp_path, host="localhost", port=9)) == "http://127.0.0.1:9"
+    assert url(Settings(data_dir=tmp_path, host="127.0.0.1", port=9)) == "http://127.0.0.1:9"
+    assert url(Settings(data_dir=tmp_path, host="::1", port=9)) == "http://[::1]:9"
 
 
 def test_main_module_calls_cli_main(monkeypatch):

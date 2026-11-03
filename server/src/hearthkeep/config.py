@@ -51,6 +51,20 @@ _NOT_KEYS = ("data_dir", "chat_base_url_set")
 _TYPES = {f.name: f.type for f in fields(Settings) if f.name not in _NOT_KEYS}
 
 
+def bind_address(host: str) -> str:
+    """The address to bind or call for a loopback `host` setting: `localhost` is 127.0.0.1
+    (never whatever a resolver answers first), others as they are."""
+    return "127.0.0.1" if host == "localhost" else host
+
+
+def local_base_url(settings: Settings) -> str:
+    """Hearthkeep's own address on this PC, for health checks (`::1` in brackets)."""
+    address = bind_address(settings.host)
+    if ":" in address:
+        address = f"[{address}]"
+    return f"http://{address}:{settings.port}"
+
+
 def _check_type(key: str, value: object) -> None:
     expected = _TYPES[key]
     if key == "docker_available":

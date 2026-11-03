@@ -23,11 +23,20 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from uvicorn.config import STARTUP_FAILURE  # what uvicorn exits with when it could not start
+
 from hearthkeep import db, launcher, shortcut, startup
 from hearthkeep.api.app import DB_FILE
 from hearthkeep.api.common import ENROLLMENT_CODE_TTL_MINUTES
 from hearthkeep.auth.enrollment import EnrollmentCodes, EnrollmentError, first_device_allowed
-from hearthkeep.config import ConfigError, Settings, init_data_dir, load_settings
+from hearthkeep.config import (
+    ConfigError,
+    Settings,
+    bind_address,
+    init_data_dir,
+    load_settings,
+    local_base_url,
+)
 from hearthkeep.host import UNSUPPORTED_HOST, Host, current_host
 from hearthkeep.lifecycle import EXIT_USAGE, SUPERVISED_ENV, ServerControl
 from hearthkeep.providers.chat import NoChatModelClient, OpenAIChatClient
@@ -58,8 +67,6 @@ if TYPE_CHECKING:
 
 GRACEFUL_SHUTDOWN_SECONDS = 5
 STARTED_POLL_S = 0.1
-STARTED_WAIT_S = 30.0
-STARTUP_FAILURE = 3  # what uvicorn.run exits with when the server could not start
 
 NO_PASSKEY_YET = (
     "No passkey is set up yet. To finish setting up, double-click Setup.cmd in the "
@@ -153,14 +160,17 @@ def build_registry(*, image_tool: GenerateImageTool | None = None):
     return registry
 
 
-def _call_when_started(server, on_started: Callable[[], None]) -> None:
-    """Call `on_started` once, from a daemon thread, when uvicorn reports it is serving."""
+def _call_when_started(server, on_started: Callable[[], None], finished: threading.Event) -> None:
+    """Call `on_started` once, from a daemon thread, when uvicorn reports it is serving. It
+    waits as long as the server is still starting (a slow first start must not leave setup
+    silent), and gives up only when the server is exiting or has finished without starting."""
 
     def watch() -> None:
-        deadline = time.monotonic() + STARTED_WAIT_S
-        while time.monotonic() < deadline:
+        while not finished.is_set():
             if server.started:
                 on_started()
+                return
+            if server.should_exit:
                 return
             time.sleep(STARTED_POLL_S)
 
@@ -178,8 +188,9 @@ def run_server(
     access_log: bool = True,
 ) -> int:  # replaced in tests
     """Serve `app` until it is stopped; the exit code a restart or stop request asked for,
-    else 0 (or STARTUP_FAILURE, as uvicorn.run, when the server never started). Setup passes
-    a quieter `log_level` and no access log: its window is the owner's, not a log."""
+    else 0, or STARTUP_FAILURE when the server never started (uvicorn's own startup calls
+    sys.exit with it when the bind or the app's startup fails). Setup passes a quieter
+    `log_level` and no access log: its window is the owner's, not a log."""
     import uvicorn
 
     # proxy_headers=False: never derive the client address from X-Forwarded-For, so a local
@@ -198,12 +209,19 @@ def run_server(
     server = uvicorn.Server(config)
     if control is not None:
         control.attach(lambda: setattr(server, "should_exit", True))
+    finished = threading.Event()
     if on_started is not None:
-        _call_when_started(server, on_started)
+        _call_when_started(server, on_started, finished)
     try:
         server.run()
     except KeyboardInterrupt:
         pass
+    except SystemExit:
+        if server.started:
+            raise
+        return STARTUP_FAILURE
+    finally:
+        finished.set()
     if control is not None and control.exit_code is not None:
         return control.exit_code
     return 0 if server.started else STARTUP_FAILURE
@@ -486,8 +504,7 @@ def cmd_serve(
 
     # Never bind anything but the loopback interface. On Ctrl+C uvicorn runs the app's
     # shutdown, which stops every model server Hearthkeep started.
-    host = "127.0.0.1" if settings.host == "localhost" else settings.host
-    return run_server(app, host, settings.port, control=control)
+    return run_server(app, bind_address(settings.host), settings.port, control=control)
 
 
 def port_free(host: str, port: int) -> bool:
@@ -578,7 +595,7 @@ def cmd_setup(
     if ensure_bundle(say=print) == "failed":
         return 1
 
-    host_ip = "127.0.0.1" if settings.host == "localhost" else settings.host
+    host_ip = bind_address(settings.host)
     if not free(host_ip, settings.port):
         print(PORT_BUSY.format(port=settings.port))
         return 1
@@ -632,8 +649,13 @@ def cmd_setup(
     except OSError:
         print(LAUNCHER_NOT_STARTED)
         return 1
-    base = f"http://127.0.0.1:{settings.port}"
-    print(FINISHED if wait(base, want_setup_mode=False, process=process) else FINISHED_SLOW)
+    if wait(local_base_url(settings), want_setup_mode=False, process=process):
+        print(FINISHED)
+    elif launcher.launcher_ended(process) is not None:
+        print(LAUNCHER_NOT_STARTED)  # the launcher stopped: nothing will start on its own
+        return 1
+    else:
+        print(FINISHED_SLOW)
     return 0
 
 
