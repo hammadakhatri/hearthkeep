@@ -30,6 +30,7 @@ from hearthkeep.cli import (
     BROWSER_OPENING,
     FINISHED,
     FINISHED_SLOW,
+    FOLDER_NOT_PROTECTED,
     KEEP_OPEN,
     LAUNCHER_NOT_STARTED,
     LOCATION_NOT_SAVED,
@@ -89,6 +90,8 @@ class FakeHost(WindowsHost):
         self.spawn_error = False
         self.task: str | None = None  # the start-at-login task's XML; None: no task
         self.enabled: list[Path] = []
+        self.protected: list[Path] = []
+        self.protect_error = False
 
     def drive_type(self, root: str) -> int:
         return 3  # a fixed local disk
@@ -120,6 +123,11 @@ class FakeHost(WindowsHost):
         if self.shortcut_error:
             raise ShortcutError("powershell failed")
         self.shortcuts.append(Path(data_dir))
+
+    def protect_folder(self, path: Path, *, run=None) -> None:
+        if self.protect_error:
+            raise host_module.FolderProtectError("icacls.exe exit code 5")
+        self.protected.append(Path(path))
 
     def spawn_detached(self, argv: list[str], *, popen=None):
         if self.spawn_error:
@@ -188,6 +196,7 @@ class SetupEnv:
             "make_verifier": lambda settings: FakeVerifier(),
             "wait": lambda *a, **k: True,
             "free": lambda host, port: True,
+            "program_folder": lambda: None,  # a developer checkout
             "detect_vram": lambda: 12.0,
         }
         kwargs.update(over)
@@ -605,6 +614,47 @@ def test_setup_checks_health_on_the_configured_loopback_address(tmp_path, capsys
     assert run_cmd_setup.run_server.calls == [("::1", 8765)]
 
 
+def test_setup_protects_a_new_data_folder_before_writing_in_it(tmp_path, run_cmd_setup):
+    host = run_cmd_setup.host
+    data = tmp_path / "data"
+    seen = []
+    real = host.protect_folder
+
+    def protect(path, *, run=None):
+        seen.append(sorted(p.name for p in Path(path).iterdir()))
+        real(path)
+
+    host.protect_folder = protect
+    assert run_cmd_setup(data) == 0
+    assert host.protected == [data.resolve()]
+    assert seen == [[]]  # nothing was in it yet
+
+
+def test_setup_leaves_an_existing_data_folder_as_it_is(tmp_path, run_cmd_setup):
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "config.toml").write_text("docker_available = false\n", encoding="utf-8")
+    assert run_cmd_setup(data) == 0
+    assert run_cmd_setup.host.protected == []
+
+
+def test_setup_protects_the_program_folder_of_a_release_only(tmp_path, run_cmd_setup):
+    program = tmp_path / "hearthkeep-0.1.0"
+    program.mkdir()
+    data = tmp_path / "data"
+    assert run_cmd_setup(data, program_folder=lambda: program) == 0
+    assert run_cmd_setup.host.protected == [data.resolve(), program]
+    assert cli._release_program_folder() is None  # this checkout is the developers' version
+
+
+def test_setup_carries_on_when_a_folder_cant_be_protected(tmp_path, capsys, run_cmd_setup):
+    run_cmd_setup.host.protect_error = True
+    assert run_cmd_setup(tmp_path / "data") == 0
+    out = capsys.readouterr().out
+    assert out.count(FOLDER_NOT_PROTECTED) == 1 and FINISHED in out
+    assert "icacls" not in out and "exit code" not in out
+
+
 def test_setup_on_other_os_creates_nothing(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(startup, "is_windows", lambda: False)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
@@ -642,6 +692,7 @@ def test_setup_copy_is_ascii_without_commands():
         FINISHED_SLOW,
         LOCATION_NOT_SAVED,
         LAUNCHER_NOT_STARTED,
+        FOLDER_NOT_PROTECTED,
     ]
     for text in copy:
         assert text.isascii(), text
@@ -658,6 +709,13 @@ def test_setup_copy_is_ascii_without_commands():
 def test_security_doc_describes_setup_mode():
     doc = (Path(__file__).resolve().parents[2] / "docs" / "security.md").read_text("utf-8")
     assert "setup mode" in doc.lower() and "fragment" in doc
+    # Ruling C24: what the folder protection covers, and what it leaves alone.
+    assert "icacls" in doc and "SYSTEM and Administrators" in doc
+    assert "existing data folder is left exactly as it was" in doc
+    assert "keeps out other users and services" not in doc  # the old, wider claim
+    for event in ("server.stop", "server.restart", "_denied", "setup.denied", "upgrade.ran"):
+        assert f"`{event}" in doc or f"`*{event}" in doc, event
+    assert "`update_note.dismissed`" in doc and "`delete` and `server`" in doc
 
 
 def test_health_never_carries_the_secret(harness):

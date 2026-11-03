@@ -72,6 +72,18 @@ def hermetic_addon_probes(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_real_acl_changes(monkeypatch):
+    """Folder protection never runs whoami or icacls for real in tests: a test that reaches
+    the real runner fails. Tests of protect_folder pass their own fake `run`."""
+    from hearthkeep import host
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("a test tried to change a real folder's permissions")
+
+    monkeypatch.setattr(host, "acl_run", refuse)
+
+
+@pytest.fixture(autouse=True)
 def hermetic_cli_host(monkeypatch):
     """`hearthkeep serve` runs the upgrade, which on Windows would read and write the real
     data-folder record, start-at-login task and Start menu shortcut. In tests the CLI's own

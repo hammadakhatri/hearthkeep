@@ -334,3 +334,90 @@ def test_local_or_unknown_drive_is_not_network(tmp_path, no_path_rules):
     assert not Broken().on_network_drive(PureWindowsPath(r"C:\Hearthkeep\data"))
     assert not Fixed().on_network_drive(PureWindowsPath(r"relative\data"))  # no drive: not asked
     assert Fixed().check_data_dir(tmp_path / "data") is None
+
+
+# ---- folder protection (ruling C24) ----------------------------------------
+
+USER_SID = "S-1-5-21-1111111111-2222222222-3333333333-1001"
+
+
+class AclRun:
+    """Stands in for whoami and icacls: records each command, answers like Windows."""
+
+    def __init__(self, *, icacls_code=0, whoami_out=None, raises=None):
+        self.calls: list[list[str]] = []
+        self.kwargs: list[dict] = []
+        self.icacls_code = icacls_code
+        self.whoami_out = whoami_out
+        self.raises = raises
+
+    def __call__(self, argv, **kw):
+        self.calls.append(list(argv))
+        self.kwargs.append(kw)
+        if self.raises is not None:
+            raise self.raises
+        if argv[0].lower().endswith("whoami.exe"):
+            out = self.whoami_out
+            if out is None:
+                out = f'"homepc\\owner","{USER_SID}"\r\n'.encode()
+            return subprocess.CompletedProcess(argv, 0, out, b"")
+        return subprocess.CompletedProcess(argv, self.icacls_code, b"", b"")
+
+
+def test_protect_folder_runs_system32_icacls_by_sid(monkeypatch, windows):
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    run = AclRun()
+    WindowsHost().protect_folder(Path(r"C:\Hearthkeep\data"), run=run)
+    system32 = Path(r"C:\Windows") / "System32"
+    whoami, icacls = run.calls
+    assert whoami == [str(system32 / "whoami.exe"), "/user", "/fo", "csv", "/nh"]
+    assert icacls == [
+        str(system32 / "icacls.exe"),
+        str(Path(r"C:\Hearthkeep\data")),
+        "/inheritance:r",
+        "/grant:r",
+        f"*{USER_SID}:(OI)(CI)F",
+        "*S-1-5-18:(OI)(CI)F",
+        "*S-1-5-32-544:(OI)(CI)F",
+        "/Q",
+    ]
+    for kw in run.kwargs:
+        assert kw["creationflags"] == procutil.NO_WINDOW and kw["check"] is False
+        assert kw["timeout"] == host_module.ACL_TIMEOUT_S
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        AclRun(icacls_code=5),
+        AclRun(whoami_out=b"no sid here\r\n"),
+        AclRun(raises=subprocess.TimeoutExpired("icacls", 1)),
+        AclRun(raises=FileNotFoundError("icacls.exe")),
+    ],
+)
+def test_protect_folder_failures_raise_one_error_type(monkeypatch, windows, run):
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    with pytest.raises(host_module.FolderProtectError) as caught:
+        WindowsHost().protect_folder(Path(r"C:\Hearthkeep\data"), run=run)
+    assert "Hearthkeep" not in str(caught.value)  # never the path
+
+
+def test_protect_folder_without_systemroot(monkeypatch, windows):
+    monkeypatch.delenv("SystemRoot", raising=False)
+    monkeypatch.delenv("windir", raising=False)
+    run = AclRun()
+    with pytest.raises(host_module.FolderProtectError):
+        WindowsHost().protect_folder(Path(r"C:\Hearthkeep\data"), run=run)
+    assert run.calls == []
+
+
+def test_protect_folder_never_reaches_the_real_icacls_in_tests():
+    with pytest.raises(AssertionError, match="real folder"):
+        host_module.acl_run(["icacls.exe"])
+
+
+def test_unsupported_host_protects_nothing():
+    def forbidden(*a, **k):
+        raise AssertionError("ran something")
+
+    assert UnsupportedHost().protect_folder(Path("x"), run=forbidden) is None
