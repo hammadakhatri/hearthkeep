@@ -17,7 +17,7 @@ from hearthkeep.api.app import DB_FILE
 from hearthkeep.api.common import ENROLLMENT_CODE_TTL_MINUTES
 from hearthkeep.auth.enrollment import EnrollmentCodes, EnrollmentError, first_device_allowed
 from hearthkeep.config import ConfigError, Settings, init_data_dir, load_settings
-from hearthkeep.providers.chat import OpenAIChatClient
+from hearthkeep.providers.chat import NoChatModelClient, OpenAIChatClient
 from hearthkeep.runtime.gpu import detect_vram_gb
 from hearthkeep.runtime.supervisor import (
     API_KEY_FILE,
@@ -111,16 +111,17 @@ def build_model_stack(
     make_llama: Callable = build_llama_process,
     make_comfy: Callable = build_comfyui_process,
     detect_vram: Callable[[], float | None] = detect_vram_gb,
-) -> tuple[ModelStack, OpenAIChatClient, Settings, list[str]]:
+) -> tuple[ModelStack, OpenAIChatClient | NoChatModelClient, Settings, list[str]]:
     """The model stack, the chat client and the effective settings for `serve`, plus the
     startup lines to print (names only, never paths). Nothing is started here: each model
     server starts on its first lease.
 
     Owned mode (models.toml sets llama_server_exe and model_dirs for the default chat card):
     Hearthkeep runs llama-server itself and every chat stream leases the chat model. External
-    mode keeps Phase 1 behaviour: the chat server at chat_base_url is used as it is and stays
-    out of the GPU scheduler. ComfyUI is managed when its three paths are set and at least one
-    image card loaded.
+    mode (otherwise, when config.toml names chat_base_url) keeps Phase 1 behaviour: that chat
+    server is used as it is and stays out of the GPU scheduler. With neither, there is no chat
+    model ("none"): the server still starts, and every chat stream says so. ComfyUI is managed
+    when its three paths are set and at least one image card loaded.
     """
     from hearthkeep.models.cards import load_cards
     from hearthkeep.models.runtime import load_runtime
@@ -138,18 +139,29 @@ def build_model_stack(
     chat_card = cards.get(rt.default_chat_model)
     owned = False
     if rt.llama_server_exe is not None:
+        fallback = (
+            "using the chat server at chat_base_url instead."
+            if settings.chat_base_url_set
+            else "Hearthkeep won't run llama-server."
+        )
         if chat_card is None or chat_card.kind != "chat":
             _warn(
                 f"llama_server_exe is set but default_chat_model {rt.default_chat_model} has "
-                "no chat card; using the chat server at chat_base_url instead."
+                f"no chat card; {fallback}"
             )
         elif chat_card.id not in rt.model_dirs:
             _warn(
                 f'llama_server_exe is set but model_dirs."{chat_card.id}" is not set in '
-                "<data>/models.toml; using the chat server at chat_base_url instead."
+                f"models.toml; {fallback}"
             )
         else:
             owned = True
+    if owned:
+        chat_mode = "owned"
+    elif settings.chat_base_url_set:
+        chat_mode = "external"
+    else:
+        chat_mode = "none"
 
     chat_model_id = None
     if owned:
@@ -174,9 +186,11 @@ def build_model_stack(
         processes.append(process)
         managed.add(chat_card.id)
         chat_model_id = chat_card.id
-    else:
+    elif chat_mode == "external":
         api_key = secrets.get(settings.chat_api_key_secret) or ""
         chat_client = OpenAIChatClient(settings.chat_base_url, api_key, settings.chat_model)
+    else:
+        chat_client = NoChatModelClient()
 
     comfy = None
     image_ids = {c.id for c in cards.values() if c.kind == "image"}
@@ -190,7 +204,7 @@ def build_model_stack(
     def describe(card: ModelCard) -> str:
         if card.id in managed:
             return f"{card.id} ({card.kind}, managed)"
-        if card.kind == "chat" and not owned and card.id == settings.chat_model:
+        if card.kind == "chat" and chat_mode == "external" and card.id == settings.chat_model:
             return f"{card.id} (chat, external server)"
         return f"{card.id} ({card.kind})"
 
@@ -202,10 +216,14 @@ def build_model_stack(
             f"Chat: Hearthkeep runs {chat_card.id} with llama-server on {LOOPBACK}:"
             f"{rt.llama_port}, started on first use."
         )
+    elif chat_mode == "external":
+        lines.append(
+            "Chat: using the chat server at chat_base_url "
+            "(Hearthkeep doesn't start or schedule it)."
+        )
     else:
         lines.append(
-            "Chat: using the chat server at chat_base_url (external: Hearthkeep does not start "
-            "or schedule it; set llama_server_exe in <data>/models.toml to let it)."
+            "Chat: no chat model is set up yet. Open Hearthkeep and go to Settings › Add-ons."
         )
     if comfy is not None:
         scope = "" if owned else " Image models only make room for each other on the GPU."
@@ -213,7 +231,7 @@ def build_model_stack(
             f"Images: ComfyUI on {LOOPBACK}:{rt.comfyui_port}, started on first use.{scope}"
         )
     else:
-        lines.append("Images: not set up (set the comfyui_* paths in <data>/models.toml).")
+        lines.append("Images: not set up. Open Settings › Add-ons to see what it needs.")
 
     stack = ModelStack(
         cards=cards,
@@ -226,6 +244,8 @@ def build_model_stack(
         default_image_model=rt.default_image_model,
         gpu_vram_gb=rt.gpu_vram_gb,
         detect_vram=detect_vram,
+        chat_mode=chat_mode,
+        runtime=rt,
     )
     return stack, chat_client, settings, lines
 
@@ -413,10 +433,7 @@ def cmd_startup_enable(args: argparse.Namespace) -> int:
     except startup.StartupError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    print(
-        "Hearthkeep will start when you sign in to Windows. "
-        f"Logs: {startup.log_path(data)}"
-    )
+    print(f"Hearthkeep will start when you sign in to Windows. Logs: {startup.log_path(data)}")
     return 0
 
 

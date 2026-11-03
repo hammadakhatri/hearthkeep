@@ -1,0 +1,21 @@
+# An owner's own chat card, as written before add-ons existed (all layers on the GPU).
+id = "my-gemma"
+name = "My Gemma"
+kind = "chat"
+provider = "llama_server"
+capabilities = ["tools"]
+vram_gb = 9.0
+context = 16384
+launch_args = [
+    "--model", "{model}",
+    "--alias", "my-gemma",
+    "--host", "127.0.0.1",
+    "--port", "{port}",
+    "--api-key-file", "{api_key_file}",
+    "-c", "16384",
+    "-ngl", "999",
+    "--jinja",
+]
+
+[files]
+model = "my-gemma-Q4_K_M.gguf"

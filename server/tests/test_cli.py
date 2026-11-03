@@ -44,14 +44,17 @@ class Serve:
         self.comfy_calls: list = []
         self.hk = None
         self.gpu_status = None
+        self.during = None  # called with the TestClient while the server runs
         monkeypatch.setattr(cli, "run_server", self._run_server)
 
     def _run_server(self, app, host, port) -> None:
         assert host == "127.0.0.1"
-        with TestClient(app, base_url=ORIGIN):
+        with TestClient(app, base_url=ORIGIN) as client:
             self.hk = app.state.hk
             self.gpu_status = self.hk.gpu.status()
             self.log.append(("running",))
+            if self.during is not None:
+                self.during(client)
 
     def make_llama(self, card, rt, data_dir, api_key_file, *, api_key):
         self.llama_calls.append((card, rt, data_dir, api_key_file, api_key))
@@ -76,10 +79,15 @@ def write(data, name: str, text: str) -> None:
     (data / name).write_text(text, encoding="utf-8")
 
 
+# Every existing install's config.toml was copied from the old example, which set
+# chat_base_url: that keeps it on the chat server it already uses.
+SERVE_CONFIG = "docker_available = false\nchat_base_url = 'http://127.0.0.1:8080/v1'\n"
+
+
 @pytest.fixture
 def serve(tmp_path, monkeypatch):
     data = tmp_path / "data"
-    write(data, "config.toml", "docker_available = false\n")
+    write(data, "config.toml", SERVE_CONFIG)
     return Serve(data, monkeypatch)
 
 
@@ -303,8 +311,7 @@ def test_cli_startup_commands(tmp_path, monkeypatch, capsys, pythonw_beside_pyth
     for command in ("enable", "disable", "status"):
         assert cli.main(["startup", command, "--data", str(data)]) == 2
         assert capsys.readouterr().err.strip() == (
-            "Start at login is built in only on Windows. "
-            "See docs/install.md for macOS and Linux."
+            "Start at login is built in only on Windows. See docs/install.md for macOS and Linux."
         )
 
 

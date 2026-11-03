@@ -1,0 +1,8 @@
+# A models.toml written by hand before add-ons existed. {root} is filled in by the test.
+llama_server_exe = '{root}/llama/llama-server.exe'
+llama_port = 8080
+
+default_chat_model = "my-gemma"
+
+[model_dirs]
+"my-gemma" = '{root}/models/my-gemma'

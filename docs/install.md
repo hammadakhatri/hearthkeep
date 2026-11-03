@@ -116,7 +116,7 @@ Choose the location once. The key that encrypts your secrets is stored in the OS
 
 ## 4. Chat model: llama.cpp and Gemma 4 12B
 
-Skip this step if you already run an OpenAI-compatible chat server on this PC and want to keep using it. Leave out `models.toml` (step 6), and Hearthkeep uses the server at `chat_base_url` in `<data>\config.toml` (by default `http://127.0.0.1:8080/v1`). It must be on `127.0.0.1`, `::1` or `localhost`.
+Skip this step if you already run an OpenAI-compatible chat server on this PC and want to keep using it. Set `chat_base_url` in `<data>\config.toml` to that server (for example `http://127.0.0.1:8080/v1`; it must be on `127.0.0.1`, `::1` or `localhost`) and leave out `models.toml` (step 6). With neither `models.toml` nor `chat_base_url`, Hearthkeep starts without a chat model and Settings › Add-ons says so.
 
 ### 4.1 llama.cpp
 
@@ -211,7 +211,7 @@ You can install just one of the two image models. If you only install FLUX.2 kle
 
 ## 6. Write `models.toml`
 
-`models.toml` tells Hearthkeep where the programs and model files are. Without it, Hearthkeep uses the chat server at `chat_base_url` and image generation is off.
+`models.toml` tells Hearthkeep where the programs and model files are. Without it, image generation is off, and Hearthkeep uses the chat server at `chat_base_url` if `config.toml` sets one. With neither, Hearthkeep starts without a chat model and Settings › Add-ons says so.
 
 1. Copy the example into your data folder:
 
@@ -612,7 +612,7 @@ Also check that you open exactly the address in `public_origin` (`localhost`, no
 - On Windows, the CUDA runtime zip was not extracted next to `llama-server.exe`.
 - Another program is using the GPU memory. Close it and try again.
 - The path is too long (see step 3).
-- The start-up output says "using the chat server at chat_base_url": Hearthkeep did not find `llama_server_exe` or the `model_dirs` entry for the default chat model, so it is not running llama-server.
+- The start-up output says "using the chat server at chat_base_url" or "no chat model is set up yet": Hearthkeep did not find `llama_server_exe` or the `model_dirs` entry for the default chat model, so it is not running llama-server. It uses the server at `chat_base_url` only when `config.toml` sets it; to use a chat server you already run, set `chat_base_url` in `config.toml`.
 
 **Images are off, or the image tool is missing.** The start-up output says "Images: not set up". Set all three `comfyui_*` paths in `<data>\models.toml`, check they point to real files, and restart. If ComfyUI starts but fails, read `comfyui.log`: usually a missing weight file, or a ComfyUI too old for the shipped workflows.
 

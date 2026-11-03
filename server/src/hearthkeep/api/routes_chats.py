@@ -195,6 +195,11 @@ async def post_message(
     if any(found is None or found.chat_id != chat_id for found in attached):
         raise ApiError(422, "unknown_file", message=UNKNOWN_FILE)
     photos = [line.removeprefix("Attached photo: ") for line in lines if _is_photo_line(line)]
+    if hk.addons is not None:
+        chat = hk.addons.get("chat")
+        if chat.state == "not_set_up":
+            # Nothing is saved: with no chat model the message could never be answered.
+            raise ApiError(409, "chat_not_set_up", message=chat.message)
     try:
         turn_id = hk.runner.start(chat_id, text, think=bool(row["think"]))
     except TurnInProgressError:
