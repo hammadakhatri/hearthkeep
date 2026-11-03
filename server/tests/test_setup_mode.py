@@ -819,3 +819,14 @@ def test_security_doc_describes_setup_mode():
 def test_health_never_carries_the_secret(harness):
     client, secret = setup_client(harness)
     assert secret not in json.dumps(client.get("/api/health").json())
+
+
+def test_install_docs_send_tailscale_owners_to_step_7_before_setup():
+    root = Path(__file__).resolve().parents[2]
+    sentence = "If you'll use Hearthkeep from your phone through Tailscale, read"
+    for doc in (root / "README.md", root / "docs" / "install.md"):
+        text = doc.read_text("utf-8")
+        assert sentence in text and "before you run Setup.cmd" in text, doc.name
+    install = (root / "docs" / "install.md").read_text("utf-8")
+    assert "Settings › General › Stop Hearthkeep" in install
+    assert 'public_origin = "https://homepc.tail1234.ts.net"' in install

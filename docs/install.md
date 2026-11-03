@@ -72,7 +72,9 @@ The quick way on Windows needs none of the commands below:
 
 1. Download the Hearthkeep zip from the latest release on GitHub.
 2. Unzip it to a short path, for example `C:\Hearthkeep\app`.
-3. Double-click `Setup.cmd`. It installs uv for your Windows account if needed (no admin rights), starts Hearthkeep and opens the setup page in your browser, where you create your first passkey.
+3. Double-click `Setup.cmd`. It installs uv for your Windows account if needed (no admin rights), keeps your data in `C:\Hearthkeep\data`, starts Hearthkeep and opens the setup page in your browser, where you create your first passkey.
+
+If you'll use Hearthkeep from your phone through Tailscale, read [step 7](#7-decide-on-remote-access-before-your-first-passkey) before you run Setup.cmd.
 
 The rest of this guide is the manual way: building from a clone, choosing your own data folder, and setting up the models, Docker, Tailscale and GitHub by hand.
 
@@ -109,7 +111,7 @@ The rest of this guide is the manual way: building from a clone, choosing your o
 
 The data folder holds your chats, passkeys, audit log, encrypted secrets, images and logs. It must be **outside** the repository, so nothing personal can ever be committed.
 
-1. Pick a short path. On Windows, for example `C:\Hearthkeep\data`.
+1. Pick a short path. On Windows, for example `C:\Hearthkeep\data`, the folder `Setup.cmd` uses.
 2. Create it:
 
    ```
@@ -306,15 +308,30 @@ Open exactly `http://localhost:8765`. `http://127.0.0.1:8765` is a different ori
 
    It shows the `https://<machine>.<tailnet>.ts.net` address that now proxies to `http://127.0.0.1:8765`. That is your address.
 
-5. Start Hearthkeep once so it creates `<data>\config.toml` (step 8, item 1), stop it with Ctrl+C, and **don't** create a passkey yet.
-6. Edit `<data>\config.toml`:
+5. Tell Hearthkeep your Tailscale address before the first passkey is made.
+
+   **With `Setup.cmd`** (do this before you double-click it):
+
+   1. Make the folder `C:\Hearthkeep\data`, the data folder Setup uses.
+   2. In it, make a text file named `config.toml` with these two lines, but with your own address from item 4. In this example the PC's address is `https://homepc.tail1234.ts.net`:
+
+      ```toml
+      public_origin = "https://homepc.tail1234.ts.net"
+      rp_id = "homepc.tail1234.ts.net"
+      ```
+
+      In Notepad, choose **Save as type: All files** so the name stays `config.toml` and doesn't become `config.toml.txt`.
+   3. Double-click `Setup.cmd`. Setup keeps your `config.toml` and opens its setup page on your Tailscale address, so your first passkey is made for that address.
+
+   **With a manual start:** start Hearthkeep once so it creates `<data>\config.toml` (step 8, item 1), stop it with Ctrl+C, and **don't** create a passkey yet. Then edit `<data>\config.toml`:
 
    ```toml
    public_origin = "https://<machine>.<tailnet>.ts.net"
    rp_id = "<machine>.<tailnet>.ts.net"
    ```
 
-   No trailing slash and no port. `rp_id` must equal the host name in `public_origin`, or the server refuses to start. Keep `host = "127.0.0.1"` and `port = 8765`.
+   Either way: no trailing slash and no port. `rp_id` must equal the host name in `public_origin`, or the server refuses to start. Keep `host = "127.0.0.1"` and `port = 8765`; a `config.toml` without them, like the one above, uses exactly those.
+6. Leave `tailscale serve` on: the setup page and every later visit go through it.
 
 7. Install Tailscale on your phone and Mac, and sign in to the same tailnet.
 8. From now on, open `https://<machine>.<tailnet>.ts.net` on every device, including this PC.
@@ -332,7 +349,7 @@ tailscale serve --bg --https=443 http://127.0.0.1:8765 off
 
 ## 8. First start and your passkey
 
-If you used `Setup.cmd` (step 2), your first passkey is normally made on the setup page it opens, and you can skip to [Have your passkey on a second device](#have-your-passkey-on-a-second-device-before-you-rely-on-it). The steps below are for a manual start.
+If you used `Setup.cmd` (step 2), your first passkey is normally made on the setup page it opens (on your Tailscale address if you wrote `config.toml` first, as in step 7), and you can skip to [Have your passkey on a second device](#have-your-passkey-on-a-second-device-before-you-rely-on-it). The steps below are for a manual start.
 
 1. Start the server:
 
@@ -539,7 +556,7 @@ Notifications are opt-in per device and can be turned off in the same place. You
 
 ## 14. Updating
 
-1. Stop Hearthkeep (Ctrl+C, or end the scheduled task).
+1. Stop Hearthkeep. If it runs in the background (you open it from the Start menu, or it starts at login), open it and go to **Settings › General › Stop Hearthkeep**; you confirm with your passkey. If you started it by hand in a terminal, press Ctrl+C there.
 2. Pull the new version:
 
    ```
