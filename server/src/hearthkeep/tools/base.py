@@ -23,6 +23,9 @@ class ToolContext:
     turn_id: str
     settings: Settings
     conn: sqlite3.Connection
+    # What the owner was shown when they approved this call (the tool's `approval_detail`,
+    # redacted); None when the call needed no approval or the tool adds no detail.
+    approved_detail: dict | None = None
 
 
 @runtime_checkable
@@ -37,6 +40,22 @@ class Tool(Protocol):
     def summarize(self, args: dict) -> str: ...
 
     async def run(self, args: dict, ctx: ToolContext) -> ToolResult: ...
+
+    # Optional, looked up with getattr so tools without them keep working:
+    #   async def approval_detail(self, args: dict, ctx: ToolContext) -> dict | None
+    #       extra fields (a diff, a head sha) for the approval card, built before it is shown;
+    #   def is_available(self) -> bool
+    #       False while the tool cannot work (a missing program or token); it is then not offered.
+
+
+def _is_available(tool: Tool) -> bool:
+    check = getattr(tool, "is_available", None)
+    if not callable(check):
+        return True
+    try:
+        return bool(check())
+    except Exception:  # a tool that cannot say it is available is not offered
+        return False
 
 
 class ToolRegistry:
@@ -58,12 +77,14 @@ class ToolRegistry:
         return list(self._tools.values())
 
     def available(self, conn: sqlite3.Connection, docker_available: bool) -> list[Tool]:
-        """Registered tools whose effective level is not OFF, in registration order."""
+        """Registered tools whose effective level is not OFF and that say they are available
+        (a tool without `is_available` always is), in registration order."""
         return [
             t
             for t in self._tools.values()
             if effective_level(t.level_key, get_level(conn, t.level_key), docker_available)
             != ToolLevel.OFF
+            and _is_available(t)
         ]
 
     def schemas(self, tools: list[Tool]) -> list[dict]:

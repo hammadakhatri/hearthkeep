@@ -465,13 +465,19 @@ class AgentLoop:
         if decision == Decision.RUN:
             ok = await self._run(turn, tool, args, decision, outcome)
         elif decision in (Decision.ASK, Decision.ASK_STEP_UP):
+            try:
+                extra = await self._approval_detail(turn, tool, args)
+            except Exception as exc:  # fail closed: no card, nothing runs
+                ok, outcome.content = self._failed(tool, decision, exc)
+                yield self._step_finished(turn, step_id, ok, outcome.content)
+                return
             approval = self._approvals.create(
                 turn.chat_id,
                 turn.turn_id,
                 tool.name,
                 action,
                 redact(summary, turn.secrets),
-                redact({"tool": tool.name, "arguments": args}, turn.secrets),
+                redact({**extra, "tool": tool.name, "arguments": args}, turn.secrets),
                 requires_step_up=decision == Decision.ASK_STEP_UP,
             )
             yield self._emit(
@@ -497,7 +503,9 @@ class AgentLoop:
                             "INSERT OR IGNORE INTO chat_grants (chat_id, tool) VALUES (?, ?)",
                             (turn.chat_id, tool.level_key),
                         )
-                    ok = await self._run(turn, tool, args, decision, outcome)
+                    ok = await self._run(
+                        turn, tool, args, decision, outcome, approved_detail=resolved.detail
+                    )
             elif resolved.status == "declined":
                 ok, outcome.content = False, _error(DECLINED)
             else:
@@ -567,12 +575,34 @@ class AgentLoop:
         )
         return False, _error(f"The tool failed: {type(exc).__name__}")
 
+    async def _approval_detail(self, turn: _Turn, tool: Tool, args: dict) -> dict:
+        """What the tool wants shown on the approval card besides its name and arguments.
+        Raises when the tool's `approval_detail` does (the caller then fails closed)."""
+        build = getattr(tool, "approval_detail", None)
+        if not callable(build):
+            return {}
+        ctx = ToolContext(turn.chat_id, turn.turn_id, self._settings, self._conn)
+        extra = await build(args, ctx)
+        if extra is None:
+            return {}
+        if not isinstance(extra, dict):
+            raise TypeError("approval_detail returned something other than a dict")
+        return extra
+
     async def _run(
-        self, turn: _Turn, tool: Tool, args: dict, decision: Decision, outcome: _Outcome
+        self,
+        turn: _Turn,
+        tool: Tool,
+        args: dict,
+        decision: Decision,
+        outcome: _Outcome,
+        approved_detail: dict | None = None,
     ) -> bool:
         """Run the tool, filling `outcome`. Only `result.content` ever reaches the model;
         `result.data` attachments become an `attachments` event after they are checked."""
-        ctx = ToolContext(turn.chat_id, turn.turn_id, self._settings, self._conn)
+        ctx = ToolContext(
+            turn.chat_id, turn.turn_id, self._settings, self._conn, approved_detail=approved_detail
+        )
         try:
             result = await tool.run(args, ctx)
             if not isinstance(result, ToolResult):
