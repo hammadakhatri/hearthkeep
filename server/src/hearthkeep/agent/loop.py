@@ -504,7 +504,13 @@ class AgentLoop:
                             (turn.chat_id, tool.level_key),
                         )
                     ok = await self._run(
-                        turn, tool, args, decision, outcome, approved_detail=resolved.detail
+                        turn,
+                        tool,
+                        args,
+                        decision,
+                        outcome,
+                        approved_detail=resolved.detail,
+                        approved_step_up=bool(resolved.requires_step_up),
                     )
             elif resolved.status == "declined":
                 ok, outcome.content = False, _error(DECLINED)
@@ -597,11 +603,17 @@ class AgentLoop:
         decision: Decision,
         outcome: _Outcome,
         approved_detail: dict | None = None,
+        approved_step_up: bool = False,
     ) -> bool:
         """Run the tool, filling `outcome`. Only `result.content` ever reaches the model;
         `result.data` attachments become an `attachments` event after they are checked."""
         ctx = ToolContext(
-            turn.chat_id, turn.turn_id, self._settings, self._conn, approved_detail=approved_detail
+            turn.chat_id,
+            turn.turn_id,
+            self._settings,
+            self._conn,
+            approved_detail=approved_detail,
+            approved_step_up=approved_step_up,
         )
         try:
             result = await tool.run(args, ctx)

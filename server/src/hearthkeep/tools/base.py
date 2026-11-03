@@ -26,6 +26,9 @@ class ToolContext:
     # What the owner was shown when they approved this call (the tool's `approval_detail`,
     # redacted); None when the call needed no approval or the tool adds no detail.
     approved_detail: dict | None = None
+    # True only for the run that follows an approved card that needed a passkey step-up
+    # (an Outward action); False after a plain card and for every run without a card.
+    approved_step_up: bool = False
 
 
 @runtime_checkable

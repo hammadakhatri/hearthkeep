@@ -2,6 +2,7 @@
 locked-down container that has the network but only the dependency files, and asked about
 again (Outward) whenever the lock file changes."""
 
+import asyncio
 import json
 import shutil
 import subprocess
@@ -30,6 +31,7 @@ from hearthkeep.tools.repo_deps import (
     ALREADY_INSTALLED,
     CHANGED_AFTER_APPROVAL,
     NETWORK_NOTE,
+    NO_LONGER_INSTALLED,
     RepoInstallTool,
 )
 
@@ -337,13 +339,13 @@ async def repo_fixture(tmp_path, fake_docker):
     store.conn.close()
 
 
-def ctx(store, detail=None):
-    return ToolContext("c", "t", None, store.conn, approved_detail=detail)
+def ctx(store, detail=None, step_up=False):
+    return ToolContext("c", "t", None, store.conn, approved_detail=detail, approved_step_up=step_up)
 
 
 async def approve_and_run(tool, store, args):
     detail = await tool.approval_detail(args, ctx(store))
-    return detail, await tool.run(args, ctx(store, {**detail, "arguments": args}))
+    return detail, await tool.run(args, ctx(store, {**detail, "arguments": args}, step_up=True))
 
 
 async def test_lock_change_needs_new_approval(repo_fixture, fake_docker):
@@ -353,7 +355,7 @@ async def test_lock_change_needs_new_approval(repo_fixture, fake_docker):
     args = {"repo": R}
     assert tool.classify(args) == ActionClass.OUTWARD
     unapproved = await tool.run(args, ctx(store))
-    assert not unapproved.ok
+    assert not unapproved.ok and unapproved.content == NO_LONGER_INSTALLED
     assert conn_rows(store) == []
 
     detail, got = await approve_and_run(tool, store, args)
@@ -376,7 +378,7 @@ async def test_lock_change_needs_new_approval(repo_fixture, fake_docker):
 
     (root / "package-lock.json").write_text('{"changed": true}')
     assert tool.classify(args) == ActionClass.OUTWARD
-    stale = await tool.run(args, ctx(store, {**detail, "arguments": args}))  # the old approval
+    stale = await tool.run(args, ctx(store, {**detail, "arguments": args}, step_up=True))
     assert not stale.ok and stale.content == CHANGED_AFTER_APPROVAL
     runs = [c for c in fake_docker.calls() if c[0] == "run"]
     assert len(runs) == 1  # only the approved install ran a container
@@ -490,3 +492,42 @@ async def test_real_install_in_the_repo_image(repo_image, conn, tmp_path, ecosys
         assert proc.returncode == 0, proc.stderr
     finally:
         await cache.remove_for(repo)
+
+
+async def test_look_approval_never_installs_when_the_volume_went(repo_fixture, fake_docker):
+    store, repo, cache, tool = repo_fixture
+    npm_files(store.dir(repo))
+    args = {"repo": R}
+    _, got = await approve_and_run(tool, store, args)
+    assert got.ok
+    assert tool.classify(args) == ActionClass.LOOK  # so the card would be a plain one
+    detail = await tool.approval_detail(args, ctx(store))
+    fake_docker.state.joinpath("volumes.json").write_text("[]")  # docker volume prune
+    cache._volumes.clear()  # (or the 30 s cache ran out while the card waited)
+    runs_before = len([c for c in fake_docker.calls() if c[0] == "run"])
+    got = await tool.run(args, ctx(store, {**detail, "arguments": args}, step_up=False))
+    assert not got.ok and got.content == NO_LONGER_INSTALLED
+    assert NO_LONGER_INSTALLED == (
+        "The dependencies are no longer installed. "
+        "Call repo_install again so the owner can approve the install."
+    )
+    assert len([c for c in fake_docker.calls() if c[0] == "run"]) == runs_before
+    assert fake_docker.volumes() == []
+    assert tool.classify(args) == ActionClass.OUTWARD  # the next call asks with a step-up
+
+
+async def test_concurrent_installs_of_one_plan_start_one_container(cache, fake_docker, tmp_path):
+    repo = a_repo()
+    root = tmp_path / "clone"
+    root.mkdir()
+    npm_files(root)
+    plan = cache.plan(repo, root)
+    cache.stage(plan, root, tmp_path / "job1")
+    cache.stage(plan, root, tmp_path / "job2")
+    first, second = await asyncio.gather(
+        cache.install(repo, plan, tmp_path / "job1"),
+        cache.install(repo, plan, tmp_path / "job2"),
+    )
+    assert first[0] and second[0]
+    assert ALREADY_INSTALLED in (first[1], second[1])  # the second waited, then found it
+    assert len([c for c in fake_docker.calls() if c[0] == "run"]) == 1

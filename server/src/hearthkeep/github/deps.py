@@ -62,6 +62,7 @@ PYTHON_TARGET = "/deps"
 NODE_TARGET = "/src/node_modules"
 
 TIMED_OUT = f"The install stopped after {INSTALL_TIMEOUT_S} s."
+ALREADY_INSTALLED = "Dependencies are already installed for this lock file."
 NO_START = "The install container couldn't start."
 FILES_CHANGED = "The dependency files changed while they were being copied. Try again."
 
@@ -178,6 +179,7 @@ class DepsCache:
         self.docker = tuple(docker)
         self.image_tag = image_tag
         self._volumes: dict[str, tuple[float, bool]] = {}  # volume -> (checked at, exists)
+        self._locks: dict[str, asyncio.Lock] = {}  # repo id -> one install at a time
 
     # -- what to install -------------------------------------------------------------------
 
@@ -390,7 +392,17 @@ class DepsCache:
     async def install(self, repo: Repo, plan: DepsPlan, job_dir: Path) -> tuple[bool, str]:
         """Run the install on the files `stage` put in `<job_dir>/src`, at most 900 s. On
         success the row is recorded and the repo's older volumes removed; on failure the
-        half-filled volume is removed. (ok, output: the head and tail kept)."""
+        half-filled volume is removed. (ok, output: the head and tail kept). One install per
+        repo at a time: a second one waits, then finds the first one's result."""
+        lock = self._locks.setdefault(repo.id, asyncio.Lock())
+        async with lock:
+            if self._row(repo, plan):
+                self._volumes.pop(plan.volume, None)  # ask Docker afresh, not the cache
+                if await self.is_installed(repo, plan):
+                    return True, ALREADY_INSTALLED
+            return await self._install(repo, plan, job_dir)
+
+    async def _install(self, repo: Repo, plan: DepsPlan, job_dir: Path) -> tuple[bool, str]:
         try:
             argv = self.install_argv(plan, Path(job_dir) / "src")
         except ValueError:
