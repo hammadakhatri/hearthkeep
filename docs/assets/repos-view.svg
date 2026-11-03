@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="400" viewBox="0 0 680 400" role="img" aria-label="The Hearthkeep Repos view with two sample repositories. sample/widgets is private, on branch hearthkeep/fix-readme with 2 changed files, 2 ahead and 0 behind, dependencies ready, and tests passed 5 minutes ago. sample/site is on branch hearthkeep/new-footer with 1 changed file, 1 ahead and 3 behind, dependencies out of date, and tests failed 2 hours ago. Each has Update and Remove buttons. Below is a form to add a repository by owner/name, which asks for a passkey.">
+  <defs>
+    <linearGradient id="mark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5ab0ff"/>
+      <stop offset="1" stop-color="#1a6fd6"/>
+    </linearGradient>
+    <clipPath id="list"><rect x="20" y="112" width="640" height="176" rx="16"/></clipPath>
+    <symbol id="repo" viewBox="0 0 24 24">
+      <g fill="none" stroke="#86868b" stroke-width="1.8" stroke-linecap="round">
+        <circle cx="6" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="8" r="2.2"/>
+        <path d="M6 8.2v7.6M18 10.2c0 4-7 3-10.6 6.4"/>
+      </g>
+    </symbol>
+  </defs>
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+    .mono { font-family: ui-monospace, "SF Mono", Consolas, Menlo, monospace; }
+    .name { font-size: 15px; font-weight: 500; fill: #f5f5f7; }
+    .badge { font-size: 12px; fill: #c7c7cc; }
+    .meta { font-size: 12.5px; fill: #86868b; }
+    .branch { font-size: 12px; fill: #c7c7cc; }
+    .btn { font-size: 13.5px; font-weight: 500; }
+  </style>
+
+  <rect width="680" height="400" rx="24" fill="#000"/>
+
+  <!-- top bar -->
+  <rect x="20" y="20" width="20" height="20" rx="6" fill="url(#mark)"/>
+  <path d="M30 24.5 l6 4.6 v6.4 h-3.6 v-3.6 h-4.8 v3.6 h-3.6 v-6.4 z" fill="#fff"/>
+  <text x="50" y="35" font-size="15" font-weight="650" fill="#f5f5f7">Repos</text>
+  <line x1="0" y1="56" x2="680" y2="56" stroke="#1f1f22"/>
+
+  <text x="20" y="94" font-size="17" font-weight="600" fill="#f5f5f7">Your repositories</text>
+
+  <!-- list -->
+  <g clip-path="url(#list)">
+    <rect x="20" y="112" width="640" height="176" fill="#0e0e10"/>
+    <line x1="20" y1="200" x2="660" y2="200" stroke="#2a2a2e"/>
+  </g>
+  <rect x="20" y="112" width="640" height="176" rx="16" fill="none" stroke="#2a2a2e"/>
+
+  <!-- row 1 -->
+  <use href="#repo" x="38" y="128" width="16" height="16"/>
+  <text x="62" y="141" class="name">sample/widgets</text>
+  <rect x="184" y="127" width="60" height="20" rx="10" fill="#1f1f22"/>
+  <text x="214" y="141" class="badge" text-anchor="middle">Private</text>
+  <text x="38" y="164" class="branch mono">hearthkeep/fix-readme</text>
+  <text x="203" y="164" class="meta">2 changed files</text>
+  <text x="319" y="164" class="meta">2 ahead</text>
+  <text x="380" y="164" class="meta">0 behind</text>
+  <text x="38" y="185" class="meta">Dependencies ready</text>
+  <text x="176" y="185" font-size="12.5" fill="#32d74b" text-decoration="underline">Tests passed 5 minutes ago</text>
+  <rect x="494" y="139" width="72" height="34" rx="17" fill="#1f1f22"/>
+  <text x="530" y="161" class="btn" fill="#f5f5f7" text-anchor="middle">Update</text>
+  <text x="608" y="161" class="btn" fill="#ff6961" text-anchor="middle">Remove</text>
+
+  <!-- row 2 -->
+  <use href="#repo" x="38" y="216" width="16" height="16"/>
+  <text x="62" y="229" class="name">sample/site</text>
+  <text x="38" y="252" class="branch mono">hearthkeep/new-footer</text>
+  <text x="203" y="252" class="meta">1 changed file</text>
+  <text x="312" y="252" class="meta">1 ahead</text>
+  <text x="373" y="252" class="meta">3 behind</text>
+  <text x="38" y="273" class="meta">Dependencies out of date</text>
+  <text x="217" y="273" font-size="12.5" fill="#ff6961" text-decoration="underline">Tests failed 2 hours ago</text>
+  <rect x="494" y="227" width="72" height="34" rx="17" fill="#1f1f22"/>
+  <text x="530" y="249" class="btn" fill="#f5f5f7" text-anchor="middle">Update</text>
+  <text x="608" y="249" class="btn" fill="#ff6961" text-anchor="middle">Remove</text>
+
+  <!-- add form -->
+  <text x="20" y="320" font-size="13.5" fill="#c7c7cc">Repository</text>
+  <rect x="20" y="332" width="470" height="40" rx="12" fill="#0e0e10" stroke="#2a2a2e"/>
+  <text x="36" y="357" font-size="14" fill="#86868b">owner/name</text>
+  <rect x="502" y="332" width="158" height="40" rx="20" fill="#f5f5f7"/>
+  <g transform="translate(520 343) scale(0.75)" fill="none" stroke="#000" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2M9 10v1M15 10v1M12 10v3h-1M9.5 16a4 4 0 0 0 5 0"/>
+  </g>
+  <text x="546" y="357" class="btn" fill="#000">Add repository</text>
+</svg>

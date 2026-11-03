@@ -209,7 +209,7 @@ Version 1 defaults: budgeting, News & search, Files, Python, Images = **Allowed*
 - Five tools, three level keys:
   - `repo_read` (list, read, search, status, diff, log, fetch): *Look*, level `github`.
   - `repo_edit` (branch, write, replace, delete, commit): *Change local*, level `github`. Only on branches named `hearthkeep/<name>`; the model never works on the default branch.
-  - `repo_install`: *Outward* when the dependencies for the current lock file are not cached, else *Look*; level `github`.
+  - `repo_install`: *Look* only when the current lock file is recorded as installed and Docker confirmed the volume within the last 30 s; otherwise *Outward* (a passkey card, which says nothing will be installed if the dependencies turn out to be there). Level `github`.
   - `repo_test`: *Look*, only inside the Docker sandbox; level `github_tests`. Without Docker it is forced to *Ask*, like Python.
   - `github` (REST API, plus push over Git): *Look* for `list_prs`, `get_pr`, `list_issues`, `get_issue` and `checks`; *Outward* for `push`, `open_pr`, `comment`, `merge_pr` and `close`.
 - Defaults: `github` and `github_tests` are **Ask**. Outward actions need an approval and a passkey at every level.
