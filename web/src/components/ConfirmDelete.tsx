@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
 import { isApiError } from '../api/client'
-import { passkeyErrorMessage } from '../api/webauthn'
+import { PASSKEY_NOT_CONFIRMED, passkeyErrorMessage } from '../api/webauthn'
 import { AlertIcon } from '../shell/icons'
 
 /** A plain sentence for anything a deletion can throw (passkey or server). */
@@ -8,7 +8,7 @@ export function deleteErrorMessage(error: unknown): string {
   if (isApiError(error, 'turn_in_progress')) {
     return 'Hearthkeep is still answering in this chat. Wait for it to finish, then try again.'
   }
-  if (isApiError(error, 'step_up_required')) return "Your passkey couldn't be confirmed. Try again."
+  if (isApiError(error, 'step_up_required')) return PASSKEY_NOT_CONFIRMED
   return passkeyErrorMessage(error, 'Delete')
 }
 

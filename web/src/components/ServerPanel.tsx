@@ -1,34 +1,65 @@
-import { useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { stopServer } from '../api/server'
 import { stepUp } from '../api/webauthn'
 import { AlertIcon, InfoIcon } from '../shell/icons'
 import { ConfirmDelete } from './ConfirmDelete'
-import { RestartNotice, RestartStatus, serverErrorMessage, useRestart, useServerInfo } from './RestartNotice'
+import { RestartNotice, RestartStatus, ServerProvider, serverErrorMessage, useServer, type ServerState } from './RestartNotice'
 
-/** Settings › General: the version, and restarting or stopping Hearthkeep (each with the passkey). */
+const STOPPED = 'Hearthkeep has stopped. Open it again from the Start menu on the PC.'
+
+/** Settings › General: the version, and restarting or stopping Hearthkeep (each with the passkey).
+ *  Shares Settings' `ServerProvider`; on its own it brings one. */
 export function ServerPanel() {
+  const server = useServer()
+  if (server) return <GeneralSection server={server} />
+  return (
+    <ServerProvider>
+      <ServerPanel />
+    </ServerProvider>
+  )
+}
+
+function GeneralSection({ server }: { server: ServerState }) {
   const titleId = useId()
-  const { info, failed } = useServerInfo()
-  const restart = useRestart(info)
+  const { info, failed, restart, stopped, markStopped } = server
   const [asking, setAsking] = useState(false)
-  const [stopped, setStopped] = useState(false)
+  const section = useRef<HTMLElement>(null)
+  const justStopped = useRef(false)
+
+  // After a stop the buttons are gone: the focus goes to the section that says what happened.
+  useEffect(() => {
+    if (!stopped || !justStopped.current) return
+    justStopped.current = false
+    section.current?.focus()
+  }, [stopped])
 
   async function stop() {
     const token = await stepUp('server')
     await stopServer(token)
+    justStopped.current = true
     setAsking(false)
-    setStopped(true)
+    markStopped()
   }
 
   return (
-    <section id="settings-general" className="settings-section" aria-labelledby={titleId} tabIndex={-1}>
+    <section
+      ref={section}
+      id="settings-general"
+      className="settings-section"
+      aria-labelledby={titleId}
+      tabIndex={-1}
+    >
       <h2 id={titleId}>General</h2>
-      {stopped ? (
-        <div className="note info" role="status">
-          <InfoIcon />
-          <span>Hearthkeep has stopped. Open it again from the Start menu on the PC.</span>
-        </div>
-      ) : (
+      {/* Always on the page, so the stop is announced when the text arrives. */}
+      <div role="status" aria-live="polite">
+        {stopped && (
+          <div className="note info">
+            <InfoIcon />
+            <span>{STOPPED}</span>
+          </div>
+        )}
+      </div>
+      {!stopped && (
         <div className="tile server" aria-busy={(info === null && !failed) || undefined}>
           {info && <p className="perm-sub">Version {info.version}</p>}
           {failed && (
@@ -37,7 +68,7 @@ export function ServerPanel() {
               <span>Couldn't check Hearthkeep's version.</span>
             </div>
           )}
-          <RestartNotice info={info} restart={restart} />
+          <RestartNotice place="general" />
           <div className="settings-actions">
             {info?.supervised && (
               <button
@@ -45,7 +76,7 @@ export function ServerPanel() {
                 className="btn"
                 aria-busy={restart.restarting || undefined}
                 onClick={() => {
-                  if (!restart.restarting) void restart.restart()
+                  if (!restart.restarting) void restart.restart('general')
                 }}
               >
                 Restart Hearthkeep
@@ -60,7 +91,7 @@ export function ServerPanel() {
               Stop Hearthkeep
             </button>
           </div>
-          <RestartStatus restart={restart} />
+          <RestartStatus restart={restart} place="general" />
         </div>
       )}
       {asking && (

@@ -173,6 +173,68 @@ describe('Setup page', () => {
     expect(replace).not.toHaveBeenCalled()
   })
 
+  it('a setup link opened again in this tab is taken, cleared and checked', async () => {
+    const { calls } = setupRoutes()
+    render(<SetupPage onLeave={() => {}} />)
+    await screen.findByRole('button', { name: 'Create passkey' })
+    const NEXT = 'b'.repeat(40)
+    window.location.hash = `#${NEXT}`
+    window.dispatchEvent(new HashChangeEvent('hashchange'))
+    await waitFor(() => expect(calls.filter((c) => c.path === '/api/setup/status')).toHaveLength(2))
+    expect(window.location.hash).toBe('')
+    expect(bodyOf(calls.filter((c) => c.path === '/api/setup/status')[1])).toEqual({ secret: NEXT })
+    expect(document.body.innerHTML).not.toContain(NEXT)
+    fireEvent.click(await screen.findByRole('button', { name: 'Create passkey' }))
+    await waitFor(() => expect(replace).toHaveBeenCalledWith('/'))
+    expect(bodyOf(calls.find((c) => c.path === '/api/setup/enrollment-code')!)).toEqual({ secret: NEXT })
+  })
+
+  it("when the setup server can't be reached it says so and tries again", async () => {
+    let up = false
+    setupRoutes({
+      'POST /api/setup/status': () =>
+        up ? { body: { state: 'needs_passkey' } } : Promise.reject(new TypeError('Failed to fetch')),
+    })
+    render(<SetupPage onLeave={() => {}} />)
+    expect(
+      await screen.findByText("Can't reach Hearthkeep. Check that the setup window is still open on this PC."),
+    ).toBeInTheDocument()
+    up = true
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByRole('button', { name: 'Create passkey' })).toBeInTheDocument()
+  })
+
+  it('a 404 for the code leaves for the normal app', async () => {
+    const onLeave = vi.fn()
+    setupRoutes({ 'POST /api/setup/enrollment-code': { status: 404, body: { reason: 'not_found' } } })
+    render(<SetupPage onLeave={onLeave} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Create passkey' }))
+    await waitFor(() => expect(onLeave).toHaveBeenCalledOnce())
+    expect(startRegistration).not.toHaveBeenCalled()
+  })
+
+  it('a 403 for the code says the link has ended', async () => {
+    setupRoutes({ 'POST /api/setup/enrollment-code': { status: 403, body: { reason: 'setup_secret' } } })
+    render(<SetupPage onLeave={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Create passkey' }))
+    expect(await screen.findByText(ENDED)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Create passkey' })).toBeNull()
+    expect(startRegistration).not.toHaveBeenCalled()
+  })
+
+  it("the copy rules report every forbidden piece, with the server's flags", () => {
+    expect(forbiddenIn('Run hearthkeep setup, then Hearthkeep open, then uv run x --data <data>')).toEqual([
+      'hearthkeep setup',
+      'Hearthkeep open',
+      'uv run',
+      '--data',
+      '<data>',
+    ])
+    // The placeholder rule is case-sensitive, as on the server.
+    expect(forbiddenIn('UV RUN')).toEqual([])
+    expect(forbiddenIn('Set up Hearthkeep. Open it from the Start menu.')).toEqual([])
+  })
+
   it('never shows a command or placeholder', async () => {
     const seen: string[] = []
     // No secret.

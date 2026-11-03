@@ -98,7 +98,7 @@ describe('AppShell', () => {
       },
     })
     render(<AppShell onSignOut={() => {}} />)
-    const note = await screen.findByRole('status', { name: 'Hearthkeep was updated' })
+    const note = await screen.findByRole('region', { name: 'Hearthkeep was updated' })
     expect(screen.getByRole('heading', { level: 1, name: 'Chat' })).toBeInTheDocument()
     fireEvent.click(within(note).getByRole('button', { name: 'Open Settings › Add-ons' }))
     expect(await screen.findByRole('heading', { level: 1, name: 'Settings' })).toBeInTheDocument()
