@@ -305,7 +305,19 @@ No suitable GPU? You can point Hearthkeep at an OpenAI-compatible chat server yo
 
 ## Quick start
 
-The full step-by-step guide, including model downloads, Docker and Tailscale, is in **[docs/install.md](docs/install.md)**. In short:
+On Windows 11:
+
+1. Download the Hearthkeep zip from the [latest release](../../releases/latest).
+2. Unzip it to a short path, for example `C:\Hearthkeep\app`.
+3. Double-click `Setup.cmd`.
+
+Setup installs what it needs for your Windows account (no admin rights), starts Hearthkeep and opens it in your browser, where you create your passkey. Afterwards, open Hearthkeep from the Start menu.
+
+The full guide, including model downloads, Docker, Tailscale and GitHub, is in **[docs/install.md](docs/install.md)**.
+
+### Developers
+
+To build from source, see [CONTRIBUTING.md](CONTRIBUTING.md). In short:
 
 ```
 git clone <repository URL> hearthkeep

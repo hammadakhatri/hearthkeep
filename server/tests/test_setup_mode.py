@@ -568,6 +568,11 @@ def test_setup_copy_is_ascii_without_commands():
         assert forbidden_in(text) == [], text
         assert "<" not in text and "{" not in text, text
     assert SETUP_INTRO.startswith("Setting up Hearthkeep\n")
+    # Nothing retries a fresh install's shortcut, so the copy must not promise a retry.
+    assert SHORTCUT_FAILED == (
+        "The Start menu shortcut couldn't be made. You can still open Hearthkeep by "
+        "double-clicking Setup.cmd."
+    )
 
 
 def test_security_doc_describes_setup_mode():
