@@ -156,14 +156,14 @@ From request to pull request:
 sequenceDiagram
     participant You
     participant HK as Hearthkeep
-    participant Box as Test sandbox
+    participant SB as Test sandbox
     participant GH as GitHub
     You->>HK: Fix the install link in sample/widgets, then run the tests
     HK->>You: Edit card with the full diff
     You->>HK: Approve
     HK->>HK: Edit and commit on hearthkeep/fix-readme
-    HK->>Box: Run the tests on a copy, no network
-    Box-->>HK: Tests passed
+    HK->>SB: Run the tests on a copy, no network
+    SB-->>HK: Tests passed
     HK->>You: Push card with the commits and the full diff
     You->>HK: Approve, plus your passkey
     HK->>GH: Push exactly the approved commit
