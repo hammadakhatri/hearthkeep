@@ -3,3 +3,5 @@
 # The sandbox image tag hashes these files: keep their bytes the same on every platform.
 server/src/hearthkeep/sandbox/image/** text=auto eol=lf
 server/src/hearthkeep/sandbox/repo_image/** text=auto eol=lf
+# Windows batch files must keep CRLF endings, in the checkout and in git archive.
+*.cmd text eol=crlf

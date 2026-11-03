@@ -68,6 +68,14 @@ You need:
 
 ## 2. Clone and build
 
+The quick way on Windows needs none of the commands below:
+
+1. Download the Hearthkeep zip from the latest release on GitHub.
+2. Unzip it to a short path, for example `C:\Hearthkeep\app`.
+3. Double-click `Setup.cmd`. It installs uv for your Windows account if needed (no admin rights), starts Hearthkeep and opens the setup page in your browser, where you create your first passkey.
+
+The rest of this guide is the manual way: building from a clone, choosing your own data folder, and setting up the models, Docker, Tailscale and GitHub by hand.
+
 1. Clone the repository:
 
    ```
@@ -323,6 +331,8 @@ tailscale serve --bg --https=443 http://127.0.0.1:8765 off
 ```
 
 ## 8. First start and your passkey
+
+If you used `Setup.cmd` (step 2), your first passkey is normally made on the setup page it opens, and you can skip to [Have your passkey on a second device](#have-your-passkey-on-a-second-device-before-you-rely-on-it). The steps below are for a manual start.
 
 1. Start the server:
 
