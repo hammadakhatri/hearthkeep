@@ -528,6 +528,11 @@ def check_github_setup_checked(client: Client, state: dict) -> None:
 def check_github_setup(client: Client, state: dict) -> None:
     health = client.get("/api/github").json()
     check(health.get("git") is True, "host Git 2.31 or newer was not found")
+    check(
+        health.get("connected") is not True,
+        "a GitHub token is already saved in this data folder: use a development data folder "
+        "(the GitHub steps save and remove a token, and would replace yours)",
+    )
     token = state["gh_token"]
     saved = client.http.put(
         "/api/github/token",
