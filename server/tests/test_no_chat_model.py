@@ -195,14 +195,27 @@ def test_startup_survives_a_refresh_that_raises(serve_fresh, monkeypatch, caplog
 # ---- today's formats --------------------------------------------------------------------
 
 
-def test_upgrade_external_config_unchanged(serve, capsys):
+def test_upgrade_external_config_unchanged(serve, capsys, monkeypatch):
+    from hearthkeep.api import app as app_mod
+
+    probed = []
+
+    def fake_health_check(settings):
+        async def check() -> bool:
+            probed.append(settings.chat_base_url)
+            return False  # nothing answers: no real port is ever probed
+
+        return check
+
+    monkeypatch.setattr(app_mod, "chat_model_health_check", fake_health_check)
     assert serve() == 0
     client = serve.hk.runner._loop._client
     assert type(client) is OpenAIChatClient
     assert client._url == "http://127.0.0.1:8080/v1/chat/completions"
     assert serve.hk.chat_mode == "external"
     assert serve.llama_calls == []
-    assert serve.hk.addons.get("chat").state in ("ready", "offline")
+    assert probed and set(probed) == {"http://127.0.0.1:8080/v1"}
+    assert serve.hk.addons.get("chat").state == "offline"
     out = capsys.readouterr().out
     assert (
         "Chat: using the chat server at chat_base_url (Hearthkeep doesn't start or schedule it)."
