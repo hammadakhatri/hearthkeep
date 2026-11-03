@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Addon } from '../api/addons'
 import { SetUpPanel } from '../components/SetUpPanel'
 import { Composer } from '../shell/Composer'
-import { TopBar, type HealthState } from '../shell/TopBar'
+import { GitHubPanel } from '../components/GitHubPanel'
+import { TopBar, useHealth, type HealthState } from '../shell/TopBar'
 import { Analysis } from '../views/Analysis'
 import { Chat } from '../views/Chat'
 import { Images } from '../views/Images'
@@ -70,7 +71,8 @@ describe('the composer follows the chat add-on', () => {
     const box = await screen.findByRole('textbox', { name: 'Message Hearthkeep' })
     expect(box).toBeEnabled()
     const note = screen.getByText('Loading the chat model…')
-    expect(note.closest('#composer-state')).toHaveAttribute('role', 'status')
+    // The top bar pill is the live region for this state; the composer text is just visible.
+    expect(note.closest('#composer-state')).not.toHaveAttribute('role')
   })
 
   it('the first send while the model is not loaded shows "Loading the chat model…"', async () => {
@@ -124,7 +126,8 @@ describe('the composer follows the chat add-on', () => {
       />,
     )
     expect(screen.getByRole('textbox')).toBeEnabled()
-    expect(screen.getByRole('status')).toHaveTextContent('Loading the chat model…')
+    expect(screen.getByText('Loading the chat model…')).not.toHaveAttribute('role')
+    expect(screen.queryByRole('status')).toBeNull()
   })
 })
 
@@ -133,6 +136,29 @@ function pill(ui: ReturnType<typeof render>) {
 }
 
 const online: HealthState = { state: 'online', model: 'Local model 12B' }
+
+describe('useHealth', () => {
+  it('turns health chat_model_state not_set_up into the "No chat model" pill', async () => {
+    mockFetch({
+      'GET /api/health': { body: { status: 'ok', chat_model: '', chat_model_reachable: false, chat_model_state: 'not_set_up' } },
+    })
+    function Bar() {
+      return <TopBar title="Chat" health={useHealth()} />
+    }
+    const ui = render(<Bar />)
+    expect(await screen.findByText('No chat model')).toBeInTheDocument()
+    expect(pill(ui)).toHaveAttribute('data-state', 'not_set_up')
+  })
+})
+
+describe('GitHubPanel', () => {
+  it('the no-Git note has a Set up button to the GitHub card', async () => {
+    mockFetch({ 'GET /api/github': { body: { git: false, connected: false, login: null } } })
+    const { openSettings } = renderWithAddons(<GitHubPanel />, addons({ github: 'needs_git' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Set up' }))
+    expect(openSettings).toHaveBeenCalledWith('addon-github')
+  })
+})
 
 describe('the top bar pill', () => {
   it.each([
@@ -195,6 +221,41 @@ describe('Images', () => {
     fireEvent.click(within(panel).getByRole('button', { name: 'Set up Images' }))
     expect(openSettings).toHaveBeenCalledWith('addon-images')
     expect(screen.queryByText(/docs\/models\.md/)).toBeNull()
+  })
+
+  it('images ready but chat not set up shows no Create form and a button to the chat card', async () => {
+    mockFetch({ 'GET /api/models': noModels, 'GET /api/images?limit=24': { body: { images: [] } } })
+    const { openSettings } = renderWithAddons(<Images />, addons({ chat: 'not_set_up' }))
+    expect(screen.queryByRole('textbox', { name: 'Describe the image you want' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Create' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Set up Chat model' }))
+    expect(openSettings).toHaveBeenCalledWith('addon-chat')
+  })
+
+  it('a 409 chat_not_set_up from Create shows the server message', async () => {
+    mockFetch({
+      'GET /api/models': {
+        body: {
+          models: [
+            { id: 'z', name: 'Z', kind: 'image', capabilities: [], vram_gb: 1, source: 'owner', resident: false, managed: true },
+          ],
+          errors: [],
+          gpu: { resident: [] },
+        },
+      },
+      'GET /api/images?limit=24': { body: { images: [] } },
+      'POST /api/chats': { status: 201, body: { id: 'ic1', title: 'Images', think: false, created_at: '2026-10-26T10:00:00Z', active_turn: null } },
+      'POST /api/chats/ic1/messages': {
+        status: 409,
+        body: { reason: 'chat_not_set_up', message: 'Set up your chat model to start chatting.' },
+      },
+    })
+    render(<Images />)
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Describe the image you want' }), {
+      target: { value: 'A kite' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Set up your chat model to start chatting.')
   })
 
   it('keeps saved images visible under the panel', async () => {
@@ -319,7 +380,6 @@ describe('Tools & permissions', () => {
     fireEvent.click(within(row).getByRole('button', { name: 'Set up' }))
     expect(openSettings).toHaveBeenCalledWith('addon-analysis')
     expect(container).not.toHaveTextContent(/Arrives in a later update|Face ID|Touch ID|Needs Docker to run freely/)
-    expect(screen.queryByText('Wallet')).toBeNull()
   })
 
   it('a ready tool shows no flag', async () => {

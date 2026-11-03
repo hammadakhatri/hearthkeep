@@ -21,7 +21,7 @@ type Props = {
   onPickFile?: (file: File) => void
   /** The chat model can't answer: the box and Send are off, and the message says why in plain text. */
   blocked?: { message: string; onSetUp?: () => void } | null
-  /** A passing state that doesn't stop typing or sending, such as the model loading. */
+  /** A passing state that doesn't stop typing or sending, such as the model loading. Not a live region: the top bar pill announces the same state. */
   notice?: string | null
 }
 
@@ -85,7 +85,7 @@ export function Composer({
   return (
     <>
       {stateText && (
-        <p id="composer-state" className="composer-state" role={blocked ? undefined : 'status'}>
+        <p id="composer-state" className="composer-state">
           <span>{stateText}</span>
           {blocked?.onSetUp && (
             <button type="button" className="btn" onClick={blocked.onSetUp}>

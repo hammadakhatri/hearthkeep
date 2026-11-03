@@ -104,6 +104,10 @@ function createError(error: unknown): string {
     return "Hearthkeep couldn't read its stored secrets. Check the server."
   }
   if (isApiError(error, 'network')) return "Can't reach Hearthkeep. Nothing was sent."
+  if (isApiError(error, 'chat_not_set_up')) {
+    const message = (error.body as { message?: unknown } | null)?.message
+    if (typeof message === 'string' && message) return message
+  }
   return "That didn't start. Try again."
 }
 
@@ -156,7 +160,10 @@ export function Images() {
   const attach = usePhoto()
   const images = useAddon('images')
   // Known and not ready: one panel replaces the form. Unknown never gates.
-  const needsSetUp = images !== null && !images.ready
+  // Pictures are made by posting into a chat, so the chat model has to be usable too.
+  const chat = useAddon('chat')
+  const blockedBy = images !== null && !images.ready ? images : chat !== null && !chat.ready ? chat : null
+  const needsSetUp = blockedBy !== null
 
   const cards = models.state === 'ready' ? models.cards : []
   const notSetUp = models.state === 'none'
@@ -355,7 +362,7 @@ export function Images() {
       </header>
 
       {needsSetUp ? (
-        <SetUpPanel addon={images} />
+        <SetUpPanel addon={blockedBy} />
       ) : (
         <form className="describe" onSubmit={create} aria-label="Create images">
           <label className="sr-only" htmlFor={ids.text}>
