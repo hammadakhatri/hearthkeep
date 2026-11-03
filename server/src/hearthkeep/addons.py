@@ -289,6 +289,7 @@ class ModelSetup:
     images_managed: bool = False
     comfy_paths: tuple[Path, ...] = ()
     image_cards: dict[str, tuple[Path, ...]] = field(default_factory=dict)
+    checkable: bool = True  # False without a runtime config: no files to look for
 
 
 def model_setup(stack: ModelStack, settings: Settings) -> ModelSetup:
@@ -305,7 +306,9 @@ def model_setup(stack: ModelStack, settings: Settings) -> ModelSetup:
     images_managed = stack.comfy is not None and bool(image_ids)
     rt = stack.runtime
     if rt is None:
-        return ModelSetup(stack.chat_mode, chat_model, images_managed=images_managed)
+        return ModelSetup(
+            stack.chat_mode, chat_model, images_managed=images_managed, checkable=False
+        )
 
     chat_paths: list[Path] = []
     if stack.chat_mode == "owned":
@@ -466,6 +469,9 @@ class Addons:
         setup = self._setup
         if not setup.images_managed:
             self._cache["images"] = _status("images", "not_set_up")
+            return
+        if not setup.checkable:
+            self._cache["images"] = _status("images", "ready")  # nothing to check
             return
 
         def files_ok() -> bool:

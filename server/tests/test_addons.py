@@ -351,6 +351,17 @@ def test_model_setup_lists_the_owned_files(tmp_path):
     assert tmp_path / "comfy" / "models" / "vae" / "ae.safetensors" in setup.image_cards[IMAGE_ID]
 
 
+async def test_images_without_runtime_have_nothing_to_check(tmp_path):
+    cards, _ = load_cards(tmp_path)
+    stack = ModelStack(cards={IMAGE_ID: cards[IMAGE_ID]}, managed=frozenset({IMAGE_ID}),
+                       comfy=object())  # fmt: skip
+    setup = model_setup(stack, settings(tmp_path))
+    assert setup.images_managed and not setup.checkable
+    addons = Addons(settings(tmp_path), setup, probes(file_exists=lambda p: False))
+    await addons.refresh("images")
+    assert addons.get("images").state == "ready" and addons.tool_ready("generate_image")
+
+
 # --- github, devices, startup ----------------------------------------------------------------
 
 
@@ -458,29 +469,31 @@ async def test_level_addon_picks_first_not_ready():
 
 
 async def test_checks_run_off_the_event_loop(tmp_path):
-    seen: dict[str, list[int]] = {"docker": [], "files": [], "git": []}
+    seen: dict[str, list[int]] = {n: [] for n in ("docker", "files", "git", "tail", "start")}
 
-    def blocking(name: str) -> bool:
+    def blocking(name: str, value=True):
         seen[name].append(threading.get_ident())
-        return True
+        return value
 
     async def no_sandbox():
         return None
 
     addons = Addons(
-        settings(tmp_path),
+        settings(tmp_path, public_origin="https://pc.tail1.ts.net", rp_id="pc.tail1.ts.net"),
         owned_setup(tmp_path, images=True),
         probes(
             sandbox=no_sandbox,
             docker_installed=lambda: blocking("docker"),
             file_exists=lambda p: blocking("files"),
             git_available=lambda: blocking("git"),
+            tailscale=lambda: blocking("tail", TailscaleState(True, True, "pc.tail1.ts.net")),
+            startup=lambda: blocking("start", StartupStatus(True, False, None)),
         ),
         gpu=FakeGpu(),
     )
     await addons.refresh()
     loop_thread = threading.get_ident()
-    for name in ("docker", "files"):
+    for name in ("docker", "files", "tail", "start"):
         assert seen[name] and loop_thread not in seen[name], name
     # get() reads Git live (it is memoised); refresh warms it in a thread first.
     assert seen["git"] and seen["git"][0] != loop_thread
