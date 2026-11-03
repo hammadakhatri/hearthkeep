@@ -147,6 +147,10 @@ def test_release_workflow_builds_read_only_and_publishes_in_a_separate_job():
     assert "needs: build" in release and "contents: write" in release
     assert "actions/download-artifact@" in release
     assert "gh release create" in release and "--draft" in release
+    # The assets are the two zips of this tag's version, checked against their .sha256 first.
+    assert 'v="${GITHUB_REF_NAME#v}"' in release
+    assert '"hearthkeep-$v.zip" "hearthkeep-web-$v.zip"' in release
+    assert release.index("sha256sum -c") < release.index("gh release create")
     assert '--repo "$REPO"' in release and "REPO: ${{ github.repository }}" in release
     for banned in ("checkout", "npm", "uv run", "setup-node", "setup-uv", "build_release"):
         assert banned not in release, banned
