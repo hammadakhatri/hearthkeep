@@ -155,7 +155,8 @@ async def read_head_tail(stream: asyncio.StreamReader | None) -> tuple[bytes, bo
     return bytes(head + tail), dropped
 
 
-def _mount_source(path: Path) -> str:
+def mount_source(path: Path) -> str:
+    """A bind mount's source: the real path, refused when --mount's list would misread it."""
     source = str(Path(path).resolve())
     if _UNSAFE_MOUNT.search(source):
         raise ValueError("a mount path may not contain commas, quotes or line breaks")
@@ -171,6 +172,97 @@ async def _wait_exit(proc: asyncio.subprocess.Process, timeout: float) -> bool:
     while proc.returncode is None and time.monotonic() < deadline:
         await asyncio.sleep(0.02)
     return proc.returncode is not None
+
+
+async def run_docker(
+    docker: Sequence[str], *args: str, timeout: float = DOCKER_TIMEOUT_S
+) -> tuple[int | None, bytes]:
+    """A short docker command: (exit code, or None when it couldn't start or hung; stdout)."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *docker,
+            *args,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+            **_spawn_flags(),
+        )
+    except OSError:
+        return None, b""
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout)
+    except BaseException as exc:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        if isinstance(exc, TimeoutError | OSError):
+            await _wait_exit(proc, 2.0)
+            return None, b""
+        raise
+    return proc.returncode, out
+
+
+async def stop_container(
+    docker: Sequence[str], name: str, proc: asyncio.subprocess.Process
+) -> None:
+    """`docker kill` the container (killing the client alone would leave it running), then
+    the `docker run` client too if it is still there after a grace period."""
+    await run_docker(docker, "kill", name)
+    if not await _wait_exit(proc, KILL_GRACE_S):
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        await _wait_exit(proc, KILL_GRACE_S)
+
+
+@dataclass(frozen=True)
+class Ran:
+    """How one container run ended: the exit code (None when it never ended by itself), the
+    output's head and tail joined, whether its middle was dropped, and whether it timed out."""
+
+    code: int | None
+    data: bytes
+    dropped: bool
+    timed_out: bool
+
+    def output(self) -> str:
+        return cap_output(self.data, self.dropped)
+
+
+async def run_container(
+    docker: Sequence[str], argv: Sequence[str], name: str, timeout: float
+) -> Ran:
+    """Run `argv` (a `docker run` that names its container `name`), its stdout and stderr
+    read together keeping the head and tail, for at most `timeout` seconds; then (or when
+    the caller is cancelled) the container is killed. OSError when docker can't start."""
+    proc = await asyncio.create_subprocess_exec(
+        *argv,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        **_spawn_flags(),
+    )
+    reader = asyncio.ensure_future(read_head_tail(proc.stdout))
+    timed_out = False
+    try:
+        try:
+            await asyncio.wait_for(asyncio.shield(reader), timeout)
+            await _wait_exit(proc, KILL_GRACE_S * 2)
+        except TimeoutError:
+            timed_out = True
+        if timed_out or proc.returncode is None:
+            await stop_container(docker, name, proc)
+    except BaseException:
+        if proc.returncode is None:
+            with contextlib.suppress(BaseException):
+                await asyncio.shield(stop_container(docker, name, proc))
+        reader.cancel()
+        raise
+    data, dropped = b"", False
+    done, _ = await asyncio.wait({reader}, timeout=2.0)
+    if done and not reader.cancelled() and reader.exception() is None:
+        data, dropped = reader.result()
+    else:
+        reader.cancel()
+    return Ran(None if timed_out else proc.returncode, data, dropped, timed_out)
 
 
 class DepsCache:
@@ -313,7 +405,7 @@ class DepsCache:
             raise ValueError("not a dependency volume")
         mounts: list[str] = []
         for name in plan.files:
-            source = _mount_source(Path(src_dir) / name)
+            source = mount_source(Path(src_dir) / name)
             mounts += ["--mount", f"type=bind,source={source},target=/src/{name},readonly"]
         target = NODE_TARGET if plan.ecosystem == "npm" else PYTHON_TARGET
         mounts += ["--mount", f"type=volume,source={plan.volume},target={target}"]
@@ -346,27 +438,7 @@ class DepsCache:
         ]  # fmt: skip
 
     async def _docker(self, *args: str) -> tuple[int | None, bytes]:
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *self.docker,
-                *args,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-                **_spawn_flags(),
-            )
-        except OSError:
-            return None, b""
-        try:
-            out, _ = await asyncio.wait_for(proc.communicate(), DOCKER_TIMEOUT_S)
-        except BaseException as exc:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            if isinstance(exc, TimeoutError | OSError):
-                await _wait_exit(proc, 2.0)
-                return None, b""
-            raise
-        return proc.returncode, out
+        return await run_docker(self.docker, *args)
 
     async def _remove_volumes(self, names: Sequence[str]) -> None:
         if not names:
@@ -381,13 +453,6 @@ class DepsCache:
         names = out.decode("ascii", "replace").split() if code == 0 else []
         pattern = re.compile(re.escape(prefix) + r"[0-9a-f]{12}")
         return [n for n in names if pattern.fullmatch(n)]
-
-    async def _stop(self, name: str, proc: asyncio.subprocess.Process) -> None:
-        await self._docker("kill", name)
-        if not await _wait_exit(proc, KILL_GRACE_S):
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            await _wait_exit(proc, KILL_GRACE_S)
 
     async def install(self, repo: Repo, plan: DepsPlan, job_dir: Path) -> tuple[bool, str]:
         """Run the install on the files `stage` put in `<job_dir>/src`, at most 900 s. On
@@ -409,46 +474,19 @@ class DepsCache:
             return False, DATA_PATH_MESSAGE
         name = argv[argv.index("--name") + 1]
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                **_spawn_flags(),
-            )
+            ran = await run_container(self.docker, argv, name, INSTALL_TIMEOUT_S)
         except OSError:
             return False, NO_START
-        reader = asyncio.ensure_future(read_head_tail(proc.stdout))
-        timed_out = False
-        try:
-            try:
-                await asyncio.wait_for(asyncio.shield(reader), INSTALL_TIMEOUT_S)
-                await _wait_exit(proc, KILL_GRACE_S * 2)
-            except TimeoutError:
-                timed_out = True
-            if timed_out or proc.returncode is None:
-                await self._stop(name, proc)
         except BaseException:
-            if proc.returncode is None:
-                with contextlib.suppress(BaseException):
-                    await asyncio.shield(self._stop(name, proc))
-            reader.cancel()
             with contextlib.suppress(BaseException):
                 await asyncio.shield(self._remove_volumes([plan.volume]))
             raise
-        data, dropped = b"", False
-        done, _ = await asyncio.wait({reader}, timeout=2.0)
-        if done and not reader.cancelled() and reader.exception() is None:
-            data, dropped = reader.result()
-        else:
-            reader.cancel()
-        output = cap_output(data, dropped)
-        code = proc.returncode
-        if timed_out or code != 0:
+        output = ran.output()
+        if ran.timed_out or ran.code != 0:
             await self._remove_volumes([plan.volume])
-            if timed_out:
+            if ran.timed_out:
                 return False, f"{TIMED_OUT}\n{output}".rstrip("\n") + "\n"
-            if code in (125, 126, 127) and not data:
+            if ran.code in (125, 126, 127) and not ran.data:
                 return False, NO_START
             return False, output
         with db.transaction(self.conn):

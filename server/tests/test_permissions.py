@@ -105,6 +105,7 @@ def test_defaults_v1():
         "images": ALLOWED,
         "send": ALLOWED,
         "github": ASK,
+        "github_tests": ASK,
         "demo": ALLOWED,
     }
 

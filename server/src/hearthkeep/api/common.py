@@ -28,6 +28,7 @@ from hearthkeep.folders import FolderStore
 from hearthkeep.github.api import GitHubClient
 from hearthkeep.github.deps import DepsCache
 from hearthkeep.github.repos import RepoStore
+from hearthkeep.github.testrun import RepoTestRunner
 from hearthkeep.images import ImageStore
 from hearthkeep.models.cards import CardError, ModelCard
 from hearthkeep.numbercheck import NumberChecker
@@ -152,6 +153,7 @@ class Services:
     github: GitHubClient | None = None
     repos: RepoStore | None = None  # the added GitHub repos and their clones
     deps: DepsCache | None = None  # each repo's installed dependencies
+    repo_tests: RepoTestRunner | None = None  # each repo's test runs
     health_cache: tuple[float, bool] | None = None
     health_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
