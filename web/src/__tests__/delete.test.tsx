@@ -76,7 +76,9 @@ describe('deleting a chat', () => {
     // It was the open chat: a new, empty one takes its place.
     expect(screen.getByRole('heading', { name: 'What can I help with?' })).toBeInTheDocument()
     expect(screen.queryByText('Sum it', { selector: '.me' })).not.toBeInTheDocument()
-    expect(within(chatList()).getByRole('button', { name: 'New chat' })).toHaveFocus()
+    // Focus moves in a passive effect after the commit that removed the dialog, which React may
+    // flush after the waitFor above has already seen the dialog gone: wait for it too.
+    await waitFor(() => expect(within(chatList()).getByRole('button', { name: 'New chat' })).toHaveFocus())
   })
 
   it('cancel keeps the chat', async () => {
