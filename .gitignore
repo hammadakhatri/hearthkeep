@@ -24,6 +24,12 @@ docs/superpowers/specs/
 # Build and tool output
 node_modules/
 web/dist/
+web/dist.new/
+web/dist.old/
+.cache/
+/hearthkeep-*.zip
+/hearthkeep-web-*.zip
+*.zip.sha256
 .venv/
 __pycache__/
 .pytest_cache/
