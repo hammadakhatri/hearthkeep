@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 
 from uvicorn.config import STARTUP_FAILURE  # what uvicorn exits with when it could not start
 
+import hearthkeep
 from hearthkeep import db, launcher, shortcut, startup
 from hearthkeep.api.app import DB_FILE
 from hearthkeep.api.common import ENROLLMENT_CODE_TTL_MINUTES
@@ -525,10 +526,15 @@ def _is_data_folder(path: Path) -> bool:
     return any((path / name).exists() for name in DATA_MARKERS)
 
 
-def _release_program_folder() -> Path | None:
-    """The Hearthkeep program folder when it is an unzipped release (left alone in a
-    developer's checkout), else None."""
-    return REPO_ROOT if release_version() is not None else None
+def _release_program_folder(
+    *, root: Path = REPO_ROOT, version: str = hearthkeep.__version__
+) -> Path | None:
+    """The Hearthkeep program folder when it is an unzipped release, else None. A developer's
+    checkout is left alone: a development version, or any git clone (a clone of a release tag
+    has a release version too, and holds node_modules and the developer's own files)."""
+    if release_version(version) is None or (root / ".git").exists():
+        return None
+    return root
 
 
 def _protect_folder(host: Host, path: Path) -> None:
@@ -709,11 +715,13 @@ def cmd_setup(
 
     code = run_server(
         app, host_ip, settings.port, control=control, on_started=announce,
-        log_level="warning", access_log=False,
+        log_level="critical", access_log=False,
     )  # fmt: skip
     if not setup.completed:
-        # The server never started: something took the port after the check above.
-        print(PORT_BUSY.format(port=settings.port) if code == STARTUP_FAILURE else STOPPED_EARLY)
+        # A start that failed with the port now taken: something took it after the check
+        # above. Any other failure (the app's own startup, say) is not a busy port.
+        busy = code == STARTUP_FAILURE and not free(host_ip, settings.port)
+        print(PORT_BUSY.format(port=settings.port) if busy else STOPPED_EARLY)
         return 1
 
     _install_shortcut(host, data)
