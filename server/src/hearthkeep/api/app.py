@@ -59,7 +59,7 @@ from hearthkeep.files.store import ChatFileStore
 from hearthkeep.folders import FolderStore
 from hearthkeep.github.api import TOKEN_SECRET, GitHubClient
 from hearthkeep.github.git import GitRunner
-from hearthkeep.github.repos import RepoStore
+from hearthkeep.github.repos import RepoStore, sweep_repo_folders
 from hearthkeep.images import ImageStore
 from hearthkeep.numbercheck import NumberChecker
 from hearthkeep.push import PushSender, PushSubscriptions, VapidKeys
@@ -333,6 +333,8 @@ def create_app(
             files.sweep_temp()
             # Folders of chats whose deletion a stop cut short (rows gone, files left).
             sweep_orphans(conn, Path(settings.data_dir))
+            # Clones a failed add or remove left behind (no add can be under way yet).
+            sweep_repo_folders(conn, Path(settings.data_dir))
             # Inspections a stop cut short: those files couldn't be checked.
             files.settle_pending()
             handle = await _sandbox_handle(settings, sandbox, detected)

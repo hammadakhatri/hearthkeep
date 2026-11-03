@@ -12,9 +12,10 @@ import pytest
 from fakes import FakeGitHub
 
 from hearthkeep.db import connect
+from hearthkeep.github import repos as repos_module
 from hearthkeep.github.api import TOKEN_SECRET, GitHubClient
 from hearthkeep.github.git import MIN_GIT, GitError, GitRunner, github_url, redact
-from hearthkeep.github.repos import RepoError, RepoStore
+from hearthkeep.github.repos import RepoError, RepoStore, sweep_repo_folders
 from hearthkeep.secrets import SecretStore
 
 TOKEN = "github_pat_" + "b" * 30
@@ -330,3 +331,67 @@ def test_runtime_dirs_are_data_subdirs():
     from hearthkeep.config import DATA_SUBDIRS
 
     assert "runtime/git-home/no-hooks" in DATA_SUBDIRS
+
+
+def plant(folder: Path) -> Path:
+    """A folder like a left-behind clone, with a read-only file as git leaves its objects."""
+    (folder / ".git" / "objects").mkdir(parents=True)
+    locked = folder / ".git" / "objects" / "pack"
+    locked.write_text("x")
+    locked.chmod(0o444)
+    (folder / "app.py").write_text("print(1)\n")
+    return folder
+
+
+def test_sweep_removes_orphan_clones_and_staging(tmp_path):
+    data = tmp_path / "data"
+    conn = connect(tmp_path / "hk.db")
+    try:
+        conn.execute("INSERT INTO repos (id, full_name) VALUES ('kept0000kept0000', 'a/b')")
+        repos_dir = data / "workspace" / "repos"
+        kept = plant(repos_dir / "kept0000kept0000")
+        orphan = plant(repos_dir / "0123456789abcdef")
+        staging = plant(data / "runtime" / "clone-fedcba9876543210")
+        (data / "runtime" / "git-home" / "no-hooks").mkdir(parents=True)
+        odd = repos_dir / "not a repo id"
+        odd.mkdir()
+        assert sweep_repo_folders(conn, data) == 2
+        assert kept.is_dir() and odd.is_dir()
+        assert not orphan.exists() and not staging.exists()
+        assert (data / "runtime" / "git-home" / "no-hooks").is_dir()
+        assert sweep_repo_folders(conn, data) == 0
+        assert sweep_repo_folders(conn, tmp_path / "empty") == 0  # no folders yet: nothing to do
+    finally:
+        conn.close()
+
+
+def test_sweep_never_follows_a_linked_repos_folder(tmp_path):
+    from test_repo_paths import link_dir
+
+    data = tmp_path / "data"
+    outside = plant(tmp_path / "outside" / "0123456789abcdef")
+    (data / "workspace").mkdir(parents=True)
+    link_dir(data / "workspace" / "repos", outside.parent)
+    conn = connect(tmp_path / "hk.db")
+    try:
+        assert sweep_repo_folders(conn, data) == 0
+        assert (outside / "app.py").exists()
+    finally:
+        conn.close()
+
+
+async def test_remove_retries_and_sweep_finishes_a_left_clone(store, monkeypatch, tmp_path):
+    repo = await store.add("acme/widgets")
+    folder = store.dir(repo)
+    calls = []
+
+    def stuck(path):  # a file held open by an indexer: nothing can be removed now
+        calls.append(path)
+        return False
+
+    monkeypatch.setattr(repos_module, "_remove_tree", stuck)
+    assert await store.remove(repo.id) is True
+    assert calls == [folder] and folder.is_dir() and store.get(repo.id) is None
+    monkeypatch.undo()
+    assert sweep_repo_folders(store.conn, tmp_path / "data") == 1
+    assert not folder.exists()

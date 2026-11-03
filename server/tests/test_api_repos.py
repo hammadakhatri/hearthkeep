@@ -149,3 +149,12 @@ def test_github_state_reports_git_from_the_runner(api_client, monkeypatch):
     assert api_client.get("/api/github").json()["git"] is False
     monkeypatch.setattr(GitRunner, "available", lambda self: True)
     assert api_client.get("/api/github").json()["git"] is True
+
+
+def test_startup_sweeps_left_clones(harness):
+    from test_git import plant
+
+    orphan = plant(harness.data / "workspace" / "repos" / "0123456789abcdef")
+    staging = plant(harness.data / "runtime" / "clone-0123456789abcdef")
+    harness.start()
+    assert not orphan.exists() and not staging.exists()
