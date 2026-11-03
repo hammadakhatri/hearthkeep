@@ -40,6 +40,7 @@ from hearthkeep.api import (
     routes_push,
     routes_runs,
     routes_sent,
+    routes_server,
     routes_settings,
     routes_uploads,
 )
@@ -67,6 +68,7 @@ from hearthkeep.github.git import GitRunner
 from hearthkeep.github.repos import RepoStore, sweep_repo_folders
 from hearthkeep.github.testrun import RepoTestRunner
 from hearthkeep.images import ImageStore
+from hearthkeep.lifecycle import ServerControl
 from hearthkeep.numbercheck import NumberChecker
 from hearthkeep.push import PushSender, PushSubscriptions, VapidKeys
 from hearthkeep.runtime.stack import ModelStack
@@ -299,6 +301,7 @@ def create_app(
     github_transport: httpx.AsyncBaseTransport | None = None,
     git: GitRunner | None = None,
     addon_probes: Probes | None = None,
+    control: ServerControl | None = None,
 ) -> FastAPI:
     """`sandbox`, when given (tests), is used as is; otherwise one is made when Docker is
     available. Without one the `python` tool is still offered and answers that Docker is
@@ -317,6 +320,7 @@ def create_app(
     check = health_check or chat_model_health_check(settings)
     stack = models or ModelStack()
     store = secrets or SecretStore(Path(settings.data_dir))
+    server_control = control or ServerControl(supervised=False)
 
     def github_token() -> str | None:
         try:
@@ -445,6 +449,7 @@ def create_app(
                 runner=runner,
                 limiter=rate_limiter or RateLimiter(),
                 health_check=check,
+                control=server_control,
                 sse_keepalive=sse_keepalive,
                 gpu=gpu,
                 images=images,
@@ -519,6 +524,7 @@ def create_app(
         return {
             "status": "ok",
             "chat_model": settings.chat_model,
+            "setup_mode": server_control.setup_mode,
             **await services(request).chat_model_status(),
         }
 
@@ -539,6 +545,7 @@ def create_app(
         routes_sent,
         routes_analysis,
         routes_addons,
+        routes_server,
     ):
         app.include_router(module.router)
 

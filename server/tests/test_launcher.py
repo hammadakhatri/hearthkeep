@@ -375,12 +375,14 @@ def test_wait_for_health():
 
 
 class RecordingHost(WindowsHost):
-    def __init__(self, location=None):
+    def __init__(self, location=None, process=None):
         self.spawned: list[list[str]] = []
         self.location = location
+        self.process = process
 
     def spawn_detached(self, argv, *, popen=None):
         self.spawned.append(list(argv))
+        return self.process
 
     def read_location(self):
         return self.location
@@ -395,7 +397,11 @@ def test_open_starts_the_launcher_only_when_not_answering(tmp_path):
         probed.append(base)
         return None
 
-    assert open_app(settings, host, probe=down, open_url=opened.append, wait=waited.append) == 0
+    def wait(base, **kw):
+        waited.append(base)
+        return True
+
+    assert open_app(settings, host, probe=down, open_url=opened.append, wait=wait) == 0
     assert probed == ["http://127.0.0.1:8799"]
     assert host.spawned == [launcher_argv(tmp_path)]
     assert waited == ["http://127.0.0.1:8799"]
@@ -405,8 +411,90 @@ def test_open_starts_the_launcher_only_when_not_answering(tmp_path):
     opened, waited = [], []
     up = {"status": "ok", "setup_mode": False}
     assert open_app(settings, host, probe=lambda b: up, open_url=opened.append,
-                    wait=waited.append) == 0  # fmt: skip
+                    wait=wait) == 0  # fmt: skip
     assert host.spawned == [] and waited == [] and opened == ["http://localhost:8799"]
+
+
+class FakeLauncherProcess:
+    """The detached launcher `open` started: `poll()` is None while it runs."""
+
+    def __init__(self, *codes):
+        self.codes = list(codes)
+
+    def poll(self):
+        return self.codes.pop(0) if len(self.codes) > 1 else self.codes[0]
+
+
+def waiting(clock, slept):
+    def sleep(seconds):
+        slept.append(seconds)
+        clock.now += seconds
+
+    return sleep
+
+
+def test_wait_for_health_stops_when_the_launcher_has_died():
+    clock = FakeClock()
+    slept = []
+    process = FakeLauncherProcess(None, None, 1)
+    assert not wait_for_health("b", 60.0, probe=lambda base: None, sleep=waiting(clock, slept),
+                               clock=clock, process=process)  # fmt: skip
+    assert len(slept) == 2 and clock.now < 5  # not the full minute
+    # A server that answers wins even when the launcher is gone.
+    up = {"status": "ok", "setup_mode": False}
+    assert wait_for_health("b", probe=lambda base: up, sleep=waiting(clock, slept), clock=clock,
+                           process=FakeLauncherProcess(1))  # fmt: skip
+    # Exit 0 is a second launcher finding the first one running: keep waiting for the server.
+    clock.now = 0.0
+    answers = iter([None, None, up])
+    assert wait_for_health("b", 60.0, probe=lambda base: next(answers), sleep=waiting(clock, []),
+                           clock=clock, process=FakeLauncherProcess(0))  # fmt: skip
+
+
+def test_wait_for_health_without_a_process_waits_the_whole_time():
+    clock = FakeClock()
+    assert not wait_for_health("b", 5.0, probe=lambda base: None, sleep=waiting(clock, []),
+                               clock=clock)  # fmt: skip
+    assert clock.now >= 5.0
+
+
+def test_open_returns_at_once_when_the_server_answers(tmp_path):
+    settings = Settings(data_dir=tmp_path, port=8799, public_origin="http://localhost:8799")
+    clock = FakeClock()
+    slept = []
+    answers = iter([{"status": "ok", "setup_mode": False}])
+    opened = []
+    host = RecordingHost(process=FakeLauncherProcess(None))
+    wait = lambda base, **kw: wait_for_health(  # noqa: E731
+        base, probe=lambda b: next(answers), sleep=waiting(clock, slept), clock=clock, **kw
+    )
+    assert open_app(settings, host, probe=lambda b: None, open_url=opened.append, wait=wait) == 0
+    assert slept == [] and opened == ["http://localhost:8799"]
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "message"),
+    [
+        (EXIT_USAGE, launcher.LAUNCHER_NOT_READY),  # no passkey yet: serve stopped with 2
+        (1, launcher.LAUNCHER_GAVE_UP),  # kept crashing, or the port is held
+    ],
+)
+def test_open_says_so_when_the_launcher_it_started_has_died(tmp_path, capsys, exit_code, message):
+    settings = Settings(data_dir=tmp_path, port=8799, public_origin="http://localhost:8799")
+    clock = FakeClock()
+    slept = []
+    opened = []
+    host = RecordingHost(process=FakeLauncherProcess(None, exit_code))
+    wait = lambda base, **kw: wait_for_health(  # noqa: E731
+        base, probe=lambda b: None, sleep=waiting(clock, slept), clock=clock, **kw
+    )
+    result = open_app(settings, host, probe=lambda b: None, open_url=opened.append, wait=wait)
+    assert result == 1 and clock.now < 5
+    err = capsys.readouterr().err
+    assert message in err
+    for text in (launcher.LAUNCHER_NOT_READY, launcher.LAUNCHER_GAVE_UP):
+        assert text.isascii() and forbidden_in(text) == [], text
+    assert opened == ["http://localhost:8799"]  # the app's own "can't reach" page explains
 
 
 def test_open_and_launch_without_a_location_say_not_set_up(tmp_path, monkeypatch, capsys):

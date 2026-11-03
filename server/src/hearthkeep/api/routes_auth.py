@@ -32,7 +32,14 @@ router = APIRouter(prefix="/api")
 
 OWNER_USER_ID = b"hearthkeep-owner"
 StepUpPurpose = Literal[
-    "approval", "settings", "add_device", "add_folder", "github_token", "add_repo", "delete"
+    "approval",
+    "settings",
+    "add_device",
+    "add_folder",
+    "github_token",
+    "add_repo",
+    "delete",
+    "server",
 ]
 # What a `delete` step-up is for: exactly one chat, one file or one repo.
 STEP_UP_TARGET = r"^(chat|file|repo):[A-Za-z0-9_-]{1,32}$"

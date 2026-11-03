@@ -103,7 +103,9 @@ class Host(Protocol):
 
     def install_shortcut(self, data_dir: Path, *, run=subprocess.run) -> None: ...
 
-    def spawn_detached(self, argv: list[str], *, popen=subprocess.Popen) -> None: ...
+    def spawn_detached(
+        self, argv: list[str], *, popen=subprocess.Popen
+    ) -> subprocess.Popen | None: ...
 
     def read_location(self) -> Path | None: ...
 
@@ -132,8 +134,9 @@ class WindowsHost:
     def install_shortcut(self, data_dir: Path, *, run=subprocess.run) -> None:
         shortcut.install_shortcut(data_dir, run=run)
 
-    def spawn_detached(self, argv: list[str], *, popen=subprocess.Popen) -> None:
-        popen(argv, **procutil.detached_popen_kwargs())
+    def spawn_detached(self, argv: list[str], *, popen=subprocess.Popen) -> subprocess.Popen | None:
+        """Start `argv` detached; the process, so the caller can see whether it has ended."""
+        return popen(argv, **procutil.detached_popen_kwargs())
 
     @staticmethod
     def _location_file() -> Path | None:
@@ -195,7 +198,7 @@ class UnsupportedHost:
     def install_shortcut(self, data_dir: Path, *, run=subprocess.run) -> None:
         raise HostUnsupported()
 
-    def spawn_detached(self, argv: list[str], *, popen=subprocess.Popen) -> None:
+    def spawn_detached(self, argv: list[str], *, popen=subprocess.Popen) -> subprocess.Popen | None:
         raise HostUnsupported()
 
     def read_location(self) -> Path | None:
