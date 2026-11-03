@@ -405,7 +405,7 @@ The task runs as **your own Windows user**: the key that decrypts your secrets i
 
 3. Sign out and back in (or restart) and open your address to test it.
 
-**Logs.** Because there is no window, everything the server prints goes to `<data>\logs\hearthkeep.log`, and the launcher's own notes (starts, restarts, crashes) go to `<data>\logs\launcher.log`. While no passkey exists yet, the first-device enrollment code is written there too. If you start Hearthkeep this way before your first sign-in, run `uv run hearthkeep enroll-code --data <data>` to get a code (it works only while no passkey exists).
+**Logs.** Because there is no window, everything the server prints goes to `<data>\logs\hearthkeep.log`, and the launcher's own notes (starts, restarts, crashes) go to `<data>\logs\launcher.log`. The enrollment code is never written there. While no passkey exists yet, the log says so and Hearthkeep doesn't keep running in the background; double-click Setup.cmd in the Hearthkeep folder to finish setting up.
 
 **Stopping Hearthkeep also stops the models it started.** llama-server and ComfyUI run as Hearthkeep's child processes; on Windows they are tied to it so they end even if Hearthkeep is killed. To stop everything, end the `Hearthkeep` task in Task Scheduler (right-click, **End**).
 

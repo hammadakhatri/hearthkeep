@@ -1,22 +1,31 @@
-"""Command line: `hearthkeep serve | enroll-code | secrets set/list | sandbox build/status |
-startup enable/disable/status`."""
+"""Command line: `hearthkeep serve | launch | open | enroll-code | secrets set/list |
+sandbox build/status | startup enable/disable/status`.
+
+`launch` keeps `serve` running in the background (start at login runs it); `open` opens
+Hearthkeep in the browser, starting the launcher if needed (the Start menu shortcut runs it)."""
 
 from __future__ import annotations
 
 import argparse
 import dataclasses
 import getpass
+import os
 import subprocess
 import sys
+import threading
+import time
+import webbrowser
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from hearthkeep import db, startup
+from hearthkeep import db, launcher, startup
 from hearthkeep.api.app import DB_FILE
 from hearthkeep.api.common import ENROLLMENT_CODE_TTL_MINUTES
 from hearthkeep.auth.enrollment import EnrollmentCodes, EnrollmentError, first_device_allowed
 from hearthkeep.config import ConfigError, Settings, init_data_dir, load_settings
+from hearthkeep.host import UNSUPPORTED_HOST, Host, current_host
+from hearthkeep.lifecycle import EXIT_USAGE, SUPERVISED_ENV, ServerControl
 from hearthkeep.providers.chat import NoChatModelClient, OpenAIChatClient
 from hearthkeep.runtime.gpu import detect_vram_gb
 from hearthkeep.runtime.supervisor import (
@@ -31,12 +40,27 @@ from hearthkeep.sandbox import image as sandbox_image
 from hearthkeep.secrets import SecretStore, SecretStoreError
 
 if TYPE_CHECKING:
+    from fastapi import FastAPI
+
+    from hearthkeep.auth.webauthn import Verifier
     from hearthkeep.models.cards import ModelCard
     from hearthkeep.runtime.stack import ModelStack
     from hearthkeep.tools.images import GenerateImageTool
 
-EXIT_USAGE = 2
+# EXIT_USAGE (imported above) lives in lifecycle so the launcher can use it too.
+
 GRACEFUL_SHUTDOWN_SECONDS = 5
+STARTED_POLL_S = 0.1
+STARTED_WAIT_S = 30.0
+STARTUP_FAILURE = 3  # what uvicorn.run exits with when the server could not start
+
+NO_PASSKEY_YET = (
+    "No passkey is set up yet. To finish setting up, double-click Setup.cmd in the "
+    "Hearthkeep folder."
+)
+NOT_SET_UP = (
+    "Hearthkeep isn't set up on this PC yet. Double-click Setup.cmd in the Hearthkeep folder."
+)
 
 startup_run = subprocess.run  # how `startup` runs schtasks; replaced in tests
 
@@ -69,14 +93,37 @@ def build_registry(*, image_tool: GenerateImageTool | None = None):
     return registry
 
 
-def run_server(app, host: str, port: int) -> None:  # replaced in tests
+def _call_when_started(server, on_started: Callable[[], None]) -> None:
+    """Call `on_started` once, from a daemon thread, when uvicorn reports it is serving."""
+
+    def watch() -> None:
+        deadline = time.monotonic() + STARTED_WAIT_S
+        while time.monotonic() < deadline:
+            if server.started:
+                on_started()
+                return
+            time.sleep(STARTED_POLL_S)
+
+    threading.Thread(target=watch, name="hearthkeep-started", daemon=True).start()
+
+
+def run_server(
+    app,
+    host: str,
+    port: int,
+    *,
+    control: ServerControl | None = None,
+    on_started: Callable[[], None] | None = None,
+) -> int:  # replaced in tests
+    """Serve `app` until it is stopped; the exit code a restart or stop request asked for,
+    else 0 (or STARTUP_FAILURE, as uvicorn.run, when the server never started)."""
     import uvicorn
 
     # proxy_headers=False: never derive the client address from X-Forwarded-For, so a local
     # process cannot rotate the rate-limit key by spoofing that header.
     # timeout_graceful_shutdown: open event streams never end on their own, so without a
     # bound a stop would hang until killed and skip the lifespan shutdown that closes turns.
-    uvicorn.run(
+    config = uvicorn.Config(
         app,
         host=host,
         port=port,
@@ -84,6 +131,18 @@ def run_server(app, host: str, port: int) -> None:  # replaced in tests
         proxy_headers=False,
         timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECONDS,
     )
+    server = uvicorn.Server(config)
+    if control is not None:
+        control.attach(lambda: setattr(server, "should_exit", True))
+    if on_started is not None:
+        _call_when_started(server, on_started)
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        pass
+    if control is not None and control.exit_code is not None:
+        return control.exit_code
+    return 0 if server.started else STARTUP_FAILURE
 
 
 def _alias(card: ModelCard) -> str:
@@ -255,6 +314,41 @@ def _log_to(path: Path) -> None:
     sys.stdout = sys.stderr = log
 
 
+def build_app(
+    settings: Settings,
+    *,
+    verifier: Verifier,
+    control: ServerControl,
+    make_llama: Callable = build_llama_process,
+    make_comfy: Callable = build_comfyui_process,
+    detect_vram: Callable[[], float | None] = detect_vram_gb,
+) -> tuple[FastAPI, list[str]]:
+    """The app `serve` runs, and the startup lines to print. Builds nothing that runs yet and
+    never issues an enrollment code (only `cmd_serve` does, on a console). Raises
+    ProcessError when a model server can't be set up. `control` is not passed on yet:
+    `create_app` doesn't take it so far."""
+    from hearthkeep.api.app import create_app
+
+    secrets = SecretStore(settings.data_dir)
+    stack, chat_client, settings, lines = build_model_stack(
+        settings, secrets, make_llama=make_llama, make_comfy=make_comfy, detect_vram=detect_vram
+    )
+    app = create_app(
+        settings,
+        verifier=verifier,
+        chat_client=chat_client,
+        registry=build_registry(),  # the image tool is added at startup when it can be built
+        secrets=secrets,
+        models=stack,
+    )
+    return app, lines
+
+
+def _interactive() -> bool:
+    """Whether the output is a console someone is looking at (never under pythonw)."""
+    return sys.stdout is not None and sys.stdout.isatty()
+
+
 def cmd_serve(
     args: argparse.Namespace,
     *,
@@ -262,8 +356,12 @@ def cmd_serve(
     make_comfy: Callable = build_comfyui_process,
     detect_vram: Callable[[], float | None] = detect_vram_gb,
 ) -> int:
-    """`make_llama`, `make_comfy` and `detect_vram` are seams for tests."""
-    from hearthkeep.api.app import create_app
+    """`make_llama`, `make_comfy` and `detect_vram` are seams for tests.
+
+    While no passkey exists the first-device code is printed only to an interactive console
+    without a log file; otherwise `serve` says to run Setup.cmd and issues no code. With a log
+    file (the launcher, start at login) it then stops with EXIT_USAGE before starting, so no
+    background server holds the port that setup needs."""
     from hearthkeep.auth.insecure_dev import (
         WARNING,
         InsecureDevAuthError,
@@ -289,37 +387,74 @@ def cmd_serve(
     else:
         verifier = PyWebAuthnVerifier(settings)
 
-    secrets = SecretStore(settings.data_dir)
+    conn = _connect(settings)
     try:
-        stack, chat_client, settings, lines = build_model_stack(
-            settings, secrets, make_llama=make_llama, make_comfy=make_comfy,
-            detect_vram=detect_vram,
+        no_passkey = first_device_allowed(conn)
+    finally:
+        conn.close()
+    show_code = no_passkey and not args.log_file and _interactive()
+    if no_passkey and not show_code:
+        print(NO_PASSKEY_YET)
+        if args.log_file:  # in the background: stop rather than hold the port
+            return EXIT_USAGE
+
+    control = ServerControl(supervised=os.environ.get(SUPERVISED_ENV) == "1")
+    try:
+        app, lines = build_app(
+            settings, verifier=verifier, control=control, make_llama=make_llama,
+            make_comfy=make_comfy, detect_vram=detect_vram,
         )  # fmt: skip
     except ProcessError as exc:
         print(f"error: {exc.user_message}", file=sys.stderr)
         return EXIT_USAGE
     print("\n".join(lines))
 
-    conn = _connect(settings)
-    try:
-        if first_device_allowed(conn):
+    if show_code:
+        conn = _connect(settings)
+        try:
             _print_code(EnrollmentCodes(conn).issue("first_device", ENROLLMENT_CODE_TTL_MINUTES))
-    finally:
-        conn.close()
+        finally:
+            conn.close()
 
-    app = create_app(
-        settings,
-        verifier=verifier,
-        chat_client=chat_client,
-        registry=build_registry(),  # the image tool is added at startup when it can be built
-        secrets=secrets,
-        models=stack,
-    )
     # Never bind anything but the loopback interface. On Ctrl+C uvicorn runs the app's
     # shutdown, which stops every model server Hearthkeep started.
     host = "127.0.0.1" if settings.host == "localhost" else settings.host
-    run_server(app, host, settings.port)
-    return 0
+    return run_server(app, host, settings.port, control=control)
+
+
+def _host_data(args: argparse.Namespace, host: Host) -> Path | None:
+    """The data folder for `launch` and `open`: `--data`, else the one setup recorded."""
+    if args.data:
+        return Path(args.data).resolve()
+    return host.read_location()
+
+
+def cmd_launch(
+    args: argparse.Namespace, *, host: Host | None = None, popen=subprocess.Popen
+) -> int:
+    host = host or current_host()
+    if not host.supported:
+        print(UNSUPPORTED_HOST, file=sys.stderr)
+        return EXIT_USAGE
+    data = _host_data(args, host)
+    if data is None:
+        print(NOT_SET_UP, file=sys.stderr)
+        return 1
+    return launcher.run_launcher(Path(data).resolve(), popen=popen)
+
+
+def cmd_open(
+    args: argparse.Namespace, *, host: Host | None = None, open_url=webbrowser.open
+) -> int:
+    host = host or current_host()
+    if not host.supported:
+        print(UNSUPPORTED_HOST, file=sys.stderr)
+        return EXIT_USAGE
+    data = _host_data(args, host)
+    if data is None:
+        print(NOT_SET_UP, file=sys.stderr)
+        return 1
+    return launcher.open_app(_settings(Path(data)), host, open_url=open_url)
 
 
 def cmd_enroll_code(args: argparse.Namespace) -> int:
@@ -478,6 +613,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--log-file", metavar="PATH", help="append everything printed to PATH (UTF-8)"
     )
     serve.set_defaults(func=cmd_serve)
+
+    launch = sub.add_parser(
+        "launch", help="keep Hearthkeep running in the background (used by start at login)"
+    )
+    launch.add_argument("--data", help="path to your Hearthkeep data folder")
+    launch.set_defaults(func=cmd_launch)
+    open_ = sub.add_parser("open", help="open Hearthkeep in the browser, starting it if needed")
+    open_.add_argument("--data", help="path to your Hearthkeep data folder")
+    open_.set_defaults(func=cmd_open)
 
     enroll = with_data(sub.add_parser("enroll-code", help="issue a first-device enrollment code"))
     enroll.set_defaults(func=cmd_enroll_code)

@@ -7,7 +7,10 @@ from __future__ import annotations
 import re
 
 FORBIDDEN = (
-    re.compile(r"\bhearthkeep (serve|sandbox|secrets|startup|enroll-code)\b", re.IGNORECASE),
+    re.compile(
+        r"\bhearthkeep (serve|sandbox|secrets|startup|enroll-code|setup|launch|open)\b",
+        re.IGNORECASE,
+    ),
     re.compile(r"<data>|<home>|--data\b|\buv run\b"),
 )
 

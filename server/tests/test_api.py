@@ -822,7 +822,10 @@ def write_config(data, **values):
 
 def test_insecure_dev_auth_refused_for_non_localhost_origin(tmp_path, monkeypatch, capsys):
     started = []
-    monkeypatch.setattr(cli, "run_server", lambda app, host, port: started.append((host, port)))
+    monkeypatch.setattr(
+        cli, "run_server", lambda app, host, port, **kw: started.append((host, port)) or 0
+    )
+    monkeypatch.setattr(cli, "_interactive", lambda: True)  # the code is printed to a console
     remote = tmp_path / "remote"
     write_config(
         remote,
@@ -873,7 +876,16 @@ def test_run_server_ignores_proxy_headers(monkeypatch):
     import uvicorn
 
     calls = []
-    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: calls.append(kw))
+
+    class FakeServer:
+        def __init__(self, config):
+            self.started = True
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr(uvicorn, "Config", lambda app, **kw: calls.append(kw))
+    monkeypatch.setattr(uvicorn, "Server", FakeServer)
     cli.run_server(object(), "127.0.0.1", 8765)
     assert calls[0]["proxy_headers"] is False
     assert calls[0]["timeout_graceful_shutdown"] == 5
@@ -981,7 +993,7 @@ def test_error_after_response_started_logs_type_only(harness, caplog):
 
 def test_insecure_dev_auth_refused_with_real_passkey(tmp_path, monkeypatch, capsys):
     started = []
-    monkeypatch.setattr(cli, "run_server", lambda app, host, port: started.append(port))
+    monkeypatch.setattr(cli, "run_server", lambda app, host, port, **kw: started.append(port) or 0)
     data = tmp_path / "data"
     write_config(data, docker_available=False)
     assert cli.main(["enroll-code", "--data", str(data)]) == 0  # creates the database
