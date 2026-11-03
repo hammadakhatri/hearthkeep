@@ -24,11 +24,12 @@ Contents:
 9. [Optional: an API key for an external chat server](#9-optional-an-api-key-for-an-external-chat-server)
 10. [Run at login (Windows)](#10-run-at-login-windows)
 11. [Python sandbox (Docker)](#11-python-sandbox-docker)
-12. [Notifications on your phone](#12-notifications-on-your-phone)
-13. [Updating](#13-updating)
-14. [Backing up](#14-backing-up)
-15. [Troubleshooting](#15-troubleshooting)
-16. [Uninstalling](#16-uninstalling)
+12. [Optional: GitHub](#12-optional-github)
+13. [Notifications on your phone](#13-notifications-on-your-phone)
+14. [Updating](#14-updating)
+15. [Backing up](#15-backing-up)
+16. [Troubleshooting](#16-troubleshooting)
+17. [Uninstalling](#17-uninstalling)
 
 ## 1. Install the prerequisites
 
@@ -36,7 +37,7 @@ You need:
 
 | Tool | Version | Where to get it |
 |---|---|---|
-| Git | any recent | [git-scm.com](https://git-scm.com/downloads) |
+| Git | 2.31 or newer (the GitHub tools need it; without it they stay off) | [git-scm.com](https://git-scm.com/downloads) |
 | Python | 3.12 or newer | [python.org](https://www.python.org/downloads/) (uv can also install it for you) |
 | uv | any recent | [docs.astral.sh/uv](https://docs.astral.sh/uv/getting-started/installation/) |
 | Node.js | 20.19+ or 22.12+ | [nodejs.org](https://nodejs.org/) (the LTS release is fine) |
@@ -111,7 +112,7 @@ The data folder holds your chats, passkeys, audit log, encrypted secrets, images
 
 Keep the path short. llama-server on Windows cannot open a file whose full path is 260 characters or longer. Hearthkeep writes the chat model's key file to `<data>\runtime\llama-api-key` and checks this path (and the model file paths) before it starts llama-server. If any is too long it refuses with "Hearthkeep's data folder path is too long for llama-server on Windows". ComfyUI is not affected.
 
-Choose the location once. The key that encrypts your secrets is stored in the OS keyring under a name derived from the data folder's full path. If you move the folder later, see [Backing up](#14-backing-up).
+Choose the location once. The key that encrypts your secrets is stored in the OS keyring under a name derived from the data folder's full path. If you move the folder later, see [Backing up](#15-backing-up).
 
 ## 4. Chat model: llama.cpp and Gemma 4 12B
 
@@ -449,14 +450,14 @@ Hearthkeep can read the files you attach to a chat and analyse them with Python.
    docker version
    ```
 
-2. Build the sandbox image. This is a **one-time download of about 1 GB** (Python and the analysis libraries), so do it on a connection you are happy to use:
+2. Build the sandbox images. This is a **one-time download of about 1 GB** (Python and the analysis libraries, plus a second, smaller image for GitHub repos, step 12), so do it on a connection you are happy to use:
 
    ```
    cd <repo>\server
    uv run hearthkeep sandbox build --data <data>
    ```
 
-   Hearthkeep never builds or downloads the image by itself.
+   The command builds two images: `hearthkeep-sandbox` (Python analysis) and `hearthkeep-repo` (running a GitHub repo's tests and installing its dependencies). Hearthkeep never builds or downloads an image by itself.
 
 3. Check Docker and the image:
 
@@ -464,13 +465,53 @@ Hearthkeep can read the files you attach to a chat and analyse them with Python.
    uv run hearthkeep sandbox status --data <data>
    ```
 
-   It prints `Docker: running` and `Sandbox image: hearthkeep-sandbox:<hash> (present)`. If the image shows as `missing`, run the build again.
+   It prints `Docker: running`, then `Sandbox image: hearthkeep-sandbox:<hash> (present)` and `Repo image: hearthkeep-repo:<hash> (present)`. If an image shows as `missing`, run the build again.
 
 Docker Desktop has to be running whenever you want to analyse a file. After an update that changes the sandbox, `sandbox status` shows the image as missing; run `sandbox build` again.
 
-**Run `hearthkeep sandbox build` again after updating.** The image's tag is a hash of its files, so an update that changes the sandbox (the next one does: it reads dates written day/month/year and finds gaps in dated data) needs a new image. Until you build it, Python answers that the sandbox isn't built yet.
+**Run `hearthkeep sandbox build` again after updating.** The image's tag is a hash of its files, so an update that changes the sandbox (the next one does: it reads dates written day/month/year and finds gaps in dated data) needs a new image. Until you build it, Python answers that the sandbox isn't built yet. The same goes for the repo image and GitHub tests.
 
-## 12. Notifications on your phone
+## 12. Optional: GitHub
+
+Hearthkeep can work on GitHub repos you choose: read them, change them on a branch of its own, run their tests, and push or open a pull request after you approve. It needs Git 2.31 or newer on this PC (step 1), a token you make on GitHub, and, to run tests, Docker and the repo image (step 11). Without Git or without a saved token, the GitHub tools are not offered to the assistant at all.
+
+What it does and never does is in [security.md](security.md#github).
+
+### 12.1 Make a token
+
+Use a **fine-grained personal access token**. Classic tokens (they start with `ghp_`) are refused.
+
+1. On GitHub, open **Settings > Developer settings > Personal access tokens > Fine-grained tokens** and choose **Generate new token**.
+2. Set **Repository access** to **Only select repositories** and pick just the repos you want Hearthkeep to work on. Do not choose *All repositories*.
+3. Under **Repository permissions**, set:
+
+   | Permission | Access |
+   |---|---|
+   | Contents | Read and write |
+   | Pull requests | Read and write |
+   | Issues | Read and write |
+   | Commit statuses | Read-only |
+   | Checks | Read-only |
+   | Metadata | Read-only (always on) |
+
+4. Set an expiry. Thirty to ninety days is a sensible range: a short-lived token limits the damage if it ever leaks, and GitHub emails you before it ends. Put the renewal date in your calendar.
+5. Generate the token and copy it. GitHub shows it once.
+
+### 12.2 Save it and add repos
+
+1. Open Hearthkeep, go to **Settings > GitHub**, paste the token and choose **Save token**. Hearthkeep asks for your passkey, checks the token with GitHub, and only then stores it encrypted in the secret store. The same place lets you replace the token or remove it. Removing it needs no passkey.
+2. Open the **Repos** view, type a repo as `<owner>/<repo>` and add it (passkey). Hearthkeep clones it into `<data>\workspace\repos\`. The repo must be one the token can reach.
+3. In **Settings**, look at the permission levels. `GitHub` covers reading, editing and the outward actions; `GitHub tests` covers running tests. Both start at **Ask**. Outward actions always need a passkey, whatever the level.
+
+To remove a repo, use **Remove** in the Repos view. It deletes the clone, including any work you have not pushed, so it asks for your passkey. If a clone cannot be deleted straight away, Hearthkeep finishes the job the next time it starts.
+
+### 12.3 Using it
+
+Ask in chat, for example: "In `<owner>/<repo>`, start a branch, fix the typo in the README, and run the tests." The assistant works only on branches named `hearthkeep/<name>`. Every approval card shows the full diff. Pushing, opening a pull request, commenting, merging and closing each wait for your approval and a passkey. A push sends exactly the commit shown on the card.
+
+Running tests needs the repo's dependencies. The assistant asks to install them (`uv`, `pip` or `npm` projects only): that approval needs a passkey too, because the install container has internet. The installed dependencies are kept and reused until the lock file changes. The Repos view shows each repo's branch, changes and last test run, with the full test output.
+
+## 13. Notifications on your phone
 
 When the assistant sends you a file or a summary, it appears in the tray in the app. You can also get a notification that says "A file is ready in Hearthkeep". It carries no content, only that nudge.
 
@@ -480,7 +521,7 @@ When the assistant sends you a file or a summary, it appears in the tray in the 
 
 Notifications are opt-in per device and can be turned off in the same place. Your PC must be on and Hearthkeep running for anything to be sent.
 
-## 13. Updating
+## 14. Updating
 
 1. Stop Hearthkeep (Ctrl+C, or end the scheduled task).
 2. Pull the new version:
@@ -505,7 +546,7 @@ Notifications are opt-in per device and can be turned off in the same place. You
    uv sync
    ```
 
-5. If you analyse files with Python, run `hearthkeep sandbox build` again after updating (the sandbox image changes with the code):
+5. If you analyse files with Python or use GitHub tests, run `hearthkeep sandbox build` again after updating (the sandbox images change with the code):
 
    ```
    uv run hearthkeep sandbox build --data <data>
@@ -515,7 +556,7 @@ Notifications are opt-in per device and can be turned off in the same place. You
 
 Your data folder is not touched by an update. Compare `<repo>\config.example.toml` and `<repo>\models.example.toml` with your own copies for new settings.
 
-## 14. Backing up
+## 15. Backing up
 
 Stop Hearthkeep before you copy, so the database is not being written.
 
@@ -540,7 +581,7 @@ What matters in `<data>`:
 
 Your passkeys stay valid after a restore, as long as `public_origin` and `rp_id` are unchanged.
 
-## 15. Troubleshooting
+## 16. Troubleshooting
 
 Start with the logs in `<data>\logs\`: `llama-server.log` for the chat model, `comfyui.log` for images, and `hearthkeep.log` when Hearthkeep starts at login. Model-specific problems are covered in [docs/models.md](models.md#troubleshooting).
 
@@ -577,13 +618,19 @@ Also check that you open exactly the address in `public_origin` (`localhost`, no
 
 **The sandbox image is missing.** `sandbox status` shows `Sandbox image: ... (missing)`. Build it once with `uv run hearthkeep sandbox build --data <data>` (about 1 GB, step 11). It also goes missing after an update that changes the sandbox.
 
+**The GitHub tools are missing, or Settings says "Install Git".** The assistant is offered GitHub tools only when Git 2.31 or newer is on the `PATH` and a token is saved. Check `git --version`, restart Hearthkeep after installing or updating Git, and save the token in Settings > GitHub.
+
+**GitHub rejects the token, or a repo cannot be added.** The token must be fine-grained, unexpired, and allowed to reach that repo (*Only select repositories* must include it). Check the permissions in step 12.
+
+**Tests say the dependencies are out of date, or the repo image is missing.** Ask the assistant to install them again (you approve it with your passkey), or run `uv run hearthkeep sandbox build --data <data>` if `sandbox status` shows the repo image as missing.
+
 **Hearthkeep does not start at login.** Run `uv run hearthkeep startup status --data <data>`; if it says off, run `startup enable`. Then read `<data>\logs\hearthkeep.log` for the reason.
 
 **"config error" at start-up.** The message names the key. Common causes: a non-loopback `host`, an `http://` `public_origin` that is not localhost, `rp_id` not matching `public_origin`, or a `chat_base_url` that is not on this PC.
 
-**"secret store error".** The keyring key is missing or doesn't match. See [Backing up](#14-backing-up). On Linux, a keyring service (such as GNOME Keyring) must be running.
+**"secret store error".** The keyring key is missing or doesn't match. See [Backing up](#15-backing-up). On Linux, a keyring service (such as GNOME Keyring) must be running.
 
-## 16. Uninstalling
+## 17. Uninstalling
 
 1. Stop Hearthkeep. If you turned on start at login, turn it off (or, if you made the task by hand, delete it):
 
@@ -605,4 +652,5 @@ Also check that you open exactly the address in `public_origin` (`localhost`, no
 5. Remove the keyring entry: in Windows **Credential Manager**, under **Windows Credentials**, remove the generic credential for `hearthkeep`. On macOS, use Keychain Access; on Linux, your keyring app.
 6. Remove the passkey from each device's passkey manager (Windows: **Settings > Accounts > Passkeys**; Apple devices: the Passwords app; other managers: their own list).
 7. Optionally, delete llama.cpp, ComfyUI and the model files in `<tools>`.
-8. Optionally, remove the sandbox image: `docker image rm hearthkeep-sandbox:<hash>` (read the tag from `hearthkeep sandbox status` before you delete anything).
+8. Optionally, remove the sandbox images: `docker image rm hearthkeep-sandbox:<hash>` and `docker image rm hearthkeep-repo:<hash>` (read the tags from `hearthkeep sandbox status` before you delete anything). GitHub dependencies are kept in Docker volumes named `hk-deps-*`; remove them with `docker volume ls` and `docker volume rm`.
+9. If you used GitHub, delete the token on GitHub (**Settings > Developer settings**), so it stops working there too.
