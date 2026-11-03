@@ -4,6 +4,7 @@ import json
 import sqlite3
 
 import pytest
+from demo_tools import ClockTool
 from fakes import FakeBackend, FakeChatClient, FakeVerifier, card
 from fastapi.testclient import TestClient
 from test_api import ORIGIN, enroll
@@ -16,7 +17,6 @@ from hearthkeep.models.cards import CardError
 from hearthkeep.providers.scheduled_chat import ScheduledChatClient
 from hearthkeep.runtime.stack import ModelStack
 from hearthkeep.tools.base import ToolRegistry
-from hearthkeep.tools.demo import ClockTool
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"fake-image-data"
 CHAT = card("chat-model", 11.0)

@@ -3,6 +3,7 @@ import json
 from datetime import UTC, datetime
 
 import pytest
+from demo_tools import ClockTool, NoteTool
 from fakes import FakeChatClient
 
 from hearthkeep import audit
@@ -13,7 +14,6 @@ from hearthkeep.config import Settings
 from hearthkeep.db import connect
 from hearthkeep.providers.chat import StreamDone, TextDelta, ToolCallRequest
 from hearthkeep.tools.base import ToolRegistry
-from hearthkeep.tools.demo import ClockTool, NoteTool
 
 CHAT = "chat1"
 

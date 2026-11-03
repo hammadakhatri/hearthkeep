@@ -41,6 +41,7 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
     "docker: needs Docker running and the sandbox image built (hearthkeep sandbox build)",
+    "real_levels: runs against the real DEFAULT_LEVELS, without the tests-only demo key",
 ]
 filterwarnings = [
     # starlette's TestClient nudges towards `httpx2`; plain httpx works and is already a dependency

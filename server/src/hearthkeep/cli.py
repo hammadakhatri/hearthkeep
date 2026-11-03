@@ -62,11 +62,8 @@ def build_registry(*, image_tool: GenerateImageTool | None = None):
     """The tools the agent may use. The image tool is registered only when it could be built
     (at least one image card and ComfyUI configured); the `images` level is listed either way."""
     from hearthkeep.tools.base import ToolRegistry
-    from hearthkeep.tools.demo import ClockTool, NoteTool
 
     registry = ToolRegistry()
-    registry.register(ClockTool())
-    registry.register(NoteTool())
     if image_tool is not None:
         registry.register(image_tool)
     return registry

@@ -96,24 +96,23 @@ def test_is_widening():
         assert not is_widening(lvl, lvl)
 
 
+@pytest.mark.real_levels
 def test_defaults_v1():
     assert DEFAULT_LEVELS == {
-        "wallet": ALLOWED,
-        "news": ALLOWED,
         "files": ALLOWED,
         "python": ALLOWED,
         "images": ALLOWED,
         "send": ALLOWED,
         "github": ASK,
         "github_tests": ASK,
-        "demo": ALLOWED,
     }
 
 
 def test_unknown_tool_defaults_to_ask(tmp_path):
     conn = db.connect(tmp_path / "t.db")
     assert get_level(conn, "mystery") == ASK
-    assert get_level(conn, "wallet") == ALLOWED
+    assert get_level(conn, "wallet") == ASK  # a removed tool: no default any more
+    assert get_level(conn, "files") == ALLOWED
     assert get_level(conn, "github") == ASK
 
 

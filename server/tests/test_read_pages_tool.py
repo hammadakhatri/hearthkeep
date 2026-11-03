@@ -593,8 +593,9 @@ async def _until(condition):
 # ---- registration -------------------------------------------------------------------------------
 
 
-def test_read_pages_registered_with_the_app(harness):
-    client = signed_in(harness, [[TextDelta("Hi."), StreamDone("stop")]])
+def test_read_pages_registered_with_the_app(harness, tmp_path):
+    sandbox = FakeSandbox(tmp_path / "fake")  # Docker up
+    client = signed_in(harness, [[TextDelta("Hi."), StreamDone("stop")]], sandbox=sandbox)
     chat_id = new_chat(client)
     turn = say(client, chat_id, "hello").json()["turn_id"]
     read_events(client, chat_id, turn)

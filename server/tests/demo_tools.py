@@ -1,4 +1,4 @@
-"""Phase 1 demo tools, exercising the RUN and ASK paths end to end. Replaced in Phase 2."""
+"""Phase 1 demo tools, kept for the tests: they exercise the RUN and ASK paths end to end."""
 
 from __future__ import annotations
 

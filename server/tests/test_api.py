@@ -6,6 +6,7 @@ import threading
 import time
 
 import pytest
+from demo_tools import ClockTool, NoteTool
 from fakes import FakeChatClient, FakeVerifier
 from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
@@ -23,7 +24,6 @@ from hearthkeep.db import connect
 from hearthkeep.permissions import ActionClass
 from hearthkeep.providers.chat import StreamDone, TextDelta, ToolCallRequest
 from hearthkeep.tools.base import ToolRegistry, ToolResult
-from hearthkeep.tools.demo import ClockTool, NoteTool
 
 ORIGIN = "http://localhost:8765"
 CSRF = {"X-Hearthkeep": "1", "Origin": ORIGIN}
@@ -86,6 +86,7 @@ def harness(tmp_path):
             github_transport=None,
             git=None,
             addon_probes=None,
+            registry=None,
         ):
             self.chat = FakeChatClient(list(scripts))
 
@@ -97,7 +98,7 @@ def harness(tmp_path):
                 Settings(data_dir=tmp_path, docker_available=sandbox is not None),
                 verifier=FakeVerifier(),
                 chat_client=self.chat,
-                registry=registry_with(ClockTool(), NoteTool(), self.send),
+                registry=registry or registry_with(ClockTool(), NoteTool(), self.send),
                 health_check=health or healthy,
                 web_dist=web_dist,
                 rate_limiter=limiter,

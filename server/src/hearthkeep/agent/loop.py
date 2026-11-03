@@ -39,7 +39,7 @@ from hearthkeep.providers.chat import (
     ToolCallRequest,
 )
 from hearthkeep.secrets import SecretStore, SecretStoreError
-from hearthkeep.tools.base import Tool, ToolContext, ToolRegistry, ToolResult, _is_available
+from hearthkeep.tools.base import Tool, ToolContext, ToolRegistry, ToolResult
 from hearthkeep.tools.text import one_line
 
 SYSTEM_PROMPT = (
@@ -59,6 +59,7 @@ TOOL_RESULT_MAX_CHARS = 20_000
 DECLINED = "The owner declined this action"
 EXPIRED = "The request expired"
 TURNED_OFF = "This tool is turned off"
+NOT_READY = "This tool isn't set up on this PC. Open Settings › Add-ons to set it up."
 STEP_LIMIT_CALL = "The step limit for this turn was reached, so this call was not run."
 STEP_LIMIT_MESSAGE = (
     "I stopped because I hit the step limit for one turn ({limit} tool steps). "
@@ -499,8 +500,8 @@ class AgentLoop:
             )
             if resolved.status == "approved":
                 level = self._level(tool)  # re-read: the owner may have changed it meanwhile
-                if level == ToolLevel.OFF or not _is_available(tool):
-                    ok, outcome.content = self._deny(tool)
+                if level == ToolLevel.OFF or not self._registry.is_available(tool):
+                    ok, outcome.content = self._deny(tool, self._denial(tool, level))
                 else:
                     if action == ActionClass.CHANGE_LOCAL and level == ToolLevel.ALLOWED:
                         self._conn.execute(
@@ -521,7 +522,7 @@ class AgentLoop:
             else:
                 ok, outcome.content = False, _error(EXPIRED)
         else:
-            ok, outcome.content = self._deny(tool)
+            ok, outcome.content = self._deny(tool, self._denial(tool, self._level(tool)))
         if outcome.attachments:
             yield self._emit(turn, "attachments", step_id=step_id, items=outcome.attachments)
         yield self._step_finished(turn, step_id, ok, outcome.content)
@@ -550,7 +551,7 @@ class AgentLoop:
         return effective_level(tool.level_key, get_level(self._conn, tool.level_key), self._docker)
 
     def _decide(self, turn: _Turn, tool: Tool, action: ActionClass) -> Decision:
-        if not _is_available(tool):
+        if not self._registry.is_available(tool):
             # Offered at the start of the round, gone since (say the GitHub token was removed).
             return Decision.DENY
         level = self._level(tool)
@@ -563,14 +564,20 @@ class AgentLoop:
         )
         return decide(level, action, granted)
 
-    def _deny(self, tool: Tool) -> tuple[bool, str]:
+    def _denial(self, tool: Tool, level: ToolLevel) -> str:
+        """Why a call is refused: the owner turned the tool off, or its add-on isn't ready."""
+        if level != ToolLevel.OFF and not self._registry.is_available(tool):
+            return NOT_READY
+        return TURNED_OFF
+
+    def _deny(self, tool: Tool, message: str = TURNED_OFF) -> tuple[bool, str]:
         audit.record(
             self._conn,
             "agent",
             "tool.denied",
             {"tool": tool.name, "level_key": tool.level_key, "decision": Decision.DENY.value},
         )
-        return False, _error(TURNED_OFF)
+        return False, _error(message)
 
     def _failed(self, tool: Tool, decision: Decision | None, exc: Exception) -> tuple[bool, str]:
         # Only the exception type: its message might carry secrets or private data.
