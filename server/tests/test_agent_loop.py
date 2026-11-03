@@ -3,6 +3,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from demo_tools import ClockTool, NoteTool
 from fakes import FakeChatClient
 
 from hearthkeep import audit
@@ -20,7 +21,6 @@ from hearthkeep.providers.chat import (
 )
 from hearthkeep.secrets import SecretStore
 from hearthkeep.tools.base import ToolRegistry, ToolResult
-from hearthkeep.tools.demo import ClockTool, NoteTool
 
 CHAT = "chat1"
 SECRET_VALUE = "hk-very-secret-value-123"
@@ -1325,5 +1325,5 @@ async def test_a_tool_that_became_unavailable_is_denied_when_called(
     assert "gated" in {t["function"]["name"] for t in client.calls[0]["tools"]}
     assert gated.ran == 0
     finished = [e for e in events if e["type"] == "step_finished"]
-    assert finished[0]["ok"] is False and "turned off" in finished[0]["preview"]
+    assert finished[0]["ok"] is False and "isn't set up on this PC" in finished[0]["preview"]
     assert approvals.pending() == []

@@ -290,10 +290,10 @@ async def test_prefix_is_sanitised(store, conn, tmp_path):
 
 def test_build_registry_registers_the_image_tool_only_when_given(store):
     names = [t.name for t in build_registry().all()]
-    assert names == ["clock", "note"]
+    assert names == []
     tool, _, _ = make_tool(store)
     registry = build_registry(image_tool=tool)
-    assert [t.name for t in registry.all()] == ["clock", "note", "generate_image"]
+    assert [t.name for t in registry.all()] == ["generate_image"]
     schema = registry.schemas([registry.get("generate_image")])[0]["function"]
     json.dumps(schema)  # serialisable for the chat request
 

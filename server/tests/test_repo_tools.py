@@ -273,7 +273,7 @@ async def test_repo_read_is_denied_once_the_token_is_gone(tmp_path):
 
     from fakes import FakeChatClient
 
-    from hearthkeep.agent.loop import TURNED_OFF, AgentLoop
+    from hearthkeep.agent.loop import NOT_READY, AgentLoop
     from hearthkeep.approvals import ApprovalStore
     from hearthkeep.config import Settings
     from hearthkeep.permissions import ToolLevel, set_level
@@ -318,6 +318,6 @@ async def test_repo_read_is_denied_once_the_token_is_gone(tmp_path):
     assert [t["function"]["name"] for t in client.calls[0]["tools"]] == ["repo_read"]
     assert ran == []
     answer = [m for m in client.calls[1]["messages"] if m["role"] == "tool"][0]["content"]
-    assert json.loads(answer) == {"error": TURNED_OFF}
+    assert json.loads(answer) == {"error": NOT_READY}
     assert [e for e in events if e["type"] == "approval_required"] == []
     store.conn.close()

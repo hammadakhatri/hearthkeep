@@ -82,3 +82,14 @@ def sandbox_image():
     if not image_present(tag):
         pytest.skip(f"sandbox image {tag} is not built (hearthkeep sandbox build --data <data>)")
     return tag
+
+
+@pytest.fixture(autouse=True)
+def demo_level(request, monkeypatch):
+    """The demo tools (tests/demo_tools.py) share a `demo` level that no longer ships: give it
+    its old default here. Tests marked `real_levels` see the real table."""
+    if request.node.get_closest_marker("real_levels"):
+        return
+    from hearthkeep import permissions
+
+    monkeypatch.setitem(permissions.DEFAULT_LEVELS, "demo", permissions.ToolLevel.ALLOWED)

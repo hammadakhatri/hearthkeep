@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from hearthkeep import db, startup
+from hearthkeep.addons import ABOUT
 from hearthkeep.api.common import ApiError, Services, actor, current_session, record, services
 from hearthkeep.auth.sessions import Session
 from hearthkeep.permissions import (
@@ -31,6 +32,8 @@ class LevelBody(BaseModel):
 
 
 def _level_keys(hk: Services) -> list[str]:
+    """The default keys, then the registered tools' own. A key that is only a stored row (a
+    removed tool's) is never listed."""
     keys = list(DEFAULT_LEVELS)
     for tool in hk.registry.all():
         if tool.level_key not in keys:
@@ -51,12 +54,25 @@ def _resolve_key(hk: Services, name: str) -> str:
 def _item(hk: Services, key: str, docker: bool) -> dict:
     tools = [t for t in hk.registry.all() if t.level_key == key]
     level = get_level(hk.conn, key)
+    addon = hk.addons.level_addon(key) if hk.addons is not None else None
+    description = " ".join(t.description for t in tools)
+    if not tools and addon is not None:
+        description = ABOUT[addon.id][1]
     return {
         "tool": key,
         "level": level.value,
         "effective_level": effective_level(key, level, docker).value,
-        "description": " ".join(t.description for t in tools),
+        "description": description,
         "tools": [t.name for t in tools],
+        "addon": None
+        if addon is None
+        else {
+            "id": addon.id,
+            "state": addon.state,
+            "ready": addon.ready,
+            "short": addon.short,
+            "message": addon.message,
+        },
     }
 
 

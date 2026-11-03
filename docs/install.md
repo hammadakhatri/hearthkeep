@@ -620,7 +620,7 @@ Also check that you open exactly the address in `public_origin` (`localhost`, no
 
 **The sandbox image is missing.** `sandbox status` shows `Sandbox image: ... (missing)`. Build it once with `uv run hearthkeep sandbox build --data <data>` (about 1 GB, step 11). It also goes missing after an update that changes the sandbox.
 
-**The GitHub tools are missing, or Settings says "Install Git".** The assistant is offered GitHub tools only when Git 2.31 or newer is on the `PATH` and a token is saved. Check `git --version`, restart Hearthkeep after installing or updating Git, and save the token in Settings > GitHub.
+**The GitHub tools are missing, or Settings says "Install Git".** The assistant is offered GitHub tools only when Git 2.31 or newer is on the `PATH` and a token is saved. Open **Settings › Add-ons**: the GitHub card says what is missing. Restart Hearthkeep after installing or updating Git, then choose **Check again**, and save the token in Settings > GitHub.
 
 **GitHub rejects the token, or a repo cannot be added.** The token must be fine-grained, unexpired, and allowed to reach that repo (*Only select repositories* must include it). Check the permissions in step 12.
 

@@ -45,7 +45,7 @@ Other rules:
 - The level keys added in Phase 3 are `python` (Look, runs only in the sandbox, default Allowed; `read_pages` uses it too), `files` (Look, default Allowed) and `send` (Look, default Allowed).
 - The level keys added in Phase 4 are `github` (reading, editing, installing dependencies and the outward GitHub actions; default Ask) and `github_tests` (running a repo's tests in the sandbox, shown as *GitHub tests*; default Ask). Outward GitHub actions need an approval with a passkey at every level, `Allowed` included.
 - Lowering a level needs only a normal session. Raising one (Off to Ask, or Ask to Allowed) needs a step-up.
-- The demo tools are `clock` (Look) and `note` (Change local, writes `<data>/workspace/output/notes.txt`); they exercise the Allowed and Ask paths end to end. `generate_image` is Look.
+- `generate_image` is Look.
 
 ## Approvals
 

@@ -506,8 +506,9 @@ def test_effective_level_is_ask_without_docker(env):
     assert registry.available(env.conn, False) == [env.tool]  # offered, but asks first
 
 
-def test_python_tool_registered_without_docker(harness):
-    client = signed_in(harness, [[TextDelta("Hi."), StreamDone("stop")]])
+def test_python_tool_offered_with_the_app(harness, tmp_path):
+    sandbox = FakeSandbox(tmp_path / "fake")  # Docker up
+    client = signed_in(harness, [[TextDelta("Hi."), StreamDone("stop")]], sandbox=sandbox)
     chat_id = new_chat(client)
     turn = say(client, chat_id, "hello").json()["turn_id"]
     read_events(client, chat_id, turn)
