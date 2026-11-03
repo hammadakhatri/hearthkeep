@@ -509,7 +509,7 @@ To remove a repo, use **Remove** in the Repos view. It deletes the clone, includ
 
 Ask in chat, for example: "In `<owner>/<repo>`, start a branch, fix the typo in the README, and run the tests." The assistant works only on branches named `hearthkeep/<name>`. Every approval card shows the full diff. Pushing, opening a pull request, commenting, merging and closing each wait for your approval and a passkey. A push sends exactly the commit shown on the card.
 
-Running tests needs the repo's dependencies. The assistant asks to install them (`uv`, `pip` or `npm` projects only): that approval needs a passkey too, because the install container has internet. The installed dependencies are kept and reused until the lock file changes. The Repos view shows each repo's branch, changes and last test run, with the full test output.
+Running tests needs the repo's dependencies. The assistant asks to install them (`uv`, `pip` or `npm` projects only): that approval needs a passkey too, because the install container has full network access, like any program on your PC, including your home network. It sees only the dependency files, never your token or your other files. The installed dependencies are kept and reused until the lock file changes. The Repos view shows each repo's branch, changes and last test run, with the full test output.
 
 ## 13. Notifications on your phone
 
