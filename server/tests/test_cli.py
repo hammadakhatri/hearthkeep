@@ -1,5 +1,7 @@
 """`hearthkeep serve` wiring: external vs owned chat model, ComfyUI, startup line, shutdown."""
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -363,3 +365,50 @@ def test_main_module_calls_cli_main(monkeypatch):
     with pytest.raises(SystemExit) as exit_:
         runpy.run_module("hearthkeep", run_name="__main__")
     assert exit_.value.code == 0 and calls == [None]
+
+
+def test_sandbox_build_builds_both_images(tmp_path, monkeypatch, capsys):
+    from hearthkeep.sandbox import image
+
+    built = []
+    monkeypatch.setattr(image, "docker_ok", lambda docker=("docker",): True)
+
+    def fake_build(tag, docker=("docker",), image_dir=image.IMAGE_DIR):
+        built.append((tag, Path(image_dir)))
+        return 0
+
+    monkeypatch.setattr(image, "build_image", fake_build)
+    monkeypatch.setattr(image, "image_present", lambda tag, docker=("docker",): True)
+    data = str(tmp_path / "data")
+    assert cli.main(["sandbox", "build", "--data", data]) == 0
+    sandbox_tag = image.image_tag()
+    repo_tag = image.image_tag(image.REPO_IMAGE_DIR, image.REPO_IMAGE_NAME)
+    assert repo_tag.startswith("hearthkeep-repo:") and len(repo_tag) == len("hearthkeep-repo:") + 12
+    assert built == [(sandbox_tag, image.IMAGE_DIR), (repo_tag, image.REPO_IMAGE_DIR)]
+    out = capsys.readouterr().out
+    assert f"Sandbox image ready: {sandbox_tag}" in out
+    assert f"Repo image ready: {repo_tag}" in out
+
+    assert cli.main(["sandbox", "status", "--data", data]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines == [
+        "Docker: running",
+        f"Sandbox image: {sandbox_tag} (present)",
+        f"Repo image: {repo_tag} (present)",
+    ]
+
+
+def test_sandbox_build_stops_when_the_first_image_fails(tmp_path, monkeypatch, capsys):
+    from hearthkeep.sandbox import image
+
+    built = []
+    monkeypatch.setattr(image, "docker_ok", lambda docker=("docker",): True)
+
+    def fake_build(tag, docker=("docker",), image_dir=image.IMAGE_DIR):
+        built.append(tag)
+        return 1
+
+    monkeypatch.setattr(image, "build_image", fake_build)
+    assert cli.main(["sandbox", "build", "--data", str(tmp_path / "data")]) == 1
+    assert built == [image.image_tag()]
+    assert "sandbox image build failed" in capsys.readouterr().err

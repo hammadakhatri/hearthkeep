@@ -17,6 +17,11 @@ Every call appends its argv (as one JSON line) to $FAKE_DOCKER_LOG.
 - `rm`: exits 0.
 - `info`: exits 1 if $FAKE_DOCKER_NO_DAEMON is set, else 0.
 - `image inspect`: exits 1 if $FAKE_DOCKER_NO_IMAGE is set, else 0.
+- `volume inspect <name>` / `volume rm [-f] <names>` / `volume ls -q --filter name=<part>`:
+  answered from $FAKE_DOCKER_STATE/volumes.json, to which every `run` adds the named volumes
+  it mounts (as the real `run` creates them). `run` in mode `print` writes
+  $FAKE_DOCKER_OUTPUT (or $FAKE_DOCKER_OUTPUT_BYTES zero-free bytes) to stdout and exits with
+  $FAKE_DOCKER_EXIT.
 """
 
 from __future__ import annotations
@@ -65,7 +70,48 @@ def _wait_for_kill(seconds: float) -> int:
     return 0
 
 
+def _volumes() -> list[str]:
+    state = _state()
+    if state is None or not (state / "volumes.json").exists():
+        return []
+    return json.loads((state / "volumes.json").read_text(encoding="utf-8"))
+
+
+def _save_volumes(names: list[str]) -> None:
+    state = _state()
+    if state is not None:
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "volumes.json").write_text(json.dumps(sorted(set(names))), encoding="utf-8")
+
+
+def _volume(argv: list[str]) -> int:
+    sub = argv[1] if len(argv) > 1 else ""
+    names = _volumes()
+    if sub == "inspect":
+        return 0 if argv[2:] and all(n in names for n in argv[2:]) else 1
+    if sub == "rm":
+        gone = [a for a in argv[2:] if not a.startswith("-")]
+        _save_volumes([n for n in names if n not in gone])
+        return 0
+    if sub == "ls":
+        part = ""
+        for i, arg in enumerate(argv):
+            if arg == "--filter" and argv[i + 1].startswith("name="):
+                part = argv[i + 1][len("name=") :]
+        sys.stdout.write("".join(f"{n}\n" for n in names if part in n))
+        return 0
+    return 2
+
+
 def _run(argv: list[str]) -> int:
+    mounted = []
+    for i, arg in enumerate(argv[:-1]):
+        if arg == "--mount" and argv[i + 1].startswith("type=volume,"):
+            for part in argv[i + 1].split(","):
+                if part.startswith("source="):
+                    mounted.append(part[len("source=") :])
+    if mounted:
+        _save_volumes(_volumes() + mounted)
     state = _state()
     if state is not None:
         state.mkdir(parents=True, exist_ok=True)
@@ -79,6 +125,14 @@ def _run(argv: list[str]) -> int:
         sys.stderr.flush()
     mode = os.environ.get("FAKE_DOCKER_MODE", "tar")
     out = sys.stdout.buffer
+    if mode == "print":
+        size = os.environ.get("FAKE_DOCKER_OUTPUT_BYTES")
+        if size:
+            out.write(bytes(65 + i % 26 for i in range(int(size))))
+        else:
+            out.write(os.environ.get("FAKE_DOCKER_OUTPUT", "").encode("utf-8"))
+        out.flush()
+        return int(os.environ.get("FAKE_DOCKER_EXIT", "0"))
     try:
         if mode in ("tar", "tar_then_hang"):
             out.write(Path(os.environ["FAKE_DOCKER_TAR"]).read_bytes())
@@ -126,6 +180,8 @@ def main() -> int:
         return 1 if os.environ.get("FAKE_DOCKER_NO_DAEMON") else 0
     if command == "image":
         return 1 if os.environ.get("FAKE_DOCKER_NO_IMAGE") else 0
+    if command == "volume":
+        return _volume(argv)
     return 2
 
 

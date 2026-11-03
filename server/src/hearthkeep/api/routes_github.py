@@ -19,6 +19,7 @@ from hearthkeep.api.common import ApiError, Services, actor, current_session, re
 from hearthkeep.auth.sessions import Session
 from hearthkeep.db import transaction, utcnow
 from hearthkeep.github.api import TOKEN_RE, TOKEN_SECRET, GitHubClient, GitHubError
+from hearthkeep.github.deps import DepsCache
 from hearthkeep.github.git import GitError
 from hearthkeep.github.repos import Repo, RepoError, RepoStore
 from hearthkeep.secrets import SecretStoreError
@@ -71,11 +72,12 @@ def _repo(repos: RepoStore, repo_id: str) -> Repo:
     return repo
 
 
-async def _repo_json(repos: RepoStore, repo: Repo) -> dict:
+async def _repo_json(repos: RepoStore, repo: Repo, deps: DepsCache | None) -> dict:
     try:
         status = await repos.status(repo)
     except GitError:
         status = None  # the clone is missing or broken: shown without a branch
+    deps_state = await deps.current_state(repo, repos.dir(repo)) if deps is not None else None
     return {
         "id": repo.id,
         "full_name": repo.full_name,
@@ -85,7 +87,7 @@ async def _repo_json(repos: RepoStore, repo: Repo) -> dict:
         "changed": status.changed if status else [],
         "ahead": status.ahead if status else 0,
         "behind": status.behind if status else 0,
-        "deps": None,
+        "deps": deps_state,
         "last_run": None,
     }
 
@@ -147,8 +149,9 @@ async def remove_token(session: SessionDep, request: Request) -> dict:
 
 @router.get("/repos")
 async def list_repos(session: SessionDep, request: Request) -> dict:
-    repos = _repos(services(request))
-    return {"repos": [await _repo_json(repos, repo) for repo in repos.list()]}
+    hk = services(request)
+    repos = _repos(hk)
+    return {"repos": [await _repo_json(repos, repo, hk.deps) for repo in repos.list()]}
 
 
 @router.post("/repos")
@@ -167,7 +170,7 @@ async def add_repo(body: AddRepoBody, session: SessionDep, request: Request) -> 
     except GitHubError as error:
         raise ApiError(502, "github_unavailable", message=error.message) from None
     record(hk, actor(session), "repos.added", {"id": repo.id})
-    return JSONResponse(await _repo_json(repos, repo), status_code=201)
+    return JSONResponse(await _repo_json(repos, repo, hk.deps), status_code=201)
 
 
 @router.delete("/repos/{repo_id}")
@@ -197,4 +200,4 @@ async def fetch_repo(repo_id: str, session: SessionDep, request: Request) -> dic
     except GitError as error:
         raise ApiError(502, "fetch_failed", message=error.message) from None
     record(hk, actor(session), "repos.fetched", {"id": repo.id})
-    return await _repo_json(repos, repo)
+    return await _repo_json(repos, repo, hk.deps)

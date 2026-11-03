@@ -86,6 +86,7 @@ def test_cli_sandbox_status_without_docker(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out.splitlines()
     assert out[0] == "Docker: not found"
     assert out[1] == f"Sandbox image: {image.image_tag()} (missing)"
+    assert out[2] == f"Repo image: {image.repo_image_tag()} (missing)"
 
 
 def test_cli_sandbox_build_without_docker(tmp_path, monkeypatch, capsys):
@@ -103,13 +104,13 @@ def test_cli_sandbox_build_runs_docker_build(tmp_path, monkeypatch, capsys):
     calls = []
     monkeypatch.setattr(image, "docker_ok", lambda docker=("docker",): True)
 
-    def fake_build(tag, docker=("docker",)):
+    def fake_build(tag, docker=("docker",), image_dir=image.IMAGE_DIR):
         calls.append(tag)
         return 0
 
     monkeypatch.setattr(image, "build_image", fake_build)
     assert cli.main(["sandbox", "build", "--data", str(tmp_path / "data")]) == 0
-    assert calls == [image.image_tag()]
+    assert calls == [image.image_tag(), image.repo_image_tag()]
     assert f"Sandbox image ready: {image.image_tag()}" in capsys.readouterr().out
 
 
