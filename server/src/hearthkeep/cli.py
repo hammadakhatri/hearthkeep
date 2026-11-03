@@ -172,7 +172,7 @@ def build_model_stack(
             api_key=lambda: ensure_chat_api_key(secrets, name),
         )
         base_url = f"http://{LOOPBACK}:{rt.llama_port}/v1"
-        if settings.chat_base_url.rstrip("/") != base_url:
+        if settings.chat_base_url_set and settings.chat_base_url.rstrip("/") != base_url:
             _warn(
                 "chat_base_url in config.toml differs from the llama-server Hearthkeep runs "
                 f"(port {rt.llama_port} from models.toml); Hearthkeep uses its own server."

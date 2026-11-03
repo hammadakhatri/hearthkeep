@@ -12,7 +12,7 @@ from hearthkeep.providers.chat import Event, OpenAIChatClient, ProviderError
 from hearthkeep.runtime.gpu import GpuScheduler, ModelLoadError
 from hearthkeep.runtime.supervisor import ProcessError
 
-_NOT_STARTED = "The chat model couldn't be started. Check <data>/logs/llama-server.log."
+_NOT_STARTED = "The chat model couldn't be started. Open Settings › Add-ons to check it."
 # The clients whose lease the current task holds through `hold()`.
 _HELD: ContextVar[frozenset[int]] = ContextVar("hearthkeep_chat_held", default=frozenset())
 

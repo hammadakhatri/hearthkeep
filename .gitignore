@@ -3,6 +3,7 @@ data/
 *-data/
 .hearthkeep-personal-markers
 config.toml
+!server/tests/fixtures/upgrade/config.toml
 
 # Secrets and keys
 .env

@@ -119,16 +119,14 @@ class ManagedProcess:
     def running(self) -> bool:
         return self._proc is not None and self._proc.returncode is None
 
-    def _log_hint(self) -> str:
-        """The log location for messages: relative to the data folder, never absolute."""
-        if self.data_dir is not None:
-            with suppress(ValueError):
-                rel = self.log_path.relative_to(self.data_dir)
-                return f"<data>/{rel.as_posix()}"
-        return f"the log file {self.log_path.name}"
-
     def _start_failed(self, detail: str | None = None) -> ProcessError:
-        return ProcessError(f"{self.name} couldn't start. See {self._log_hint()}.", detail)
+        """The owner is sent to Settings › Add-ons; the log location (relative, never absolute)
+        goes in the detail, so the console and server log still say where to look."""
+        where = f"log: logs/{self.log_path.name}"
+        return ProcessError(
+            f"{self.name} couldn't start. Open Settings › Add-ons to check it.",
+            f"{detail}; {where}" if detail else where,
+        )
 
     def _append_log(self, line: str) -> None:
         with suppress(OSError), open(self.log_path, "ab") as log:
@@ -160,8 +158,8 @@ class ManagedProcess:
                 await self._reap_exited()
                 if self.port is not None and await asyncio.to_thread(_port_answers, self.port):
                     raise ProcessError(
-                        f"Port {self.port} is already in use by another program. Change "
-                        "llama_port (or comfyui_port) in <data>/models.toml, or stop that program."
+                        f"Port {self.port} is already in use by another program. Close that "
+                        "program, or change the port in models.toml in Hearthkeep's data folder."
                     )
                 await self._spawn()
                 spawned = True
@@ -270,7 +268,8 @@ class ManagedProcess:
                 if loop.time() >= deadline:
                     raise ProcessError(
                         f"{self.name} didn't become ready within {self.ready_timeout:g} seconds. "
-                        f"See {self._log_hint()}."
+                        "Open Settings › Add-ons to check it.",
+                        f"log: logs/{self.log_path.name}",
                     )
                 await asyncio.wait({exited, stopping}, timeout=_POLL_INTERVAL)
         finally:
@@ -415,7 +414,7 @@ def ensure_chat_api_key(store: SecretStore, name: str = "chat_api_key") -> str:
 
 def _require(value: Path | None, key: str) -> Path:
     if value is None:
-        raise ProcessError(f"Set {key} in <data>/models.toml first.")
+        raise ProcessError(f"Set {key} in models.toml in Hearthkeep's data folder first.")
     return Path(value).absolute()
 
 
@@ -496,8 +495,8 @@ def build_llama_process(
     folder = rt.model_dirs.get(card.id)
     if folder is None:
         raise ProcessError(
-            f'Set model_dirs."{card.id}" in <data>/models.toml to the folder with the '
-            f"{card.name} files."
+            f'Set model_dirs."{card.id}" in models.toml in Hearthkeep\'s data folder to the '
+            f"folder with the {card.name} files."
         )
     folder = Path(folder).absolute()
     key_file = Path(api_key_file).absolute()

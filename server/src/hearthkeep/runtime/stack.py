@@ -64,7 +64,7 @@ class ModelStack:
             if total is None:
                 log.warning(
                     "Could not detect the GPU memory; assuming %.0f GB. Set gpu_vram_gb in "
-                    "<data>/models.toml if that is wrong.",
+                    "models.toml in Hearthkeep's data folder if that is wrong.",
                     FALLBACK_VRAM_GB,
                 )
                 total = FALLBACK_VRAM_GB

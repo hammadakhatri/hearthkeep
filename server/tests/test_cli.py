@@ -159,6 +159,14 @@ def test_serve_owned_mode_no_warning_when_chat_base_url_matches(serve, tmp_path,
     assert "differs" not in capsys.readouterr().err
 
 
+def test_serve_owned_mode_no_warning_when_chat_base_url_is_not_in_config(serve, tmp_path, capsys):
+    # A fresh install's config.toml has no chat_base_url: nothing there can differ.
+    write(serve.data, "config.toml", "docker_available = false\n")
+    write(serve.data, "models.toml", owned_models_toml(tmp_path))
+    assert serve() == 0
+    assert "differs" not in capsys.readouterr().err
+
+
 def test_serve_llama_without_model_dir_stays_external(serve, tmp_path, capsys):
     write(serve.data, "models.toml", f"llama_server_exe = '{tmp_path / 'llama-server.exe'}'\n")
     assert serve() == 0

@@ -47,9 +47,12 @@ PRINTED_CHARS = 8000
 TABLE_ROWS_SHOWN = 20
 TABLE_CHARS = 4000  # a wide table shows fewer rows (its line still gives the total)
 
-NO_DOCKER = "Python analysis needs Docker Desktop. Start Docker on the PC and ask again."
+NO_DOCKER = (
+    "Python analysis needs Docker Desktop running on this PC. Open Settings › Add-ons to set it up."
+)
 NO_IMAGE = (
-    "The Python sandbox isn't built yet. On the PC, run: hearthkeep sandbox build --data <data>"
+    "Python analysis needs the analysis sandbox, which isn't built yet. "
+    "Open Settings › Add-ons to set it up."
 )
 TIMEOUT = "The script ran for over 120 seconds and was stopped."
 RESULTS_UNREADABLE = "results.jsonl could not be read"
