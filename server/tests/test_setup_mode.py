@@ -73,8 +73,9 @@ def query(data: Path, sql: str) -> list[tuple]:
 
 
 class FakeHost(WindowsHost):
-    """Windows, recorded: the locator lives in memory (never the real %LOCALAPPDATA%), the
-    shortcut and the launcher are only noted, and every drive is a local one."""
+    """Windows, recorded: the locator and the start-at-login task live in memory (never the
+    real %LOCALAPPDATA% or Task Scheduler), the shortcut and the launcher are only noted, and
+    every drive is a local one."""
 
     def __init__(self, tmp_path: Path) -> None:
         self.default = tmp_path / "default-data"
@@ -85,6 +86,8 @@ class FakeHost(WindowsHost):
         self.shortcut_error = False
         self.spawned: list[list[str]] = []
         self.spawn_error = False
+        self.task: str | None = None  # the start-at-login task's XML; None: no task
+        self.enabled: list[Path] = []
 
     def drive_type(self, root: str) -> int:
         return 3  # a fixed local disk
@@ -100,6 +103,17 @@ class FakeHost(WindowsHost):
             raise OSError("LOCALAPPDATA is not set, so the data folder can't be recorded.")
         self.location = Path(data_dir).resolve()
         self.location_writes.append(self.location)
+
+    def startup_status(self, *, run=None) -> startup.StartupStatus:
+        if self.task is None:
+            return startup.StartupStatus(True, False, None)
+        return startup._parse(self.task)
+
+    def enable_startup(self, data_dir: Path, *, run=None) -> None:
+        self.enabled.append(Path(data_dir))
+        self.task = startup.task_xml(
+            pythonw=Path(r"C:\py\pythonw.exe"), data_dir=Path(data_dir), user=r"HOMEPC\owner"
+        )
 
     def install_shortcut(self, data_dir: Path, *, run=None) -> None:
         if self.shortcut_error:

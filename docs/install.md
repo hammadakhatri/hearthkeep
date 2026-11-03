@@ -570,7 +570,16 @@ Notifications are opt-in per device and can be turned off in the same place. You
 
 6. Start Hearthkeep again. Read the start-up output: it lists any card or config problems.
 
-Your data folder is not touched by an update. Compare `<repo>\config.example.toml` and `<repo>\models.example.toml` with your own copies for new settings.
+The first start after an update brings an existing install up to date, once:
+
+- it notes where your data folder is, if nothing on this PC records that yet;
+- if start at login is on for this data folder and still runs Hearthkeep the old way, it is switched to the background launcher (start at login for another folder, or switched off, is left alone);
+- it makes the Start menu shortcut;
+- it removes saved tool levels for tools that never shipped (`wallet`, `news`, `demo`).
+
+Your config files, model cards, passkeys and your other tool levels are not touched. If a step fails (start at login or the shortcut), Hearthkeep still starts, and tries again the next time it starts. When you next open the app, a one-time "Hearthkeep was updated" note lists anything that still needs you, such as a sandbox that needs rebuilding. Dismiss it once you've read it.
+
+Compare `<repo>\config.example.toml` and `<repo>\models.example.toml` with your own copies for new settings.
 
 ## 15. Backing up
 

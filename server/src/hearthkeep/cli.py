@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import getpass
+import logging
 import os
 import socket
 import subprocess
@@ -42,6 +43,7 @@ from hearthkeep.runtime.supervisor import (
 from hearthkeep.sandbox import image as sandbox_image
 from hearthkeep.secrets import SecretStore, SecretStoreError
 from hearthkeep.setupmode import SetupMode, setup_url
+from hearthkeep.upgrade import UpgradeReport, run_upgrade
 from hearthkeep.webbundle import ensure_web_bundle
 
 if TYPE_CHECKING:
@@ -106,6 +108,7 @@ LOCATION_NOT_SAVED = (
 )
 
 startup_run = subprocess.run  # how `startup` runs schtasks; replaced in tests
+log = logging.getLogger(__name__)
 
 
 def _settings(data: Path) -> Settings:
@@ -115,6 +118,20 @@ def _settings(data: Path) -> Settings:
 
 def _connect(settings: Settings):
     return db.connect(Path(settings.data_dir) / DB_FILE)
+
+
+def _upgrade(settings: Settings, host: Host) -> UpgradeReport | None:
+    """The one-time upgrade of an existing install, on its own connection. A failure is logged
+    by type and never stops the start; None then."""
+    try:
+        conn = _connect(settings)
+        try:
+            return run_upgrade(Path(settings.data_dir).resolve(), conn, host=host, run=startup_run)
+        finally:
+            conn.close()
+    except Exception as exc:
+        log.warning("the upgrade didn't run: %s", type(exc).__name__)
+        return None
 
 
 def _print_code(code: str) -> None:
@@ -404,8 +421,9 @@ def cmd_serve(
     make_llama: Callable = build_llama_process,
     make_comfy: Callable = build_comfyui_process,
     detect_vram: Callable[[], float | None] = detect_vram_gb,
+    host: Host | None = None,
 ) -> int:
-    """`make_llama`, `make_comfy` and `detect_vram` are seams for tests.
+    """`make_llama`, `make_comfy`, `detect_vram` and `host` are seams for tests.
 
     While no passkey exists the first-device code is printed only to an interactive console
     without a log file; otherwise `serve` says to run Setup.cmd and issues no code. With a log
@@ -422,6 +440,7 @@ def cmd_serve(
     if args.log_file:
         _log_to(Path(args.log_file))
     settings = _settings(Path(args.data))
+    _upgrade(settings, host or current_host())
     if args.insecure_dev_auth:
         conn = _connect(settings)
         try:
@@ -495,6 +514,13 @@ def _has_passkey(settings: Settings) -> bool:
         conn.close()
 
 
+def _install_shortcut(host: Host, data: Path) -> None:
+    try:
+        host.install_shortcut(data)
+    except (shortcut.ShortcutError, OSError):
+        print(SHORTCUT_FAILED)
+
+
 def cmd_setup(
     args: argparse.Namespace,
     *,
@@ -536,10 +562,15 @@ def cmd_setup(
             host.write_location(data)
         except OSError:
             print(LOCATION_NOT_SAVED)
+    report = _upgrade(settings, host)
 
     # Before the web app step: a re-run must not rebuild files a running Hearthkeep serves.
     if _has_passkey(settings):
         print(ALREADY_SET_UP)
+        # Make the Start menu shortcut again (it may have failed the first time), unless the
+        # upgrade just made it.
+        if report is None or "shortcut" not in report.changed:
+            _install_shortcut(host, data)
         # In this window a problem is printed, not shown in a message box.
         return opener(settings, host, open_url=open_url, notify=print)
 
@@ -595,10 +626,7 @@ def cmd_setup(
         print(PORT_BUSY.format(port=settings.port) if code == STARTUP_FAILURE else STOPPED_EARLY)
         return 1
 
-    try:
-        host.install_shortcut(data)
-    except (shortcut.ShortcutError, OSError):
-        print(SHORTCUT_FAILED)
+    _install_shortcut(host, data)
     try:
         process = host.spawn_detached(launcher.launcher_argv(data))
     except OSError:
