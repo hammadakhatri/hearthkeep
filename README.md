@@ -311,7 +311,9 @@ On Windows 11:
 2. Unzip it to a short path, for example `C:\Hearthkeep\app`.
 3. Double-click `Setup.cmd`.
 
-Setup installs what it needs for your Windows account (no admin rights), starts Hearthkeep and opens it in your browser, where you create your passkey. Afterwards, open Hearthkeep from the Start menu.
+If you'll use Hearthkeep from your phone through Tailscale, read [step 7 of the install guide](docs/install.md#7-decide-on-remote-access-before-your-first-passkey) before you run Setup.cmd.
+
+Setup installs what it needs for your Windows account (no admin rights), keeps your data in `C:\Hearthkeep\data`, starts Hearthkeep and opens it in your browser, where you create your passkey. Afterwards, open Hearthkeep from the Start menu.
 
 The full guide, including model downloads, Docker, Tailscale and GitHub, is in **[docs/install.md](docs/install.md)**.
 
