@@ -73,17 +73,95 @@ async def test_no_token_is_unauthorized_without_a_request(fake_github):
     assert fake_github.requests == []
 
 
+def _listed(full_name: str, push: bool = False) -> dict:
+    return {
+        "full_name": full_name,
+        "default_branch": "main",
+        "private": False,
+        "permissions": {"push": push},
+    }
+
+
 async def test_repo_info(client, fake_github):
-    fake_github.routes[("GET", "/repos/acme/widgets")] = (
-        200,
+    fake_github.repos = [
+        _listed("acme/other"),
         {
             "full_name": "Acme/Widgets",
             "default_branch": "trunk",
             "private": True,
             "permissions": {"push": True},
         },
-    )
+    ]
     assert await client.repo("acme/widgets") == RepoInfo("Acme/Widgets", "trunk", True, True)
+    sent = fake_github.requests[-1]
+    assert sent.method == "GET"
+    assert sent.url.path == "/user/repos"
+    assert dict(sent.url.params) == {"per_page": "100", "page": "1"}
+
+
+async def test_repo_without_push_permission(client, fake_github):
+    fake_github.repos = [{"full_name": "acme/widgets", "default_branch": "main", "private": False}]
+    assert await client.repo("acme/widgets") == RepoInfo("acme/widgets", "main", False, False)
+
+
+async def test_repo_lookup_ignores_case(client, fake_github):
+    fake_github.repos = [_listed("Acme/Widgets", push=True)]
+    for typed in ("acme/widgets", "ACME/WIDGETS", "aCmE/wIdGeTs"):
+        info = await client.repo(typed)
+        assert info.full_name == "Acme/Widgets", typed
+        assert info.can_push is True
+
+
+async def test_repo_missing_from_the_list_is_not_found(client, fake_github):
+    fake_github.repos = [_listed("acme/widgets"), _listed("acme/widgets-two")]
+    with pytest.raises(GitHubError) as e:
+        await client.repo("acme/gadgets")
+    assert e.value.reason == "not_found"
+    # A short page is the last one: no further page is asked for.
+    assert [r.url.params["page"] for r in fake_github.requests] == ["1"]
+
+
+async def test_repo_lookup_pages_until_it_finds_the_repo(client, fake_github):
+    fake_github.repos = [_listed(f"acme/r{i}") for i in range(100)] + [_listed("acme/widgets")]
+    assert (await client.repo("acme/widgets")).full_name == "acme/widgets"
+    assert [r.url.params["page"] for r in fake_github.requests] == ["1", "2"]
+    assert all(r.url.params["per_page"] == "100" for r in fake_github.requests)
+
+
+async def test_repo_lookup_stops_after_ten_pages(client, fake_github):
+    fake_github.repos = [_listed(f"acme/r{i}") for i in range(1100)] + [_listed("acme/widgets")]
+    with pytest.raises(GitHubError) as e:
+        await client.repo("acme/widgets")
+    assert e.value.reason == "not_found"
+    assert [r.url.params["page"] for r in fake_github.requests] == [str(p) for p in range(1, 11)]
+
+
+async def test_repo_lookup_never_puts_the_typed_name_in_the_request(client, fake_github):
+    typed = "Typed-Owner/Typed.Name"
+    fake_github.repos = [_listed(f"acme/r{i}") for i in range(100)] + [_listed(typed.lower())]
+    await client.repo(typed)
+    with pytest.raises(GitHubError):
+        await client.repo("typed-owner/missing-name")
+    assert len(fake_github.requests) == 4  # two pages for each lookup
+    for sent in fake_github.requests:
+        assert sent.url.path == "/user/repos"
+        url = str(sent.url).lower()
+        for part in ("typed-owner", "typed.name", "missing-name"):
+            assert part not in url
+
+
+async def test_repo_lookup_rejects_a_malformed_page(client, fake_github):
+    fake_github.routes[("GET", "/user/repos")] = (200, {"message": "not a list"})
+    with pytest.raises(GitHubError) as e:
+        await client.repo("acme/widgets")
+    assert e.value.reason == "unavailable"
+
+
+async def test_repo_lookup_passes_github_errors_on(client, fake_github):
+    fake_github.fail_next(401)
+    with pytest.raises(GitHubError) as e:
+        await client.repo("acme/widgets")
+    assert e.value.reason == "unauthorized"
 
 
 async def test_repo_refuses_a_bad_name(client, fake_github):
@@ -97,7 +175,8 @@ async def test_repo_refuses_a_bad_name(client, fake_github):
 async def test_request_refuses_paths_outside_added_repos(client, fake_github):
     for path in (
         "/orgs/acme/repos",
-        "/user/repos",
+        "/user/repos/x",
+        "/user/emails",
         "/repos",
         "/repos/acme",
         "/repos/acme/widgets/../../orgs/x",
@@ -119,6 +198,19 @@ async def test_request_allows_user_and_repo_paths(client, fake_github):
     got = await client.request("GET", "/repos/acme/widgets/pulls", params={"state": "open"})
     assert got == [{"number": 1}]
     assert fake_github.requests[-1].url.params["state"] == "open"
+    fake_github.repos = [_listed("acme/widgets")]
+    assert await client.request("GET", "/user/repos", params={"per_page": 100, "page": 1}) == [
+        _listed("acme/widgets")
+    ]
+
+
+async def test_request_allows_only_get_on_user_repos(client, fake_github):
+    # POST /user/repos would create a repo; nothing here does that.
+    for method in ("POST", "PATCH", "PUT"):
+        with pytest.raises(GitHubError) as e:
+            await client.request(method, "/user/repos", json={"name": "x"})
+        assert e.value.reason == "refused", method
+    assert fake_github.requests == []
 
 
 async def test_request_refuses_methods_other_than_get_post_patch_put(client, fake_github):

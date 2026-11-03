@@ -20,7 +20,7 @@ async def setup(tmp_path):
     data = tmp_path / "data"
     data.mkdir()
     fake = FakeGitHub()
-    fake.routes[("GET", "/repos/acme/widgets")] = (200, REPO)
+    fake.repos.append(REPO)
     store = make_store(data, make_origin(tmp_path), fake)
     repo = await store.add("acme/widgets")
     yield store, repo, RepoReadTool(store)
