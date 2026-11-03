@@ -1,7 +1,8 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
 title Hearthkeep setup
-cd /d "%~dp0"
+cd /d "%~dp0" || goto end
+rem When UV_VERSION changes, recompute UV_INSTALLER_SHA256 from the downloaded file: Invoke-WebRequest -OutFile, then Get-FileHash.
 set "UV_VERSION=0.13.0"
 set "UV_INSTALLER_SHA256=6D7EF89BA04838A03D1EBF7F84BE4BA2B98B848A0A9AB8C2855658F13106C2C2"
 set "UV_INSTALL_DIR=%USERPROFILE%\.local\bin"
