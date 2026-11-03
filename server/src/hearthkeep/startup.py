@@ -1,5 +1,7 @@
-"""Start at login on Windows: a Task Scheduler task that runs `pythonw -m hearthkeep serve`
-when the owner signs in, with no window and its output in `<data>/logs/hearthkeep.log`.
+"""Start at login on Windows: a Task Scheduler task that runs `pythonw -m hearthkeep launch`
+when the owner signs in, with no window. The launcher starts the server (and starts it again
+when it asks to restart or crashes); its output goes to `<data>/logs/hearthkeep.log` and
+`<data>/logs/launcher.log`.
 
 Only the CLI changes the task; the web app shows its state (`cached_status`)."""
 
@@ -29,6 +31,7 @@ SCHTASKS_TIMEOUT_S = 15
 
 _NS = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+_LAUNCHER_ARG = re.compile(r"-m\s+hearthkeep\s+launch\b")
 _DATA_ARG = re.compile(r'--data\s+(?:"([^"]*)"|(\S+))')
 
 Run = Callable[..., subprocess.CompletedProcess]
@@ -43,6 +46,7 @@ class StartupStatus:
     supported: bool
     enabled: bool
     data_dir: str | None
+    launcher: bool = False  # the task runs the launcher; a task made by older code runs `serve`
 
     def serves(self, data_dir: Path | str) -> bool:
         """Whether the task starts Hearthkeep with this data folder."""
@@ -105,13 +109,10 @@ def _current_user() -> str:
 
 
 def task_xml(*, pythonw: Path, data_dir: Path, user: str) -> str:
-    """The task definition: at the user's logon, no window, no time limit, restarted on
-    failure. Every value is XML-escaped."""
+    """The task definition: at the user's logon, runs the launcher with no window, no time
+    limit, restarted on failure. Every value is XML-escaped."""
     data = str(data_dir)
-    arguments = (
-        f"-m hearthkeep serve --data {quote_arg(data)} "
-        f"--log-file {quote_arg(str(log_path(data_dir)))}"
-    )
+    arguments = f"-m hearthkeep launch --data {quote_arg(data)}"
     return f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
@@ -242,7 +243,12 @@ def _parse(xml: str) -> StartupStatus:
     data = None
     if match:
         data = _unquoted(match.group(1)) if match.group(1) is not None else match.group(2)
-    return StartupStatus(supported=True, enabled=enabled, data_dir=data)
+    return StartupStatus(
+        supported=True,
+        enabled=enabled,
+        data_dir=data,
+        launcher=_LAUNCHER_ARG.search(arguments) is not None,
+    )
 
 
 def status(*, run: Run = subprocess.run) -> StartupStatus:
