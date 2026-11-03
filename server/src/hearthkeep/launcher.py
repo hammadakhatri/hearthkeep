@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from hearthkeep import startup
+from hearthkeep.config import local_base_url
 from hearthkeep.lifecycle import EXIT_RESTART, EXIT_STOPPED, EXIT_USAGE, SUPERVISED_ENV
 from hearthkeep.procutil import NO_WINDOW
 
@@ -247,7 +248,7 @@ def open_app(
     app shows "Can't reach Hearthkeep" with Retry if it's still starting). When the launcher
     it started ended before the server answered, `notify` says why, the browser is not
     opened, and the result is 1."""
-    base = f"http://127.0.0.1:{settings.port}"
+    base = local_base_url(settings)
     result = 0
     if probe(base) is None:
         process = host.spawn_detached(launcher_argv(Path(settings.data_dir)))
