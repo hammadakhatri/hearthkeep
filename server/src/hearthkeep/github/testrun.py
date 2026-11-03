@@ -5,7 +5,9 @@ a link, into `<data>/runtime/repo-jobs/<run-id>/tree`, the only read-write mount
 container has no network, the repo's dependency volume read-only (Python at `/deps`, Node at
 `/repo/node_modules`) and the test sandbox's limits; it is stopped after 600 s. Nothing from
 `.git`, the data folder, a secret or the GitHub token ever reaches it, so a test that plants a
-hook or rewrites a file changes only the copy, which is removed after every run.
+hook or rewrites a file changes only the copy, which is removed after every run. On POSIX the
+copy is writable by the container's user but `repo-jobs` and each job folder are 0o700, so
+no other local user can reach it.
 
 The output is kept as its first 64 KB and last 192 KB, and each run is saved in `repo_runs`.
 Only repo ids reach a log here, never names.
@@ -145,9 +147,19 @@ def _scan(src: Path) -> tuple[list[str], list[str]]:
 
 def _open_up(path: Path, executable: bool = False) -> None:
     """On Linux the container's user (10001) must be able to write the copy; Docker Desktop
-    on Windows and macOS maps bind mounts for it already."""
+    on Windows and macOS maps bind mounts for it already. Only the tree is opened up: it
+    sits in a 0o700 job folder (`_private_dir`), so no other local user can reach it, while
+    Docker bind-mounts the tree itself and the container never walks the folders above."""
     if os.name == "posix":
         os.chmod(path, 0o777 if executable or path.is_dir() else 0o666)
+
+
+def _private_dir(path: Path, exist_ok: bool = False) -> None:
+    """Make `path` (parents as needed) and, on POSIX, set it to 0o700 whatever the umask or
+    an older version left."""
+    path.mkdir(parents=True, exist_ok=exist_ok, mode=0o700)
+    if os.name == "posix":
+        os.chmod(path, 0o700)
 
 
 def copy_tree(src: Path, dest: Path) -> None:
@@ -339,8 +351,8 @@ class RepoTestRunner:
         return ("passed" if ran.code == 0 else "failed"), ran.code, ran.output()
 
     def _prepare(self, clone: Path, job: Path, tree: Path, plan: DepsPlan | None) -> None:
-        self._jobs.mkdir(parents=True, exist_ok=True)
-        job.mkdir()
+        _private_dir(self._jobs, exist_ok=True)
+        _private_dir(job)  # 0o700: the tree inside is world-writable for the container
         copy_tree(clone, tree)
         if plan is not None and plan.ecosystem == "npm":
             (tree / "node_modules").mkdir()  # where the volume is mounted

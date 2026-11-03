@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -374,6 +375,30 @@ async def test_a_refused_tree_is_an_error_run(repo_fixture, fake_docker, monkeyp
     assert runs_started(fake_docker) == []
     (run,) = f.runner.runs(f.repo.id)
     assert run.status == "error" and run.exit_code is None
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+def test_job_folder_is_private_while_the_tree_stays_writable(runner, tmp_path):
+    """The tree is opened up for the container's user (10001), so the job folder around it
+    is 0o700: no other local user can reach the copy. Docker mounts the tree itself."""
+    src = tmp_path / "src"
+    (src / "pkg").mkdir(parents=True)
+    (src / "pkg" / "mod.py").write_text("print(1)\n")
+    jobs = runner.data_dir / "runtime" / "repo-jobs"
+    jobs.mkdir(parents=True)
+    jobs.chmod(0o755)  # left from an older version: tightened too
+    job = jobs / "0123abcd"
+    tree = job / "tree"
+    old_umask = os.umask(0o022)
+    try:
+        runner._prepare(src, job, tree, None)
+    finally:
+        os.umask(old_umask)
+    assert stat.S_IMODE(jobs.stat().st_mode) == 0o700
+    assert stat.S_IMODE(job.stat().st_mode) == 0o700
+    assert stat.S_IMODE(tree.stat().st_mode) == 0o777
+    assert stat.S_IMODE((tree / "pkg").stat().st_mode) == 0o777
+    assert stat.S_IMODE((tree / "pkg" / "mod.py").stat().st_mode) == 0o666
 
 
 async def test_sweep_removes_left_jobs_and_containers(runner, fake_docker, monkeypatch):
