@@ -8,10 +8,11 @@ permissions:
   contents: read
 
 jobs:
-  release:
+  # Everything that runs the project's own code and its npm packages, with a read-only token.
+  build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # create the draft release and upload its assets
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -23,17 +24,39 @@ jobs:
       - name: Install, test, build the web app
         working-directory: web
         run: |
-          npm ci
+          npm ci --ignore-scripts
           npm test
           npm run build
+      - name: Test the server
+        working-directory: server
+        run: uv run --locked pytest -q
       - name: Build the release assets
-        run: uv run --project server python scripts/build_release.py --version "${GITHUB_REF_NAME#v}" --out "$RUNNER_TEMP/release"
+        run: uv run --locked --project server python scripts/build_release.py --version "${GITHUB_REF_NAME#v}" --out "$RUNNER_TEMP/release"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-assets
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          retention-days: 1
+
+  # Only publishes what the build made: no checkout, no npm, nothing from the repo runs here.
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the draft release and upload its assets
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-assets
+          path: ${{ runner.temp }}/release
       - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+          REPO: ${{ github.repository }}
         run: >-
           gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP"/release/*
+          --repo "$REPO"
           --draft --verify-tag
           --title "Hearthkeep $GITHUB_REF_NAME"
           --notes "Release notes are on the way."
