@@ -13,11 +13,24 @@
   <img alt="Local models only" src="https://img.shields.io/badge/AI-local%20only-32d74b">
 </p>
 
+<p align="center">
+  <a href="#why-hearthkeep">Why</a> ·
+  <a href="#see-it-work">See it work</a> ·
+  <a href="#what-you-can-do-with-it">Features</a> ·
+  <a href="#work-on-your-code-safely">Your code</a> ·
+  <a href="#how-it-fits-together">How it fits</a> ·
+  <a href="#safety-you-can-check">Safety</a> ·
+  <a href="#is-it-for-you">Is it for you?</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#roadmap">Roadmap</a> ·
+  <a href="#documentation">Docs</a>
+</p>
+
 ---
 
 ## Why Hearthkeep
 
-Cloud assistants are brilliant, but everything you ask them, and every file you give them, goes to someone else's servers. Hearthkeep is for the things you'd rather keep at home: your bank statements, your sales sheets, your notes, your photos.
+Cloud assistants are brilliant, but everything you ask them, and every file you give them, goes to someone else's servers. Hearthkeep is for the things you'd rather keep at home: your bank statements, your sales sheets, your notes, your photos, your code.
 
 | | Typical cloud assistant | **Hearthkeep** |
 |---|---|---|
@@ -25,6 +38,7 @@ Cloud assistants are brilliant, but everything you ask them, and every file you 
 | Which AI answers | Their model, their rules | **Models you chose and run yourself** |
 | When it does something that matters | It just does it | **It asks first; you confirm with a passkey** |
 | Numbers in an answer | You hope they're right | **Each one is marked: computed by code, read from a page, or unverified** |
+| Changes to your code | Depends on the tool | **On its own branch; you see the diff and approve each push** |
 | Reaching it from your phone | Over the internet | **Over your own private Tailscale network** |
 | Monthly fee | Usually | **None. Open source, Apache 2.0** |
 
@@ -46,17 +60,150 @@ Every number in that answer was computed by code in the sandbox, so the app unde
 
 ## What you can do with it
 
-| | |
-|---|---|
-| 💬 **Chat** | Talk to a local model (Gemma 4 12B through llama.cpp). Replies stream in, and every tool it uses is shown step by step. |
-| 📊 **Understand your data** | Attach CSV, Excel or PDF files, scanned pages included. Ask what's wrong, what's unusual, what the trend is. You get findings, interactive charts and the rows behind each finding. |
-| 🧮 **Trust the numbers** | Each number is marked *computed*, *read from page N* or *unverified*. Mixed date formats and gaps in daily data are found for you. |
-| 🐙 **Work on your GitHub repos** | Add repos you choose. The assistant reads them, edits them on a branch of its own and runs their tests in a sandbox. Pushing a branch or opening a pull request shows you the full diff and needs your passkey. It never pushes to your main branch. |
-| 🗂️ **Find your own files** | Let it look inside folders you choose, OneDrive included. It finds a file and brings a copy into the chat. It never writes to your folders. |
-| 🎨 **Make and edit images** | Z-Image Turbo for images with words in them, FLUX.2 klein for photos and edits. Attach a photo and ask for a change. |
-| 📱 **Send to your phone** | Results land in a tray on your phone. The notification says only "A file is ready in Hearthkeep", never what's in it. |
-| 🖼️ **Galleries** | An Images view and an Analysis view collect everything you've made, grouped by chat. |
-| ⚙️ **Settings that make sense** | Devices with QR-code setup, allowed folders, notifications and start at login, all in one place. |
+<table>
+<tr>
+<td width="50%" valign="top">
+
+💬 **Chat**<br>
+Talk to a local model (Gemma 4 12B through llama.cpp). Replies stream in, and every tool it uses is shown step by step.
+
+</td>
+<td width="50%" valign="top">
+
+📊 **Understand your data**<br>
+Attach CSV, Excel or PDF files, scanned pages included. Ask what's wrong, what's unusual, what the trend is. You get findings, interactive charts and the rows behind each finding.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+🧮 **Trust the numbers**<br>
+Each number is marked *computed*, *read from page N* or *unverified*. Mixed date formats and gaps in daily data are found for you.
+
+</td>
+<td valign="top">
+
+🐙 **Work on your GitHub repos**<br>
+Add repos you choose. The assistant reads them, edits them on a branch of its own and commits there. Pushing a branch or opening a pull request shows you the full diff and needs your passkey. It never pushes to your main branch.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+🧪 **Run their tests safely**<br>
+A repo's tests run in a Docker sandbox with no network, on a copy of the code. The Repos view shows each repo's branch, changes and last test run, with the full output.
+
+</td>
+<td valign="top">
+
+🗂️ **Find your own files**<br>
+Let it look inside folders you choose, OneDrive included. It finds a file and brings a copy into the chat. It never writes to your folders.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+🎨 **Make and edit images**<br>
+Z-Image Turbo for images with words in them, FLUX.2 klein for photos and edits. Attach a photo and ask for a change.
+
+</td>
+<td valign="top">
+
+📱 **Send to your phone**<br>
+Results land in a tray on your phone. The notification says only "A file is ready in Hearthkeep", never what's in it.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+🖼️ **Galleries**<br>
+An Images view and an Analysis view collect everything you've made, grouped by chat.
+
+</td>
+<td valign="top">
+
+⚙️ **Settings that make sense**<br>
+Devices with QR-code setup, allowed folders, your GitHub token, notifications and start at login, all in one place.
+
+</td>
+</tr>
+</table>
+
+## Work on your code, safely
+
+Ask in chat, for example: *"In sample/widgets, fix the install link in the README and run the tests."* The assistant works in a copy of the repo on your PC, only on branches named `hearthkeep/<name>`. Nothing reaches GitHub until you approve it, and every card shows exactly what will change.
+
+<table>
+<tr>
+<td width="50%" valign="top" align="center">
+  <img src="docs/assets/github-approval.svg" width="420" alt="A push approval card: Needs your approval, Push a branch to GitHub for sample/widgets. It lists the repo, the branch hearthkeep/fix-readme and two commits, then the full diff of two files with removed lines in red and added lines in green. Approve, with a passkey icon, and Decline. Approving asks for Face ID / Touch ID.">
+  <br><sub><b>A push waits for you.</b> The card lists the commits and shows the full diff. Approve asks for your passkey, and the push sends exactly that commit.</sub>
+</td>
+<td width="50%" valign="top" align="center">
+  <img src="docs/assets/repos-view.svg" width="420" alt="The Repos view with two sample repos. Each row shows the name, a Private badge where it applies, the branch, changed files, commits ahead and behind, the dependency state and the last test run, with Update and Remove buttons. A form at the bottom adds a repository by owner/name with a passkey.">
+  <br><sub><b>The Repos view.</b> Each repo's branch, changes, dependencies and last test run. Select a run to read its full output.</sub>
+</td>
+</tr>
+</table>
+
+From request to pull request:
+
+```mermaid
+sequenceDiagram
+    participant You
+    participant HK as Hearthkeep
+    participant Box as Test sandbox
+    participant GH as GitHub
+    You->>HK: Fix the install link in sample/widgets, then run the tests
+    HK->>You: Edit card with the full diff
+    You->>HK: Approve
+    HK->>HK: Edit and commit on hearthkeep/fix-readme
+    HK->>Box: Run the tests on a copy, no network
+    Box-->>HK: Tests passed
+    HK->>You: Push card with the commits and the full diff
+    You->>HK: Approve, plus your passkey
+    HK->>GH: Push exactly the approved commit
+    HK->>You: Pull request card
+    You->>HK: Approve, plus your passkey
+    HK->>GH: Open the pull request
+    GH-->>You: A pull request for you to review and merge
+```
+
+What runs where:
+
+```mermaid
+flowchart LR
+    subgraph pc["Your PC"]
+        hk["Hearthkeep"]
+        git["git<br/>hooks and helpers off"]
+        data[("Data folder<br/>repo copies, test runs, audit log")]
+    end
+    subgraph docker["Docker, on your PC"]
+        test["Test sandbox<br/>no network, a copy of the code"]
+        inst["Install container<br/>network, dependency files only"]
+    end
+    subgraph gh["GitHub"]
+        api["REST API<br/>api.github.com"]
+        repo["Your repos<br/>github.com"]
+    end
+    hk --> git
+    git --> data
+    hk --> test
+    hk --> inst
+    hk -- "HTTPS, fine-grained token" --> api
+    git -- "clone, fetch, push over HTTPS" --> repo
+```
+
+- **You choose the repos.** A fine-grained token for only the repos you pick, saved in Settings with your passkey. Classic tokens are refused.
+- **Edits stay local** until you approve a push. Editing and committing are *Change local*; pushing, opening a pull request, commenting, merging and closing are *Outward*.
+- **Tests never run on your PC itself.** They run in a second sandbox image with no network, 4 GB of memory, 2 CPUs and a 10 minute limit, on a copy of the code without `.git`.
+- **Installing dependencies** (`uv`, `pip` or `npm`) is approved once per lock file, with a passkey, because the install container has full network access. It sees only the dependency files, never your token or your other files.
+
+Setup is in [docs/install.md, step 12](docs/install.md#12-optional-github). The full rules are in [docs/security.md](docs/security.md#github).
 
 ## How it fits together
 
@@ -81,9 +228,15 @@ flowchart LR
     hk --> data
 ```
 
-The models, the sandbox and your data never face the internet. Hearthkeep listens only on your own machine, and your other devices reach it through Tailscale's private network, never through an open port.
+The models, the sandbox and your data never face the internet. Hearthkeep listens only on your own machine, and your other devices reach it through Tailscale's private network, never through an open port. Once you save a GitHub token, Hearthkeep also talks to GitHub over HTTPS, to `api.github.com` and `github.com` only.
 
 ## Safety you can check
+
+Every action the assistant takes falls into one of three layers. The further it reaches, the more it asks of you:
+
+<p align="center">
+  <img src="docs/assets/safety-layers.svg" width="880" alt="Three layers for GitHub work. Look needs nothing at the Allowed level: reading and searching code, listing pull requests and issues, checking CI, running tests in the sandbox. Change local needs an approval card once per chat: starting a hearthkeep/ branch, writing or deleting a file, committing locally. Outward needs a card and your passkey every time: pushing the approved commit, opening a pull request, commenting, merging or closing, installing new dependencies. Never: push to the default branch, force-push, or push a commit you did not approve.">
+</p>
 
 The assistant can suggest anything, but a tool you've set to **Ask**, or anything that would leave your PC, waits for you:
 
@@ -100,14 +253,28 @@ sequenceDiagram
     Hearthkeep->>You: Done, and written to the audit log
 ```
 
+| Action class | Allowed | Ask | Off |
+|---|---|---|---|
+| **Look**: reads or looks something up | Runs | Asks you | Blocked |
+| **Change local**: changes something on this PC | Asks you the first time in a chat, then runs for that chat | Asks you every time | Blocked |
+| **Outward**: anything that leaves the PC | Asks you, with your passkey | Asks you, with your passkey | Blocked |
+
+GitHub and GitHub tests start at **Ask**.
+
+<details>
+<summary><b>Every safety rule, in short</b></summary>
+
 - **No passwords.** You sign in with a passkey: Face ID, Touch ID, Windows Hello or a PIN.
 - **Every tool is Allowed, Ask or Off**, and you decide which. Anything outward-facing always needs an approval plus a fresh passkey check.
-- **Deleting and widening access need a passkey too**, bound to that exact chat, file or folder.
+- **Deleting and widening access need a passkey too**, bound to that exact chat, file, folder or repo.
 - **GitHub is opt-in and narrow.** A fine-grained token for the repos you pick. The assistant works on branches named `hearthkeep/<name>`, never pushes to your main branch, and a push sends exactly the commit on the approval card.
 - **The Python sandbox** has no network, a read-only view of your files, no privileges, and hard limits on memory, CPU and time. Every run is saved so you can read the script.
+- **A repo's tests** run in a second sandbox: no network, a copy of the code without `.git`, and a 10 minute limit. A test can't reach your copy of the repo.
 - **An audit log** records sign-ins, approvals and changes. The app can read it but has no way to edit it.
-- **Secrets are encrypted** with a key held in your operating system's keyring, and never shown to the model.
+- **Secrets are encrypted** with a key held in your operating system's keyring, and never shown to the model. The GitHub token never appears in a command line, a container, a log or anything the model sees.
 - **Nothing personal in this repository**, ever. A privacy scanner checks every commit.
+
+</details>
 
 The full security model is in [docs/security.md](docs/security.md).
 
@@ -119,6 +286,9 @@ Hearthkeep is early software. It's a good fit if you:
 - are comfortable running a few commands in a terminal,
 - want an assistant you can use from your phone without your data leaving home.
 
+<details>
+<summary><b>Requirements</b></summary>
+
 | | Needed |
 |---|---|
 | OS | Windows 11 (the tested host). macOS and Linux work as clients; as a host they are untested. |
@@ -126,6 +296,10 @@ Hearthkeep is early software. It's a good fit if you:
 | RAM | 32 GB recommended |
 | Disk | About 60 GB for the shipped models and tools |
 | Software | Git 2.31+, Python 3.12+, [uv](https://docs.astral.sh/uv/), Node 20.19+ or 22.12+, [Docker Desktop](https://www.docker.com/products/docker-desktop/) for Python analysis and repo tests, [Tailscale](https://tailscale.com) for remote access |
+
+Git 2.31 or newer is also what turns the GitHub tools on: without it, they are not offered.
+
+</details>
 
 No suitable GPU? You can point Hearthkeep at an OpenAI-compatible chat server you already run on the same PC. Image generation is then off.
 
@@ -144,7 +318,9 @@ uv run hearthkeep sandbox build --data <data>
 uv run hearthkeep serve --data <data>
 ```
 
-`<data>` is a folder of your choice outside the repository. Open `http://localhost:8765`, enter the enrollment code the server printed, and create your passkey. Decide on remote access **before** you create it: a passkey made on `localhost` does not work on your Tailscale address. See [Decide on remote access](docs/install.md#7-decide-on-remote-access-before-your-first-passkey).
+`<data>` is a folder of your choice outside the repository. `sandbox build` builds two Docker images: `hearthkeep-sandbox` for Python analysis and `hearthkeep-repo` for a GitHub repo's tests and dependencies. Open `http://localhost:8765`, enter the enrollment code the server printed, and create your passkey. Decide on remote access **before** you create it: a passkey made on `localhost` does not work on your Tailscale address. See [Decide on remote access](docs/install.md#7-decide-on-remote-access-before-your-first-passkey).
+
+To work on GitHub repos, make a fine-grained token and add your repos: [Optional: GitHub](docs/install.md#12-optional-github).
 
 ## Roadmap
 
@@ -163,11 +339,13 @@ A daily briefing and a one-command installer are planned too; their place in the
 
 ## Documentation
 
-- [docs/install.md](docs/install.md): installation, Docker, Tailscale, notifications, start at login, updates, backups, troubleshooting
-- [docs/models.md](docs/models.md): model cards, `models.toml`, GPU switching and images
-- [docs/security.md](docs/security.md): the security model and what the assistant can never do
-- [docs/design.md](docs/design.md): the design
-- [docs/README.md](docs/README.md): index of all docs
+| Guide | What's in it |
+|---|---|
+| [docs/install.md](docs/install.md) | Installation, Docker, GitHub, Tailscale, notifications, start at login, updates, backups, troubleshooting |
+| [docs/models.md](docs/models.md) | Model cards, `models.toml`, GPU switching and images |
+| [docs/security.md](docs/security.md) | The security model and what the assistant can never do |
+| [docs/design.md](docs/design.md) | The design |
+| [docs/README.md](docs/README.md) | Index of all docs |
 
 ## Contributing
 
