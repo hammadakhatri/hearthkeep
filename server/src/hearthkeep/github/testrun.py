@@ -1,13 +1,16 @@
 """`repo_test`'s runs: a repo's tests in the repo sandbox, on a throwaway copy of its tree.
 
 Each run copies the clone's working tree, without `.git` and `node_modules` and never through
-a link, into `<data>/runtime/repo-jobs/<run-id>/tree`, the only read-write mount. The
-container has no network, the repo's dependency volume read-only (Python at `/deps`, Node at
-`/repo/node_modules`) and the test sandbox's limits; it is stopped after 600 s. Nothing from
-`.git`, the data folder, a secret or the GitHub token ever reaches it, so a test that plants a
-hook or rewrites a file changes only the copy, which is removed after every run. On POSIX the
-copy is writable by the container's user but `repo-jobs` and each job folder are 0o700, so
-no other local user can reach it.
+a link, into `<data>/runtime/repo-jobs/<run-id>/tree`. The container gets that copy read-only
+at `/src` and first copies it into its own copy at `/repo`: an anonymous volume Docker removes
+with the container. The command then runs in `/repo`. The container has no network, the
+repo's dependency volume read-only (Python at `/deps`, Node at `/repo/node_modules`) and the
+test sandbox's limits; it is stopped after 600 s. Nothing from `.git`, the data folder, a
+secret or the GitHub token ever reaches it, so a test that plants a hook or rewrites a file
+changes only the container's copy. On POSIX the copy on the PC is only readable by the
+container's user (folders and executables 0o755, files 0o644: nothing group- or
+world-writable), and `repo-jobs` and each job folder are 0o700, so no other local user can
+reach it. The job folder is removed after every run.
 
 The output is kept as its first 64 KB and last 192 KB, and each run is saved in `repo_runs`.
 Only repo ids reach a log here, never names.
@@ -60,6 +63,19 @@ CHUNK = 1024 * 1024
 NAME_PREFIX = "hk-repo-"
 LABEL = "hearthkeep.repo=1"
 NODE_TARGET = "/repo/node_modules"
+SOURCE_TARGET = "/src"
+WORK_TARGET = "/repo"
+# The container's command: copy the PC's read-only copy into its own, then run the command,
+# which is passed as its own argument ($1) and never put into this script. `cp -a` is not
+# used: as a non-root user it would try to keep the owner and print errors. If the copy
+# fails, the command never runs and the run fails with cp's own words.
+COPY_THEN_RUN = (
+    f"cp -R --preserve=mode,timestamps {SOURCE_TARGET}/. {WORK_TARGET}/ "
+    f'&& cd {WORK_TARGET} && exec sh -c "$1"'
+)
+# Read for everyone, write for the owner only: the container's user (10001) reads the copy.
+_READABLE = stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH
+_TRAVERSABLE = _READABLE | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
 SKIPPED = ("node_modules",)
 _RUN_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _REPARSE_POINT = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT: junctions and other Windows links
@@ -145,13 +161,15 @@ def _scan(src: Path) -> tuple[list[str], list[str]]:
     return folders, files
 
 
-def _open_up(path: Path, executable: bool = False) -> None:
-    """On Linux the container's user (10001) must be able to write the copy; Docker Desktop
-    on Windows and macOS maps bind mounts for it already. Only the tree is opened up: it
-    sits in a 0o700 job folder (`_private_dir`), so no other local user can reach it, while
-    Docker bind-mounts the tree itself and the container never walks the folders above."""
+def _readable(path: Path, executable: bool = False) -> None:
+    """On Linux the container's user (10001) must be able to read the copy (it never writes
+    it: the copy is mounted read-only); Docker Desktop on Windows and macOS maps bind mounts
+    for it already. Folders and executables become 0o755 and files 0o644, whatever the
+    umask: never group- or world-writable. The tree sits in a 0o700 job folder
+    (`_private_dir`), so no other local user can reach it, while Docker bind-mounts the tree
+    itself and the container never walks the folders above."""
     if os.name == "posix":
-        os.chmod(path, 0o777 if executable or path.is_dir() else 0o666)
+        os.chmod(path, _TRAVERSABLE if executable or path.is_dir() else _READABLE)
 
 
 def _private_dir(path: Path, exist_ok: bool = False) -> None:
@@ -169,10 +187,10 @@ def copy_tree(src: Path, dest: Path) -> None:
     src, dest = Path(src), Path(dest)
     folders, files = _scan(src)
     dest.mkdir(parents=True)
-    _open_up(dest)
+    _readable(dest)
     for rel in folders:
         (dest / rel).mkdir()
-        _open_up(dest / rel)
+        _readable(dest / rel)
     total = 0
     for rel in files:
         source = src / rel
@@ -185,7 +203,7 @@ def copy_tree(src: Path, dest: Path) -> None:
                 if total > MAX_TREE_BYTES:  # grew since the scan
                     raise TreeRefused(TREE_TOO_LARGE)
                 writer.write(chunk)
-        _open_up(target, executable=bool(os.stat(source).st_mode & stat.S_IXUSR))
+        _readable(target, executable=bool(os.stat(source).st_mode & stat.S_IXUSR))
 
 
 # -- runs ----------------------------------------------------------------------------------
@@ -224,11 +242,16 @@ class RepoTestRunner:
     # -- the container ---------------------------------------------------------------------
 
     def argv(self, run_id: str, tree: Path, plan: DepsPlan | None, command: str) -> list[str]:
-        """The `docker run` for one test run: the copy read-write at `/repo`, the dependency
-        volume read-only, no network. Never `--gpus`, the Docker socket, `.git` or a secret."""
+        """The `docker run` for one test run: the copy read-only at `/src`, copied into the
+        container's own anonymous volume at `/repo` (removed with it) before `command` runs
+        there, the dependency volume read-only, no network. `command` is its own argument,
+        never part of the script. Never `--gpus`, the Docker socket, `.git` or a secret."""
         if not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id):
             raise ValueError("not a run id")
-        mounts = ["--mount", f"type=bind,source={mount_source(tree)},target=/repo"]
+        mounts = [
+            "--mount", f"type=bind,source={mount_source(tree)},target={SOURCE_TARGET},readonly",
+            "--mount", f"type=volume,target={WORK_TARGET}",
+        ]  # fmt: skip
         env = ["--env", "HOME=/tmp", "--env", "CI=1"]
         if plan is not None:
             if not plan.volume.startswith(VOLUME_PREFIX):
@@ -258,9 +281,9 @@ class RepoTestRunner:
             "--name", f"{NAME_PREFIX}{run_id}",
             "--label", LABEL,
             *env,
-            "--workdir", "/repo",
+            "--workdir", WORK_TARGET,
             self.image_tag,
-            "sh", "-c", command,
+            "sh", "-c", COPY_THEN_RUN, "sh", command,
         ]  # fmt: skip
 
     # -- a run -----------------------------------------------------------------------------
@@ -352,11 +375,10 @@ class RepoTestRunner:
 
     def _prepare(self, clone: Path, job: Path, tree: Path, plan: DepsPlan | None) -> None:
         _private_dir(self._jobs, exist_ok=True)
-        _private_dir(job)  # 0o700: the tree inside is world-writable for the container
+        _private_dir(job)  # 0o700: the tree inside is readable by the container's user
+        # No node_modules in the copy (copy_tree leaves it out): the npm volume is mounted
+        # read-only at /repo/node_modules, and cp must never write onto it.
         copy_tree(clone, tree)
-        if plan is not None and plan.ecosystem == "npm":
-            (tree / "node_modules").mkdir()  # where the volume is mounted
-            _open_up(tree / "node_modules")
 
     # -- saved runs ------------------------------------------------------------------------
 

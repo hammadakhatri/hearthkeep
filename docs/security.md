@@ -186,13 +186,13 @@ A repo's tests are code you did not write, so they run only in Docker, in the im
 | Setting | Value |
 |---|---|
 | Network | `--network none`: no network at all |
-| Code | A **copy** of the working tree, without `.git`, mounted at `/repo`. A copy over 500 MB or 50,000 files is refused |
+| Code | A **copy** of the working tree, without `.git`. The copy on your PC is mounted **read-only** at `/src`; the container first copies it into its own copy at `/repo`, which Docker removes with the container. A copy over 500 MB or 50,000 files is refused |
 | Dependencies | The cached volume, mounted read-only |
 | Environment | `HOME=/tmp` and `CI=1`; no token, no secrets |
 | Memory, CPUs, processes | 4 GB with no swap, 2 CPUs, 512 processes |
 | Time | Stopped at 10 minutes and removed |
 
-Because the tests run on a copy without `.git`, a test that writes into `.git` or plants a hook cannot reach your clone. Output is kept as the first 64 KB and the last 192 KB with a note between them. The model sees at most 8,000 characters of a run's output; the full output is in the Repos view. Every run is saved, including runs that were stopped or timed out. Without Docker, `GitHub tests` is forced to Ask, and an approved call answers that it needs Docker: Hearthkeep never runs a repo's code on the PC itself.
+Because the tests run on a copy without `.git`, a test that writes into `.git` or plants a hook cannot reach your clone. The copy on your PC is read-only to the container, so a test cannot change it either: what a test writes goes into the container's own copy, which Docker removes with the container. On Linux the copy on your PC is only readable by the container's user (files 0644, folders 0755, never group- or world-writable) and sits in a job folder only you can open (0700). Output is kept as the first 64 KB and the last 192 KB with a note between them. The model sees at most 8,000 characters of a run's output; the full output is in the Repos view. Every run is saved, including runs that were stopped or timed out. Without Docker, `GitHub tests` is forced to Ask, and an approved call answers that it needs Docker: Hearthkeep never runs a repo's code on the PC itself.
 
 ### Installing dependencies
 
@@ -237,7 +237,7 @@ Keep secrets out of `config.toml`; it holds only the name of the secret to use (
 | `<data>/workspace/chats/<chat-id>/runs/<run-id>/` | The outputs of that chat's analysis runs |
 | `<data>/workspace/repos/<repo-id>/` | One clone for each repo you added in Repos |
 | `<data>/runtime/sandbox/jobs/` | Temporary job folders for the sandbox, removed after each run |
-| `<data>/runtime/repo-jobs/` | Throwaway copies of a repo's working tree for its test runs, removed after each run |
+| `<data>/runtime/repo-jobs/` | Throwaway copies of a repo's working tree for its test runs, read-only to the container and removed after each run |
 | `<data>/runtime/deps/` | The dependency files copied for an install, removed after each install |
 | `<data>/runtime/clone-<id>/` | A repo being cloned while you add it, moved into `workspace/repos/` when done |
 | `<data>/runtime/git-home/` | The home folder every Git command uses: an empty config and an empty hooks folder |
