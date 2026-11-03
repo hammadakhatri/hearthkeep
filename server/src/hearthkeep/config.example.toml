@@ -1,4 +1,4 @@
-# Hearthkeep configuration. Copied to <data>/config.toml on first run.
+# Hearthkeep configuration. Copied into Hearthkeep's data folder on first run.
 # Every value below is a placeholder default; edit your own copy.
 
 host = "127.0.0.1"
@@ -8,10 +8,9 @@ port = 8765
 public_origin = "http://localhost:8765"
 rp_id = "localhost"
 
-# The chat server Hearthkeep talks to when it does not run one itself. To let Hearthkeep
-# start llama-server (and ComfyUI for images) on demand, copy models.example.toml to
-# <data>/models.toml and fill in its paths; chat_base_url is then ignored.
-chat_base_url = "http://127.0.0.1:8080/v1"
+# Set this to use a chat server you already run on this PC. Leave it out to let
+# Hearthkeep run its own chat model.
+# chat_base_url = "http://127.0.0.1:8080/v1"
 chat_model = "gemma-4-12b"
 chat_api_key_secret = "chat_api_key"
 

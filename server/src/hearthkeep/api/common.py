@@ -179,7 +179,10 @@ class Services:
         """`chat_model_reachable` and `chat_model_state` for /api/health. A chat model
         Hearthkeep runs itself is never "offline" just because it hasn't started yet: it is
         "ready" once loaded and "starts_on_first_use" before. An external chat server keeps the
-        Phase 1 probe: "ready" or "offline"."""
+        Phase 1 probe: "ready" or "offline". With no chat model set up there is nothing to probe:
+        "not_set_up"."""
+        if self.chat_mode == "none":
+            return {"chat_model_reachable": False, "chat_model_state": "not_set_up"}
         if self.chat_model_id is not None:
             loaded = self.chat_model_id in self.gpu.resident()
             return {

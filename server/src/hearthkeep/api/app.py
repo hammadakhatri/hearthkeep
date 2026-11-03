@@ -475,8 +475,12 @@ def create_app(
                 chat_mode=stack.chat_mode,
             )
             # One full check before serving, so nobody sees the not-ready defaults; a failing
-            # probe is caught inside (start-up never fails), and the loop sleeps before its first.
-            await addons.refresh()
+            # probe is caught inside, and the loop sleeps before its first. Anything else that
+            # goes wrong is logged by type only: it never stops Hearthkeep from starting.
+            try:
+                await addons.refresh()
+            except Exception as exc:
+                _log.warning("could not check the add-ons at start-up: %s", type(exc).__name__)
             addons_task = asyncio.create_task(addons.run_forever())
             yield
         finally:

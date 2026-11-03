@@ -73,6 +73,24 @@ class ProviderError(Exception):
         self.user_message = user_message
 
 
+NO_CHAT_MODEL = "No chat model is set up yet. Open Settings › Add-ons to set one up."
+
+
+class NoChatModelClient:
+    """The chat client when no chat model is set up: every stream fails at once with a
+    message that sends the owner to Settings › Add-ons."""
+
+    async def stream(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        think: bool,
+        temperature: float | None = None,
+    ) -> AsyncIterator[Event]:
+        raise ProviderError(NO_CHAT_MODEL, "no chat model")
+        yield  # pragma: no cover (makes this an async generator)
+
+
 class OpenAIChatClient:
     def __init__(
         self,

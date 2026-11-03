@@ -147,7 +147,7 @@ default_image_model = "z-image-turbo"
 
 - Chat is managed by Hearthkeep when `llama_server_exe` and a `model_dirs` entry for the chat model are set. Hearthkeep starts `llama-server` when it is first needed and stops it when Hearthkeep stops.
 - Images are managed when `comfyui_python`, `comfyui_main` and `comfyui_model_root` are all set. The image file names from the cards are looked up in the `diffusion_models`, `text_encoders` and `vae` folders under `comfyui_model_root`.
-- Without `models.toml`, Hearthkeep talks to the chat server already running at `chat_base_url` in `config.toml`, and image generation is off.
+- Without `models.toml`, image generation is off. Chat uses the server at `chat_base_url` when `config.toml` sets it; to use a chat server you already run, set `chat_base_url` in `config.toml`. With neither `models.toml` nor `chat_base_url`, Hearthkeep starts without a chat model and Settings › Add-ons says so.
 - Hearthkeep asks `nvidia-smi` (so an NVIDIA GPU) how much GPU memory you have. If that fails it assumes 16 GB and logs a warning. Set `gpu_vram_gb` whenever it guesses wrong.
 - An unknown key or a wrong type in `models.toml` stops the server at start-up with a message naming the key.
 

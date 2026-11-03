@@ -42,9 +42,13 @@ class Settings:
     approval_ttl_minutes: int = 15
     max_agent_steps: int = 8
     docker_available: bool | None = None
+    # Whether config.toml names chat_base_url, which makes that server the chat model. Not a
+    # config key: load_settings sets it. Settings built in code keep today's meaning (True).
+    chat_base_url_set: bool = True
 
 
-_TYPES = {f.name: f.type for f in fields(Settings) if f.name != "data_dir"}
+_NOT_KEYS = ("data_dir", "chat_base_url_set")
+_TYPES = {f.name: f.type for f in fields(Settings) if f.name not in _NOT_KEYS}
 
 
 def _check_type(key: str, value: object) -> None:
@@ -80,7 +84,7 @@ def load_settings(data_dir: Path) -> Settings:
         if key not in _TYPES:
             raise ConfigError(f"unknown config key: '{key}'")
         _check_type(key, value)
-    settings = Settings(data_dir=data_dir, **raw)
+    settings = Settings(data_dir=data_dir, chat_base_url_set="chat_base_url" in raw, **raw)
     _validate(settings)
     return settings
 
