@@ -4,11 +4,13 @@ output kept as its head and tail. Runs are saved and listed on the Repos screen.
 
 # ruff: noqa: F811  (fixtures are imported from other test modules)
 
+import asyncio
 import json
 import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -29,6 +31,8 @@ from hearthkeep.github.deps import (
     DepsCache,
     for_model,
 )
+from hearthkeep.github.deps import REPO_NO_DOCKER as NO_DOCKER_MESSAGE
+from hearthkeep.github.deps import REPO_NO_IMAGE as NO_IMAGE_MESSAGE
 from hearthkeep.github.git import GitRunner
 from hearthkeep.github.testrun import (
     DEPS_UNREADABLE,
@@ -47,7 +51,6 @@ from hearthkeep.github.testrun import (
 )
 from hearthkeep.permissions import DEFAULT_LEVELS, ActionClass, ToolLevel
 from hearthkeep.sandbox import image as sandbox_image
-from hearthkeep.sandbox.runner import NO_DOCKER_MESSAGE, NO_IMAGE_MESSAGE
 from hearthkeep.secrets import SecretStore
 from hearthkeep.tools.base import ToolContext
 from hearthkeep.tools.repo import UNKNOWN_REPO
@@ -418,7 +421,9 @@ async def test_test_run_cannot_reach_host_clone(tmp_path, docker_or_skip):
 @pytest.mark.docker
 async def test_hanging_tests_stop_and_keep_tail(tmp_path, docker_or_skip, monkeypatch):
     f = await make_fixture(tmp_path, ("docker",), docker_or_skip)
-    monkeypatch.setattr(testrun, "TEST_TIMEOUT_S", 5)
+    # 15 s, not less: the limit includes `docker run` starting up, and the test needs well
+    # over 256 KB printed before it, so the output is really cut.
+    monkeypatch.setattr(testrun, "TEST_TIMEOUT_S", 15)
     try:
         run = await f.runner.run(
             f.repo, "c1", "python -c \"import time\nwhile 1: print('x'*1000)\""
@@ -431,10 +436,16 @@ async def test_hanging_tests_stop_and_keep_tail(tmp_path, docker_or_skip, monkey
         saved = f.runner.get(run.id)
         assert saved.status == "timed_out" and saved.output == run.output
         assert list((f.data / "runtime" / "repo-jobs").glob("*")) == []
-        left = subprocess.run(
-            ["docker", "ps", "-aq", "--filter", f"name=hk-repo-{run.id}"],
-            capture_output=True, text=True, timeout=30,
-        )  # fmt: skip
+        # `--rm` removes a killed container a moment after the kill: allow it up to 10 s.
+        deadline = time.monotonic() + 10
+        while True:
+            left = subprocess.run(
+                ["docker", "ps", "-aq", "--filter", f"name=hk-repo-{run.id}"],
+                capture_output=True, text=True, timeout=30,
+            )  # fmt: skip
+            if left.stdout.strip() == "" or time.monotonic() > deadline:
+                break
+            await asyncio.sleep(0.5)
         assert left.stdout.strip() == ""
         # the chat carries on: the next run works
         again = await f.runner.run(f.repo, "c1", "echo ok")

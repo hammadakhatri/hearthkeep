@@ -499,3 +499,40 @@ async def test_outward_actions_need_step_up_even_when_allowed(s, loop_with_githu
     assert card["detail"]["body"] == "hi" and card["detail"]["number"] == 3
     assert len(requests_by_method(s.fake, "POST")) == 1
     assert [e["event"] for e in github_events(s.store.conn)] == ["github.comment"]
+
+
+# -- final review: the push card says why it will be refused; long commit lists say so ------
+
+
+async def test_push_card_says_why_it_will_be_refused(s):
+    on_work_branch(s)
+    plain_git(s.clone, "switch", "-q", "main")
+    cases = {
+        "hearthkeep/work": "This request will be refused: switch to that branch first: only "
+        "the checked-out branch is pushed.",
+        "feature/x": "This request will be refused: only a hearthkeep/ branch can be "
+        'published, never the default branch. Create one with repo_edit action "branch".',
+        "main": "This request will be refused: only a hearthkeep/ branch can be published, "
+        'never the default branch. Create one with repo_edit action "branch".',
+    }
+    for branch, note in cases.items():
+        args = {"repo": R, "action": "push", "branch": branch}
+        detail = await s.tool.approval_detail(args, ctx(s))
+        assert detail["note"] == note, branch
+        assert "head_sha" not in detail
+    plain_git(s.clone, "switch", "-q", "hearthkeep/work")
+    ok = await s.tool.approval_detail(
+        {"repo": R, "action": "push", "branch": "hearthkeep/work"}, ctx(s)
+    )
+    assert "note" not in ok and ok["head_sha"]
+
+
+async def test_push_card_says_how_many_commits_were_left_out(s):
+    on_work_branch(s)
+    for i in range(54):
+        edit_and_commit(s, "n.txt", f"{i}\n", f"commit {i}")
+    detail = await s.tool.approval_detail(
+        {"repo": R, "action": "push", "branch": "hearthkeep/work"}, ctx(s)
+    )
+    assert len(detail["commits"]) == 51
+    assert detail["commits"][-1] == "… and 5 more"  # 55 new commits, 50 shown

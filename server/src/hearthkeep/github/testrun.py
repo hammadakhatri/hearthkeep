@@ -39,8 +39,8 @@ from hearthkeep.github.deps import (
     DepsPlan,
     DepsTooLarge,
     mount_source,
+    remove_labelled,
     run_container,
-    run_docker,
 )
 from hearthkeep.github.repos import Repo, clone_dir, is_link, remove_tree
 from hearthkeep.sandbox.runner import DATA_PATH_MESSAGE
@@ -61,7 +61,6 @@ NODE_TARGET = "/repo/node_modules"
 SKIPPED = ("node_modules",)
 _RUN_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _REPARSE_POINT = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT: junctions and other Windows links
-_CONTAINER_ID = re.compile(r"[0-9a-f]{1,64}")
 
 TREE_TOO_LARGE = (
     "The repo is too large to test: over 500 MB or 50,000 files "
@@ -374,11 +373,4 @@ class RepoTestRunner:
 
     async def sweep_containers(self) -> int:
         """Remove test containers a stopped Hearthkeep left; how many were removed."""
-        code, out = await run_docker(self.docker, "ps", "-aq", "--filter", f"label={LABEL}")
-        if code != 0:
-            return 0
-        ids = [i for i in out.decode("ascii", "replace").split() if _CONTAINER_ID.fullmatch(i)]
-        if not ids:
-            return 0
-        code, _ = await run_docker(self.docker, "rm", "-f", *ids)
-        return len(ids) if code == 0 else 0
+        return await remove_labelled(self.docker, LABEL)

@@ -39,7 +39,7 @@ from hearthkeep.providers.chat import (
     ToolCallRequest,
 )
 from hearthkeep.secrets import SecretStore, SecretStoreError
-from hearthkeep.tools.base import Tool, ToolContext, ToolRegistry, ToolResult
+from hearthkeep.tools.base import Tool, ToolContext, ToolRegistry, ToolResult, _is_available
 from hearthkeep.tools.text import one_line
 
 SYSTEM_PROMPT = (
@@ -52,6 +52,9 @@ SYSTEM_PROMPT = (
 REDACTED = "[redacted]"
 MIN_SECRET_LENGTH = 4
 PREVIEW_CHARS = 200
+# A safety net for any tool: the model's context is small and every tool message is replayed
+# on each later turn, so one huge result would make the chat too long for good.
+TOOL_RESULT_MAX_CHARS = 20_000
 
 DECLINED = "The owner declined this action"
 EXPIRED = "The request expired"
@@ -404,7 +407,8 @@ class AgentLoop:
                     tool_message = {
                         "role": "tool",
                         "tool_call_id": call.id,
-                        "content": redact(content, turn.secrets),
+                        # Redacted first, so a cut can never leave half a secret behind.
+                        "content": _cut_result(redact(content, turn.secrets)),
                     }
                     messages.append(tool_message)
                     self._save(turn, tool_message)
@@ -495,7 +499,7 @@ class AgentLoop:
             )
             if resolved.status == "approved":
                 level = self._level(tool)  # re-read: the owner may have changed it meanwhile
-                if level == ToolLevel.OFF:
+                if level == ToolLevel.OFF or not _is_available(tool):
                     ok, outcome.content = self._deny(tool)
                 else:
                     if action == ActionClass.CHANGE_LOCAL and level == ToolLevel.ALLOWED:
@@ -546,6 +550,9 @@ class AgentLoop:
         return effective_level(tool.level_key, get_level(self._conn, tool.level_key), self._docker)
 
     def _decide(self, turn: _Turn, tool: Tool, action: ActionClass) -> Decision:
+        if not _is_available(tool):
+            # Offered at the start of the round, gone since (say the GitHub token was removed).
+            return Decision.DENY
         level = self._level(tool)
         granted = (
             self._conn.execute(
@@ -724,6 +731,16 @@ class AgentLoop:
     @staticmethod
     def _done_data(turn: _Turn) -> dict:
         return {} if turn.last_content_id is None else {"message_id": turn.last_content_id}
+
+
+def _cut_result(content: str) -> str:
+    """A tool result as the model gets it: at most 20,000 characters, then a line saying how
+    long it was. Shorter results are never changed."""
+    if len(content) <= TOOL_RESULT_MAX_CHARS:
+        return content
+    return (
+        f"{content[:TOOL_RESULT_MAX_CHARS]}\n… cut: the tool returned {len(content)} characters …"
+    )
 
 
 def _last_user_text(history: list[dict]) -> str:

@@ -1,11 +1,11 @@
 """`repo_install`: install a repo's dependencies once per lock file, in the repo sandbox;
 `repo_test`: run its tests there, on a throwaway copy of its working tree.
 
-Outward while the dependencies for the current lock file are not cached (the install has the
-internet), Look once they are (running it again does nothing). An install runs only with an
-approval for exactly the lock hash it would install: a lock file that changed after the card
-was shown, or after the call was classified, is refused. Without Docker or the repo image
-nothing runs on the host.
+Outward while the dependencies for the current lock file are not cached (the install has full
+network access, like any program on the PC, the home network included), Look once they are
+(running it again does nothing). An install runs only with an approval for exactly the lock
+hash it would install: a lock file that changed after the card was shown, or after the call
+was classified, is refused. Without Docker or the repo image nothing runs on the host.
 
 `repo_test` is Look (it is sandboxed: no network, only a copy of the tree, never `.git`) under
 its own level key, `github_tests`. It runs only once the dependencies for the current lock
@@ -24,6 +24,7 @@ from hearthkeep.github.deps import (
     DepsPlan,
     DepsTooLarge,
     for_model,
+    install_jobs_dir,
     remove_job,
 )
 from hearthkeep.github.repos import RepoStore
@@ -38,7 +39,11 @@ from hearthkeep.permissions import ActionClass
 from hearthkeep.tools.base import ToolContext, ToolResult
 from hearthkeep.tools.repo import GITHUB_LEVEL_KEY, UNKNOWN_REPO, github_ready
 
-NETWORK_NOTE = "This install has internet access. Only the dependency files are given to it."
+NETWORK_NOTE = (
+    "This install has full network access, like any program on your PC, including your "
+    "home network; it sees only the dependency files, never your token or your other files."
+)
+INSTALLED_NOTE = f"{ALREADY_INSTALLED} Nothing will be installed."
 NOTHING_TO_INSTALL = (
     "This repo has no uv.lock (with pyproject.toml), requirements.txt or package-lock.json "
     "(with package.json) at its top level, so there is nothing to install."
@@ -62,7 +67,8 @@ class RepoInstallTool:
     description = (
         "Install one of the owner's GitHub repos' dependencies (uv.lock, requirements.txt or "
         "package-lock.json) in Hearthkeep's repo sandbox, once per lock file, so repo_test can "
-        "run its tests. The install has internet access but sees only the dependency files."
+        "run its tests. The install has full network access but sees only the dependency "
+        "files."
     )
     parameters = {
         "type": "object",
@@ -81,14 +87,16 @@ class RepoInstallTool:
     def __init__(self, repos: RepoStore, deps: DepsCache, data_dir: Path) -> None:
         self._repos = repos
         self._deps = deps
-        self._jobs = Path(data_dir) / "runtime" / "deps"
+        self._jobs = install_jobs_dir(data_dir)
 
     def is_available(self) -> bool:
         return github_ready(self._repos)
 
     def classify(self, args: dict) -> ActionClass:
         """Look when there is nothing to do (an unknown repo, no dependency files, or the
-        current lock file already installed); otherwise Outward."""
+        current lock file already installed); otherwise Outward. Never asks Docker (this runs
+        on the event loop): installed means a row and a fresh cached answer, and without a
+        fresh answer it is Outward (fail closed). `run` checks afresh."""
         repo = self._repos.by_name(args.get("repo", ""))
         if repo is None:
             return ActionClass.LOOK  # `run` refuses without doing anything
@@ -96,7 +104,7 @@ class RepoInstallTool:
             plan = self._deps.plan(repo, self._repos.dir(repo))
         except (DepsTooLarge, ValueError, OSError):
             return ActionClass.OUTWARD
-        if plan is None or self._deps.installed(repo, plan):
+        if plan is None or self._deps.known_installed(repo, plan):
             return ActionClass.LOOK
         return ActionClass.OUTWARD
 
@@ -113,6 +121,10 @@ class RepoInstallTool:
             return None  # `run` gives the model the reason
         if plan is None:
             return None
+        if await self._deps.is_installed(repo, plan):
+            # Nothing will run: no command, no network, and no lock hash to approve (so if
+            # the volume goes meanwhile, `run` refuses instead of installing).
+            return {"repo": repo.full_name, "files": list(plan.files), "note": INSTALLED_NOTE}
         return {
             "repo": repo.full_name,
             "command": plan.command,

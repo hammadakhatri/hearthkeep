@@ -58,7 +58,7 @@ from hearthkeep.deletion import sweep_orphans
 from hearthkeep.files.store import ChatFileStore
 from hearthkeep.folders import FolderStore
 from hearthkeep.github.api import TOKEN_SECRET, GitHubClient
-from hearthkeep.github.deps import DepsCache
+from hearthkeep.github.deps import DepsCache, sweep_install_jobs
 from hearthkeep.github.git import GitRunner
 from hearthkeep.github.repos import RepoStore, sweep_repo_folders
 from hearthkeep.github.testrun import RepoTestRunner
@@ -390,6 +390,14 @@ def create_app(
                     await repo_tests.sweep_containers()
             except Exception as exc:
                 _log.warning("could not sweep repo test runs: %s", type(exc).__name__)
+            # Installs a stop cut short: their job folders, and (with Docker) their still
+            # running networked containers and the volumes no row names.
+            try:
+                sweep_install_jobs(Path(settings.data_dir))
+            except Exception as exc:
+                _log.warning("could not sweep install jobs: %s", type(exc).__name__)
+            if settings.docker_available:
+                await deps.sweep()  # never raises
             if registry.get(RepoTestTool.name) is None:
                 registry.register(RepoTestTool(repo_store, deps, repo_tests))
             loop = AgentLoop(
