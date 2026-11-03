@@ -109,3 +109,47 @@ def test_web_zip_is_reproducible(tmp_path):
     assert build(tmp_path, tmp_path / "b") == 0
     for name in ("hearthkeep-web-0.1.0.zip", "hearthkeep-0.1.0.zip"):
         assert (tmp_path / "a" / name).read_bytes() == (tmp_path / "b" / name).read_bytes()
+
+
+# ---- the release workflow ----------------------------------------
+
+WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "release.yml"
+
+
+def _jobs(text: str) -> dict[str, str]:
+    """Each job's lines under `jobs:`, by name (two-space indented keys)."""
+    body = text.split("\njobs:\n", 1)[1]
+    jobs: dict[str, list[str]] = {}
+    name = None
+    for line in body.splitlines():
+        if line.startswith("  ") and not line.startswith("   ") and line.rstrip().endswith(":"):
+            name = line.strip()[:-1]
+            jobs[name] = []
+        elif name is not None:
+            jobs[name].append(line)
+    return {k: "\n".join(v) for k, v in jobs.items()}
+
+
+def test_release_workflow_builds_read_only_and_publishes_in_a_separate_job():
+    import re
+
+    text = WORKFLOW.read_text(encoding="utf-8")
+    jobs = _jobs(text)
+    assert set(jobs) == {"build", "release"}
+    build, release = jobs["build"], jobs["release"]
+    # Everything that runs the repo's code or npm packages has a read-only token.
+    assert "contents: read" in build and "contents: write" not in build
+    for step in ("npm ci --ignore-scripts", "npm test", "npm run build", "uv run --locked pytest"):
+        assert step in build, step
+    assert "scripts/build_release.py" in build and "actions/upload-artifact@" in build
+    assert "persist-credentials: false" in build
+    # The job that can write only downloads the assets and makes a draft release.
+    assert "needs: build" in release and "contents: write" in release
+    assert "actions/download-artifact@" in release
+    assert "gh release create" in release and "--draft" in release
+    assert '--repo "$REPO"' in release and "REPO: ${{ github.repository }}" in release
+    for banned in ("checkout", "npm", "uv run", "setup-node", "setup-uv", "build_release"):
+        assert banned not in release, banned
+    # Every action is pinned to a full commit SHA, as in the other workflows.
+    uses = re.findall(r"uses: (\S+)", text)
+    assert uses and all(re.fullmatch(r"[\w./-]+@[0-9a-f]{40}", u) for u in uses), uses
