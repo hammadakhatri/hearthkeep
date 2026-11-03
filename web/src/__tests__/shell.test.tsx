@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { AppShell } from '../shell/AppShell'
-import { healthy, mockFetch, standby, unreachable } from '../test/fetch'
+import { healthy, mockFetch, noUpdateNote, standby, unreachable } from '../test/fetch'
 
 const EIGHT = ['Today', 'Chat', 'Images', 'Analysis', 'Repos', 'Files', 'Tools & permissions', 'Settings']
 
@@ -20,7 +20,7 @@ describe('AppShell', () => {
   })
 
   it('opens Chat by default and switches view from the sidebar', () => {
-    mockFetch({ 'GET /api/health': healthy })
+    mockFetch({ 'GET /api/health': healthy, 'GET /api/update-note': noUpdateNote })
     render(<AppShell onSignOut={() => {}} />)
     expect(screen.getByRole('heading', { level: 1, name: 'Chat' })).toBeInTheDocument()
     const sidebar = screen.getByRole('navigation', { name: 'Hearthkeep' })
@@ -83,5 +83,24 @@ describe('AppShell', () => {
     fireEvent.click(within(tabs).getByRole('button', { name: 'More' }))
     fireEvent.keyDown(screen.getByRole('dialog', { name: 'More' }), { key: 'Escape' })
     expect(screen.queryByRole('dialog', { name: 'More' })).toBeNull()
+  })
+
+  it('shows the update note above the current view, and its button opens the add-on in Settings', async () => {
+    mockFetch({
+      'GET /api/health': healthy,
+      'GET /api/update-note': {
+        body: {
+          note: {
+            version: '0.3.0',
+            items: [{ id: 'sandbox_image', text: 'Check it in Settings › Add-ons.', addon: 'analysis' }],
+          },
+        },
+      },
+    })
+    render(<AppShell onSignOut={() => {}} />)
+    const note = await screen.findByRole('status', { name: 'Hearthkeep was updated' })
+    expect(screen.getByRole('heading', { level: 1, name: 'Chat' })).toBeInTheDocument()
+    fireEvent.click(within(note).getByRole('button', { name: 'Open Settings › Add-ons' }))
+    expect(await screen.findByRole('heading', { level: 1, name: 'Settings' })).toBeInTheDocument()
   })
 })

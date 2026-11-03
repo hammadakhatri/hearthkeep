@@ -50,5 +50,21 @@ export const signedIn = {
   body: { device: { id: 'cred-1', device_name: 'Laptop', created_at: '2026-10-26T00:00:00Z', current: true } },
 }
 
+/** GET /api/server: a supervised server with nothing to restart, unless `over` says otherwise. */
+export function serverInfo(over: Record<string, unknown> = {}): Reply {
+  return {
+    body: {
+      version: '0.3.0',
+      supervised: true,
+      setup_mode: false,
+      started_at: '2026-11-04T08:00:00+00:00',
+      restart_needed: false,
+      restart_reasons: [],
+      ...over,
+    },
+  }
+}
+export const noUpdateNote = { body: { note: null } }
+
 // Add-ons fixtures live in addonFixtures.ts; re-exported here with the other replies.
 export { addonList, addonsReady, addonsWith } from './addonFixtures'

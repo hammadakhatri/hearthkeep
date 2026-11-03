@@ -8,6 +8,7 @@ export type SettingsAnchor =
   | 'settings-github'
   | 'settings-folders'
   | 'settings-startup'
+  | 'settings-general'
 
 type AddonsValue = AddonsState & { openSettings(anchor: SettingsAnchor): void }
 

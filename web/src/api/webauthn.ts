@@ -17,6 +17,7 @@ export type StepUpPurpose =
   | 'delete'
   | 'github_token'
   | 'add_repo'
+  | 'server'
 
 export type Device = { id: string; device_name: string; created_at: string; current: boolean }
 

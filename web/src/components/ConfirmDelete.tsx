@@ -16,18 +16,23 @@ export function deleteErrorMessage(error: unknown): string {
  * Asks before deleting something for good. "Delete with passkey" runs `onConfirm` (which does the
  * passkey step-up and the deletion); while it runs both buttons wait, and if it throws the dialog
  * stays and says why. Focus is kept inside, Escape cancels, and when it closes focus goes back to
- * whatever opened it, unless the page has already placed it.
+ * whatever opened it, unless the page has already placed it. Other actions that need the same
+ * pause (stopping Hearthkeep) name their own button and error sentences.
  */
 export function ConfirmDelete({
   title,
   body,
   onConfirm,
   onCancel,
+  confirmLabel = 'Delete with passkey',
+  errorMessage = deleteErrorMessage,
 }: {
   title: string
   body: string
   onConfirm: () => Promise<void>
   onCancel: () => void
+  confirmLabel?: string
+  errorMessage?: (error: unknown) => string
 }) {
   const titleId = useId()
   const bodyId = useId()
@@ -60,7 +65,7 @@ export function ConfirmDelete({
     try {
       await onConfirm()
     } catch (err) {
-      if (alive.current) setError(deleteErrorMessage(err))
+      if (alive.current) setError(errorMessage(err))
     } finally {
       if (alive.current) setBusy(false)
     }
@@ -132,7 +137,7 @@ export function ConfirmDelete({
             aria-disabled={busy || undefined}
             onClick={() => void confirm()}
           >
-            Delete with passkey
+            {confirmLabel}
           </button>
         </div>
       </div>

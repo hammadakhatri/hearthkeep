@@ -222,6 +222,46 @@
   animation: rise var(--dur-view) var(--ease);
 }
 
+/* The one-time "Hearthkeep was updated" note, between the top bar and the view. */
+.update-note {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  max-height: 40dvh;
+  overflow-y: auto;
+  margin: var(--sp-3) max(16px, env(safe-area-inset-right)) 0 16px;
+  padding: var(--sp-4);
+  background: var(--s1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  font-size: var(--text-sm);
+  color: var(--fg2);
+}
+
+.update-note h2 {
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.update-note ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.update-note li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
 /* ---- Placeholder -------------------------------------------------------------------- */
 
 .placeholder {

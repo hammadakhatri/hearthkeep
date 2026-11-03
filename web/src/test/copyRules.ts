@@ -4,7 +4,7 @@
  * product's name. Shared so every view's copy test uses one definition.
  */
 export const FORBIDDEN_COPY: RegExp[] = [
-  /\bhearthkeep (serve|sandbox|secrets|startup|enroll-code)\b/i,
+  /\bhearthkeep (serve|sandbox|secrets|startup|enroll-code|setup|launch|open)\b/i,
   /<data>|<home>|--data\b|\buv run\b/i,
 ]
 

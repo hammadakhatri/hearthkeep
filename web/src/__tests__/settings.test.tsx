@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { stepUp } from '../api/webauthn'
 import { QrCode } from '../components/QrCode'
 import { Settings } from '../views/Settings'
-import { bodyOf, mockFetch, type Handler, type Reply } from '../test/fetch'
+import { bodyOf, mockFetch, serverInfo, type Handler, type Reply } from '../test/fetch'
 
 vi.mock('../api/webauthn', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../api/webauthn')>()),
@@ -37,6 +37,7 @@ function routes(extra: Record<string, Handler | Reply> = {}) {
     'GET /api/devices': { body: [laptop, phone] },
     'GET /api/folders': { body: noFolders },
     'GET /api/settings/startup': { body: startupOff },
+    'GET /api/server': serverInfo(),
     ...extra,
   })
 }
@@ -58,7 +59,7 @@ describe('Settings', () => {
     expect(within(rows[0]).getByText('Last used just now')).toBeInTheDocument()
     expect(within(rows[1]).getByText('Last used 5 hours ago')).toBeInTheDocument()
     expect(within(rows[1]).queryByText('This device')).toBeNull()
-    for (const name of ['Devices', 'Folders Hearthkeep can see', 'Notifications', 'Start at login']) {
+    for (const name of ['Devices', 'Folders Hearthkeep can see', 'Notifications', 'Start at login', 'General']) {
       expect(screen.getByRole('heading', { level: 2, name })).toBeInTheDocument()
     }
     expect(screen.getByText('Notifications on this device')).toBeInTheDocument()

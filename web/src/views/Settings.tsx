@@ -5,6 +5,7 @@ import { DevicesPanel } from '../components/DevicesPanel'
 import { FoldersPanel } from '../components/FoldersPanel'
 import { GitHubPanel } from '../components/GitHubPanel'
 import { NotificationToggle } from '../components/NotificationToggle'
+import { ServerPanel } from '../components/ServerPanel'
 import { useAddonsState, type SettingsAnchor } from '../shell/AddonsContext'
 import { AlertIcon, CopyIcon } from '../shell/icons'
 
@@ -129,6 +130,7 @@ export function Settings({ focus, onFocused }: Props = {}) {
         <NotificationToggle />
       </section>
       <StartupPanel />
+      <ServerPanel />
     </div>
   )
 }

@@ -237,6 +237,18 @@
   user-select: all;
 }
 
+/* General: the version, a restart when one is needed, restart and stop. */
+.server,
+.restart-notice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.server .perm-sub {
+  margin-top: 0;
+}
+
 @media (max-width: 640px) {
   .device-main {
     grid-template-columns: minmax(0, 1fr);

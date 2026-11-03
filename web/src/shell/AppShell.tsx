@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useAddons, type AddonsState } from '../api/addons'
 import { SentTray, useUnreadSent } from '../components/SentTray'
+import { UpdateNote } from '../components/UpdateNote'
 import { Analysis } from '../views/Analysis'
 import { Chat, type ChatTarget } from '../views/Chat'
 import { Images } from '../views/Images'
@@ -110,6 +111,7 @@ export function AppShell({ initialView = DEFAULT_VIEW, onSignOut }: Props) {
         <Sidebar current={view} onSelect={select} onSignOut={onSignOut} />
         <main className="main">
           <TopBar title={VIEWS[view].title} health={health} unread={unread} onOpenSent={() => setTrayOpen(true)} />
+          <UpdateNote />
           {view === 'chat' ? (
             // Chat scrolls its own thread under a floating composer.
             <div className="view view-fill" key={view}>
