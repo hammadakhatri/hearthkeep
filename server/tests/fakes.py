@@ -251,12 +251,15 @@ class FakeSandbox:
 
 class FakeGitHub:
     """GitHub's REST API on an httpx mock transport: `routes` maps (method, path) to
-    (status, json); every request is kept in `requests`. `GET /user` answers "octo" (id 42)."""
+    (status, json); every request is kept in `requests`. `GET /user` answers "octo" (id 42).
+    `GET /user/repos` pages through `repos` (the repos the token can see) by its `page` and
+    `per_page` query parameters, unless a route for it is set."""
 
     def __init__(self) -> None:
         self.routes: dict[tuple[str, ...], tuple[int, object]] = {
             ("GET", "/user"): (200, {"login": "octo", "id": 42}),
         }
+        self.repos: list[dict] = []
         self.requests: list[httpx.Request] = []
         self._failures: list[tuple[int, object]] = []
         self.transport = httpx.MockTransport(self._handle)
@@ -270,6 +273,13 @@ class FakeGitHub:
         self.requests.append(request)
         if self._failures:
             status, body = self._failures.pop(0)
+        elif (request.method, request.url.path) == ("GET", "/user/repos") and (
+            "GET",
+            "/user/repos",
+        ) not in self.routes:
+            per_page = int(request.url.params.get("per_page", "30"))
+            page = int(request.url.params.get("page", "1"))
+            status, body = 200, self.repos[(page - 1) * per_page : page * per_page]
         else:
             accept = request.headers.get("accept", "")
             status, body = self.routes.get(

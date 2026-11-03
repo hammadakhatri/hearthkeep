@@ -71,7 +71,7 @@ def runner(tmp_path):
 @pytest.fixture
 def fake_github():
     fake = FakeGitHub()
-    fake.routes[("GET", "/repos/acme/widgets")] = (200, REPO)
+    fake.repos.append(REPO)
     return fake
 
 
@@ -286,13 +286,13 @@ async def test_hooks_in_clone_never_run(local_origin, store):
 
 async def test_add_failure_leaves_no_row_or_folder(store, fake_github, tmp_path):
     data = tmp_path / "data"
-    fake_github.routes[("GET", "/repos/acme/gone")] = (404, {"message": "Not Found"})
+    # acme/gone is not among the repos the token can see
     with pytest.raises(RepoError) as e:
         await store.add("acme/gone")
     assert e.value.reason == "repo_not_found"
 
     # GitHub knows it, but the clone fails: no row, no folder, nothing left in runtime/
-    fake_github.routes[("GET", "/repos/acme/broken")] = (200, {**REPO, "full_name": "acme/broken"})
+    fake_github.repos.append({**REPO, "full_name": "acme/broken"})
     store.git._remote_url = lambda name: (tmp_path / "missing.git").as_uri()
     with pytest.raises(RepoError) as e:
         await store.add("acme/broken")

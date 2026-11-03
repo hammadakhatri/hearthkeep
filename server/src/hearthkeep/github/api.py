@@ -1,7 +1,9 @@
 """A small GitHub REST client for one fine-grained personal access token.
 
 Talks to https://api.github.com only, never through an environment proxy, never following a
-redirect. Paths are limited to `/user` and `/repos/<owner>/<name>/...`. Errors carry fixed
+redirect. Paths are limited to `/user`, `GET /user/repos` and `/repos/<owner>/<name>/...`.
+A repo the owner types is looked up in `/user/repos`, so the typed name never becomes part
+of a URL; later calls use the canonical name GitHub returned. Errors carry fixed
 owner-facing copy: GitHub's own message text is never passed on, so the token cannot leak
 through an error.
 """
@@ -24,6 +26,9 @@ API_VERSION = "2022-11-28"
 TIMEOUT_SECONDS = 20
 METHODS = frozenset({"GET", "POST", "PATCH", "PUT"})
 DIFF_MEDIA_TYPE = "application/vnd.github.diff"
+USER_REPOS_PATH = "/user/repos"
+USER_REPOS_PER_PAGE = 100
+USER_REPOS_MAX_PAGES = 10
 
 Reason = Literal["unauthorized", "not_found", "forbidden", "rate_limited", "unavailable", "refused"]
 
@@ -71,9 +76,11 @@ def noreply_email(user: GitHubUser) -> str:
     return f"{user.id}+{user.login}@users.noreply.github.com"
 
 
-def _path_allowed(path: str) -> bool:
+def _path_allowed(method: str, path: str) -> bool:
     if path == "/user":
         return True
+    if path == USER_REPOS_PATH:
+        return method == "GET"  # listing only; POST here would create a repo
     match = _PATH_RE.fullmatch(path)
     if match is None or not valid_repo_name(match["name"]):
         return False
@@ -154,7 +161,7 @@ class GitHubClient:
     ) -> Any:
         """One call to GitHub. Only GET, POST, PATCH and PUT (nothing here ever deletes).
         `accept` may ask for a diff (`application/vnd.github.diff`), returned as text."""
-        if method not in METHODS or not _path_allowed(path):
+        if method not in METHODS or not _path_allowed(method, path):
             raise GitHubError("refused")
         if accept is not None and accept != DIFF_MEDIA_TYPE:
             raise GitHubError("refused")
@@ -169,15 +176,34 @@ class GitHubClient:
             raise GitHubError("unavailable") from None
 
     async def repo(self, full_name: str) -> RepoInfo:
+        """The repo named `full_name` (any case) among those the token can access, from
+        `GET /user/repos` (at most 10 pages of 100). The URL is fixed: the typed name is
+        only compared, never sent. No match: `not_found`."""
         if not valid_repo_name(full_name):
             raise GitHubError("refused")
-        data = await self.request("GET", f"/repos/{full_name}")
-        try:
-            return RepoInfo(
-                full_name=str(data["full_name"]),
-                default_branch=str(data["default_branch"]),
-                private=bool(data["private"]),
-                can_push=bool((data.get("permissions") or {}).get("push", False)),
+        wanted = full_name.casefold()
+        for page in range(1, USER_REPOS_MAX_PAGES + 1):
+            entries = await self.request(
+                "GET", USER_REPOS_PATH, params={"per_page": USER_REPOS_PER_PAGE, "page": page}
             )
-        except (KeyError, TypeError, AttributeError):
-            raise GitHubError("unavailable") from None
+            if not isinstance(entries, list):
+                raise GitHubError("unavailable")
+            for data in entries:
+                name = data.get("full_name") if isinstance(data, dict) else None
+                if isinstance(name, str) and name.casefold() == wanted:
+                    return _repo_info(data)
+            if len(entries) < USER_REPOS_PER_PAGE:
+                break
+        raise GitHubError("not_found")
+
+
+def _repo_info(data: dict) -> RepoInfo:
+    try:
+        return RepoInfo(
+            full_name=str(data["full_name"]),
+            default_branch=str(data["default_branch"]),
+            private=bool(data["private"]),
+            can_push=bool((data.get("permissions") or {}).get("push", False)),
+        )
+    except (KeyError, TypeError, AttributeError):
+        raise GitHubError("unavailable") from None

@@ -334,7 +334,7 @@ async def repo_fixture(tmp_path, fake_docker):
     data = tmp_path / "data"
     data.mkdir()
     fake = FakeGitHub()
-    fake.routes[("GET", "/repos/acme/widgets")] = (200, REPO)
+    fake.repos.append(REPO)
     store = make_store(data, make_origin(tmp_path), fake)
     repo = await store.add(R)
     deps = DepsCache(store.conn, fake_docker.argv, TAG)

@@ -21,7 +21,7 @@ pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 @pytest.fixture
 def fake_github():
     fake = FakeGitHub()
-    fake.routes[("GET", "/repos/acme/widgets")] = (200, REPO)
+    fake.repos.append(REPO)
     return fake
 
 
@@ -88,7 +88,7 @@ def test_add_list_and_errors(harness, api_client, fake_github):
     assert (bad.status_code, bad.json()["reason"]) == (422, "name_format")
     missing = add(api_client, "acme/gone")
     assert (missing.status_code, missing.json()["reason"]) == (404, "repo_not_found")
-    fake_github.routes[("GET", "/repos/acme/broken")] = (200, {**REPO, "full_name": "acme/broken"})
+    fake_github.repos.append({**REPO, "full_name": "acme/broken"})
     # the clone can't reach this one's origin
     hk = api_client.app.state.hk
     hk.repos.git._remote_url = lambda name: (harness.data / "nowhere.git").as_uri()

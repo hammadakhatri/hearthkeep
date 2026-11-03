@@ -226,7 +226,7 @@ async def make_fixture(tmp_path, docker, tag) -> Fixture:
     data = tmp_path / "data"
     data.mkdir()
     fake = FakeGitHub()
-    fake.routes[("GET", "/repos/acme/widgets")] = (200, REPO)
+    fake.repos.append(REPO)
     store = make_store(data, make_origin(tmp_path), fake)
     repo = await store.add(R)
     deps = DepsCache(store.conn, docker, tag)
@@ -462,7 +462,7 @@ def api_client(harness, tmp_path_factory):
     if shutil.which("git") is None:
         pytest.skip("needs git")
     fake = FakeGitHub()
-    fake.routes[("GET", "/repos/acme/widgets")] = (200, REPO)
+    fake.repos.append(REPO)
     origin = make_origin(tmp_path_factory.mktemp("origin"))
     SecretStore(harness.data).put(TOKEN_SECRET, TOKEN)
     git = GitRunner(harness.data, protocol="file", remote_url=lambda name: origin.as_uri())
