@@ -469,7 +469,7 @@ Hearthkeep can read the files you attach to a chat and analyse them with Python.
 
 Docker Desktop has to be running whenever you want to analyse a file. After an update that changes the sandbox, `sandbox status` shows the image as missing; run `sandbox build` again.
 
-**Run `hearthkeep sandbox build` again after updating.** The image's tag is a hash of its files, so an update that changes the sandbox (the next one does: it reads dates written day/month/year and finds gaps in dated data) needs a new image. Until you build it, Python answers that the sandbox isn't built yet. The same goes for the repo image and GitHub tests.
+**Run `hearthkeep sandbox build` again after updating.** The image's tag is a hash of its files, so an update that changes a sandbox needs a new image. Until you build it, Python answers that the sandbox isn't built yet. The same goes for the repo image and GitHub tests.
 
 ## 12. Optional: GitHub
 

@@ -128,7 +128,7 @@ Numbers in your own question and in the chat's file names are not marked. This i
 
 ## Notifications: Hearthkeep's only outgoing connection
 
-When a file or summary is sent to your devices, Hearthkeep can nudge a device that opted in with a web push notification. This is the one place Hearthkeep contacts the internet.
+When a file or summary is sent to your devices, Hearthkeep can nudge a device that opted in with a web push notification. This is the only notification connection, and it carries no content. (GitHub, once you turn it on, is the other outgoing connection: see [GitHub](#github).)
 
 - **No content.** The push has no body at all. The notification text is fixed in the app (`A file is ready in Hearthkeep`); the file itself is fetched from your own PC when you open the app.
 - **What the push service sees.** Google, Mozilla, Apple or Microsoft sees the device's endpoint address and a VAPID signature proving the push comes from your server. They never see a file, a name, a chat or a summary.

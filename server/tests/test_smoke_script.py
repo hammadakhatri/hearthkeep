@@ -121,3 +121,27 @@ def test_a_repo_without_a_token_fails_the_github_steps(no_server, monkeypatch, c
     assert "FAIL github setup: HK_SMOKE_GITHUB_TOKEN is not set" in out
     assert "SKIP github edit" in out
     assert "someone/throwaway" not in out
+
+
+def test_an_already_saved_token_is_never_replaced_or_removed(monkeypatch):
+    import smoke_e2e
+
+    class Connected:
+        def json(self):
+            return {"git": True, "connected": True}
+
+    class Client:
+        cred_id = "dev"
+        http = None
+
+        def get(self, path):
+            return Connected()
+
+        def post(self, path, body=None):
+            raise AssertionError("no request may follow")
+
+    state = {"gh_repo": "someone/throwaway", "gh_token": "github_pat_" + "a" * 30}
+    with pytest.raises(SmokeError, match="already saved"):
+        smoke_e2e.check_github_setup(Client(), state)
+    assert "token_saved" not in state
+    smoke_e2e.github_cleanup(Client(), state)  # nothing saved by this run: nothing removed
