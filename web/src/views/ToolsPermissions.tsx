@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
+import type { AddonId } from '../api/addons'
 import { api, isApiError } from '../api/client'
 import { passkeyErrorMessage, stepUp } from '../api/webauthn'
 import { ModelList } from '../components/ModelList'
 import { TriToggle, type Level } from '../components/TriToggle'
+import { useOpenSettings } from '../shell/AddonsContext'
 import { AlertIcon, InfoIcon } from '../shell/icons'
 
 export type ToolSetting = {
@@ -11,18 +13,17 @@ export type ToolSetting = {
   effective_level: Level
   description: string
   tools?: string[]
+  /** The add-on this tool needs, with its state; null when it needs none. */
+  addon?: { id: AddonId; state: string; ready: boolean; short: string | null; message: string } | null
 }
 
 /** Owner-facing names for the permission keys the server knows. */
 const NAMES: Record<string, string> = {
-  wallet: 'Wallet',
-  news: 'News & web search',
   files: 'Files',
   python: 'Python',
   images: 'Image generation',
   github: 'GitHub',
   github_tests: 'GitHub tests',
-  demo: 'Demo tools',
 }
 
 export function toolName(key: string): string {
@@ -37,13 +38,14 @@ function ToolRow({ setting, onSaved }: { setting: ToolSetting; onSaved: (s: Tool
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const name = toolName(setting.tool)
-  const installed = setting.tools === undefined || setting.tools.length > 0
+  const openSettings = useOpenSettings()
+  const addon = setting.addon && !setting.addon.ready ? setting.addon : null
 
   async function change(level: Level) {
     setBusy(true)
     setError(null)
     try {
-      // Loosening needs Face ID / Touch ID; tightening never does.
+      // Loosening needs your passkey; tightening never does.
       const widening = WIDTH[level] > WIDTH[setting.level]
       let saved: ToolSetting
       try {
@@ -55,7 +57,7 @@ function ToolRow({ setting, onSaved }: { setting: ToolSetting; onSaved: (s: Tool
       }
       onSaved(saved)
     } catch (e) {
-      if (isApiError(e, 'step_up_required')) setError("Face ID / Touch ID couldn't confirm it. Try again.")
+      if (isApiError(e, 'step_up_required')) setError("Your passkey couldn't confirm it. Try again.")
       else if (isApiError(e, 'network')) setError("Can't reach Hearthkeep. Try again in a moment.")
       else if (isApiError(e)) setError("That change didn't save. Try again.")
       else setError(passkeyErrorMessage(e, 'Change'))
@@ -67,11 +69,14 @@ function ToolRow({ setting, onSaved }: { setting: ToolSetting; onSaved: (s: Tool
     <li className="perm" aria-busy={busy || undefined}>
       <div className="perm-text">
         <b>{name}</b>
-        <p className="perm-sub">{installed ? setting.description : 'Arrives in a later update. You can choose its level now.'}</p>
-        {setting.effective_level !== setting.level && (
+        <p className="perm-sub">{setting.description}</p>
+        {addon && (
           <p className="perm-flag">
             <InfoIcon />
-            <span>Needs Docker to run freely</span>
+            <span>{addon.short ?? addon.message} —</span>{' '}
+            <button type="button" className="link" onClick={() => openSettings(`addon-${addon.id}`)}>
+              Set up
+            </button>
           </p>
         )}
         {error && (
@@ -109,7 +114,7 @@ export function ToolsPermissions() {
         <h2 id="perms-title">What your assistant may do</h2>
         <p>
           <b>Allowed</b> runs on its own, <b>Ask</b> waits for you, <b>Off</b> is never offered. Anything that leaves
-          your computer always asks first. Loosening a tool asks for Face ID / Touch ID.
+          your computer always asks first. Loosening a tool asks for your passkey.
         </p>
       </header>
       <ModelList />

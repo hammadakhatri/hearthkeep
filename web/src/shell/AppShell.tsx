@@ -124,7 +124,7 @@ export function AppShell({ initialView = DEFAULT_VIEW, onSignOut }: Props) {
                 ) : view === 'images' ? (
                   <Images />
                 ) : view === 'analysis' ? (
-                  <Analysis onOpenChat={openChat} />
+                  <Analysis onOpenChat={openChat} onStartChat={() => select('chat')} />
                 ) : view === 'repos' ? (
                   <Repos />
                 ) : view === 'settings' ? (

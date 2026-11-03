@@ -11,6 +11,7 @@ import { Headline, TurnFindings } from '../components/FindingsCard'
 import { AttachedFiles, FileChips, chipFromInfo, useChatFiles, type FileChipItem } from '../components/FileChips'
 import { attachedPhotoLine, PhotoChip, uploadUrl, usePhoto } from '../components/Photo'
 import { WorkedSteps } from '../components/WorkedSteps'
+import { useAddon, useAddonsState, useOpenSettings } from '../shell/AddonsContext'
 import { Composer } from '../shell/Composer'
 import { AlertIcon, ChatsIcon, NewChatIcon, TrashIcon } from '../shell/icons'
 import {
@@ -54,6 +55,10 @@ function sendError(error: unknown): string {
     return "Hearthkeep couldn't read its stored secrets. Check the server."
   }
   if (isApiError(error, 'network')) return "Can't reach Hearthkeep. Your message wasn't sent."
+  if (isApiError(error, 'chat_not_set_up')) {
+    const message = (error.body as { message?: unknown } | null)?.message
+    if (typeof message === 'string' && message) return message
+  }
   return "Your message couldn't be sent. Try again."
 }
 
@@ -129,6 +134,16 @@ export function Chat({
 
   const currentChat = chats?.find((c) => c.id === current) ?? null
   const busy = live !== null && live.chatId === current
+  const chat = useAddon('chat')
+  const addonsState = useAddonsState()
+  const reloadAddons = addonsState?.reload
+  const openSettings = useOpenSettings()
+  // Unknown add-ons never block: the composer behaves as it did before add-ons.
+  const blocked =
+    chat && (chat.state === 'not_set_up' || chat.state === 'offline' || chat.state === 'error')
+      ? { message: chat.message, onSetUp: () => openSettings('addon-chat') }
+      : null
+  const loadingModel = chat !== null && (chat.state === 'starting' || chat.details.loaded === false)
 
   const learnFiles = useCallback(async (chatId: string) => {
     if (listed.current.has(chatId)) return
@@ -277,6 +292,8 @@ export function Chat({
         apply(event)
         if (event.type === 'turn_done' || event.type === 'turn_error') {
           finish()
+          // The model may have loaded (or stopped) during the turn.
+          reloadAddons?.()
           setChats((all) => all?.map((c) => (c.id === chatId ? { ...c, active_turn: null } : c)) ?? null)
         }
       },
@@ -288,7 +305,7 @@ export function Chat({
         finish()
       },
     )
-  }, [live])
+  }, [live, reloadAddons])
 
   // Keep the newest words in view, unless the owner has scrolled up to read.
   useLayoutEffect(() => {
@@ -504,6 +521,7 @@ export function Chat({
                   chipOf={chipOf}
                   onDeleteFile={askDeleteFile}
                   n={index + 1}
+                  loadingModel={loadingModel}
                   onResolved={(id, status) => resolved(item.key, id, status)}
                 />
               ),
@@ -529,6 +547,8 @@ export function Chat({
             photo={attach.photo}
             files={{ uploading: files.uploading, ready: files.readyIds.length }}
             onPickFile={pickFile}
+            blocked={blocked}
+            notice={chat?.state === 'starting' ? chat.message : null}
           />
         </div>
       </section>
@@ -587,10 +607,13 @@ function AssistantTurn({
   chipOf,
   onDeleteFile,
   n,
+  loadingModel,
   onResolved,
 }: FileProps & {
   item: AssistantItem
   n: number
+  /** The chat model is loading (or will load on this turn): say so next to the dots. */
+  loadingModel: boolean
   onResolved: (approvalId: string, status: ApprovalStatus) => void
 }) {
   const streaming = item.state === 'streaming'
@@ -619,10 +642,13 @@ function AssistantTurn({
       ))}
       {hasRuns ? <TurnFindings item={item} /> : <Headline item={item} />}
       {quiet && (
-        <div className="typing" role="status" aria-label="Hearthkeep is writing">
-          <span />
-          <span />
-          <span />
+        <div className="typing-wrap">
+          <div className="typing" role="status" aria-label="Hearthkeep is writing">
+            <span />
+            <span />
+            <span />
+          </div>
+          {loadingModel && <span>Loading the chat model…</span>}
         </div>
       )}
       {item.error && (

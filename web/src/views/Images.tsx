@@ -5,7 +5,9 @@ import { ImageGrid, Thumb, type GridImage } from '../components/ImageGrid'
 import { ImageViewer, type ViewerImage } from '../components/ImageViewer'
 import { Markdown } from '../components/Markdown'
 import { PhotoButton, PhotoChip, attachedPhotoLine, usePhoto } from '../components/Photo'
-import { AlertIcon, ImagesIcon } from '../shell/icons'
+import { SetUpPanel } from '../components/SetUpPanel'
+import { useAddon } from '../shell/AddonsContext'
+import { AlertIcon } from '../shell/icons'
 import { LOST_STREAM } from './Chat'
 import { applyEvent, liveTurn, turnImages, type AssistantItem, type ChatSummary } from './chatModel'
 
@@ -152,6 +154,9 @@ export function Images() {
   const cursor = useRef<string | null>(null)
   const ids = { shape: useId(), count: useId(), text: useId(), photoWhy: useId() }
   const attach = usePhoto()
+  const images = useAddon('images')
+  // Known and not ready: one panel replaces the form. Unknown never gates.
+  const needsSetUp = images !== null && !images.ready
 
   const cards = models.state === 'ready' ? models.cards : []
   const notSetUp = models.state === 'none'
@@ -340,7 +345,7 @@ export function Images() {
     if (image) setViewing({ list, id: image.id })
   }
 
-  const showGallery = !(notSetUp && gallery !== null && gallery.length === 0)
+  const showGallery = !((notSetUp || needsSetUp) && gallery !== null && gallery.length === 0)
 
   return (
     <div className="images">
@@ -349,15 +354,8 @@ export function Images() {
         <p>Made on this PC with your own image models.</p>
       </header>
 
-      {notSetUp ? (
-        <div className="images-setup">
-          <span className="images-setup-icon" aria-hidden="true">
-            <ImagesIcon width={26} height={26} />
-          </span>
-          <p className="images-setup-title">Image generation isn't set up on this PC yet.</p>
-          <p className="images-setup-sub">Add an image model card and tell Hearthkeep where ComfyUI lives.</p>
-          <p className="images-setup-sub">See docs/models.md in the Hearthkeep repository.</p>
-        </div>
+      {needsSetUp ? (
+        <SetUpPanel addon={images} />
       ) : (
         <form className="describe" onSubmit={create} aria-label="Create images">
           <label className="sr-only" htmlFor={ids.text}>

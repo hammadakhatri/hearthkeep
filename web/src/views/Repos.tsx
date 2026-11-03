@@ -18,6 +18,8 @@ import {
 import { passkeyErrorMessage } from '../api/webauthn'
 import { ConfirmDelete } from '../components/ConfirmDelete'
 import { relativeTime } from '../components/DevicesPanel'
+import { SetUpPanel } from '../components/SetUpPanel'
+import { useAddon } from '../shell/AddonsContext'
 import { AlertIcon, MoreIcon, PasskeyIcon, ReposIcon } from '../shell/icons'
 
 const REMOVE_WARNING = "Removing deletes Hearthkeep's copy, including changes that were never pushed."
@@ -159,6 +161,7 @@ function RepoItem({
   repo,
   busy,
   error,
+  canUpdate,
   onUpdate,
   onRemove,
   onOpenRun,
@@ -166,6 +169,8 @@ function RepoItem({
   repo: RepoRow
   busy: boolean
   error: string | null
+  /** False while GitHub isn't set up: saved repos stay listed, but fetching can't work. */
+  canUpdate: boolean
   onUpdate: () => void
   onRemove: () => void
   onOpenRun: (runId: string) => void
@@ -214,18 +219,20 @@ function RepoItem({
           <MoreIcon />
         </button>
         <div className={`repo-actions${menu ? ' open' : ''}`}>
-          <button
-            type="button"
-            className="btn"
-            aria-label={`Update ${repo.full_name}`}
-            disabled={busy}
-            onClick={() => {
-              setMenu(false)
-              onUpdate()
-            }}
-          >
-            Update
-          </button>
+          {canUpdate && (
+            <button
+              type="button"
+              className="btn"
+              aria-label={`Update ${repo.full_name}`}
+              disabled={busy}
+              onClick={() => {
+                setMenu(false)
+                onUpdate()
+              }}
+            >
+              Update
+            </button>
+          )}
           <button
             type="button"
             className="btn ghost danger-text"
@@ -253,6 +260,9 @@ function RepoItem({
 /** The repositories Hearthkeep keeps a copy of: add, update, remove, and read the last test run. */
 export function Repos() {
   const titleId = useId()
+  const addon = useAddon('github')
+  // Known and not ready: one panel replaces the notes and the add form. Unknown keeps them.
+  const needsSetUp = addon !== null && !addon.ready
   const [github, setGitHub] = useState<GitHubState | null>(null)
   const [repos, setRepos] = useState<RepoRow[] | null>(null)
   const [failed, setFailed] = useState(false)
@@ -304,7 +314,7 @@ export function Repos() {
     setBusyId(null)
   }
 
-  const canAdd = github !== null && github.git && github.connected
+  const canAdd = !needsSetUp && github !== null && github.git && github.connected
 
   return (
     <div className="repos">
@@ -325,12 +335,13 @@ export function Repos() {
           </div>
         ) : (
           <>
-            {!github.git && (
+            {needsSetUp && <SetUpPanel addon={addon} />}
+            {!needsSetUp && !github.git && (
               <div className="note info">
                 <span>Install Git to use GitHub with Hearthkeep.</span>
               </div>
             )}
-            {github.git && !github.connected && (
+            {!needsSetUp && github.git && !github.connected && (
               <div className="note info">
                 <span>Connect GitHub in Settings to add repositories.</span>
               </div>
@@ -343,6 +354,7 @@ export function Repos() {
                     repo={repo}
                     busy={busyId === repo.id}
                     error={rowErrors[repo.id] ?? null}
+                    canUpdate={!needsSetUp}
                     onUpdate={() => void update(repo)}
                     onRemove={() => setRemoving(repo)}
                     onOpenRun={(runId) => setRun({ repo, runId })}

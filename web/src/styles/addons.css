@@ -57,3 +57,69 @@
   margin-top: auto;
   padding-top: var(--sp-2);
 }
+
+/* The panel a view shows in place of what its add-on can't do yet. */
+.setup-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-4);
+  background: var(--s1);
+  border: 1px solid var(--line);
+  border-radius: 22px;
+}
+
+.setup-panel-title {
+  font-size: var(--text-lg, var(--text-md));
+  font-weight: 600;
+  letter-spacing: var(--tracking-snug);
+}
+
+.setup-panel-needs,
+.setup-panel-message {
+  max-width: 56ch;
+  color: var(--muted);
+}
+
+.setup-panel .btn {
+  margin-top: var(--sp-2);
+}
+
+/* Visible, never tooltip-only: why the message box is off, or what is happening. */
+.composer-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 0 6px;
+  padding: 0 4px;
+  font-size: var(--text-sm, 13px);
+  color: var(--muted);
+}
+
+.status[data-state='not_set_up'] {
+  color: var(--muted);
+}
+
+.typing-wrap {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--muted);
+}
+
+.perm-flag .link {
+  padding: 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.perm-flag .link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

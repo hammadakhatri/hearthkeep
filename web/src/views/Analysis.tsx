@@ -15,6 +15,8 @@ import { ConfirmDelete } from '../components/ConfirmDelete'
 import { FileChips, chipFromInfo } from '../components/FileChips'
 import { MARK_LEGEND } from '../components/FindingsCard'
 import { Markdown } from '../components/Markdown'
+import { SetUpPanel } from '../components/SetUpPanel'
+import { useAddon } from '../shell/AddonsContext'
 import { AlertIcon, CloseIcon } from '../shell/icons'
 import { DELETE_FILE_BODY } from './Chat'
 
@@ -257,7 +259,15 @@ function headingIdOf(chatId: string): string {
 type Opened = { chat: AnalysisChat; chart: AnalysisChart; opener: HTMLElement }
 
 /** Every attached file and every chart, a section per chat, newest first. */
-export function Analysis({ onOpenChat }: { onOpenChat: (chatId: string, runId?: string) => void }) {
+export function Analysis({
+  onOpenChat,
+  onStartChat,
+}: {
+  onOpenChat: (chatId: string, runId?: string) => void
+  /** Takes the owner to Chat to start a chat with a file. */
+  onStartChat?: () => void
+}) {
+  const analysis = useAddon('analysis')
   const [chats, setChats] = useState<AnalysisChat[] | null>(null)
   const [failed, setFailed] = useState(false)
   const [more, setMore] = useState(false)
@@ -353,6 +363,7 @@ export function Analysis({ onOpenChat }: { onOpenChat: (chatId: string, runId?: 
         </h2>
         <p>Every file you attached and every chart, grouped by chat.</p>
       </header>
+      {analysis && !analysis.ready && <SetUpPanel addon={analysis} />}
       {failed ? (
         <p className="note error" role="alert">
           <AlertIcon />
@@ -366,7 +377,14 @@ export function Analysis({ onOpenChat }: { onOpenChat: (chatId: string, runId?: 
           Loading…
         </p>
       ) : chats.length === 0 ? (
-        <p className="analysis-empty">{ANALYSIS_EMPTY}</p>
+        <div className="analysis-empty-box">
+          <p className="analysis-empty">{ANALYSIS_EMPTY}</p>
+          {onStartChat && (!analysis || analysis.ready) && (
+            <button type="button" className="btn" onClick={onStartChat}>
+              Start a chat with a file
+            </button>
+          )}
+        </div>
       ) : (
         <>
           {chats.map((chat) => (

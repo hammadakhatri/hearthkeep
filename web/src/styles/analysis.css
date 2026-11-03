@@ -235,3 +235,10 @@
     animation: none;
   }
 }
+
+.analysis-empty-box {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-3);
+}
