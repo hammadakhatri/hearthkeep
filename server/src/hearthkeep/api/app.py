@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -42,6 +42,7 @@ from hearthkeep.api import (
     routes_sent,
     routes_server,
     routes_settings,
+    routes_setup,
     routes_uploads,
 )
 from hearthkeep.api.common import (
@@ -79,6 +80,7 @@ from hearthkeep.sandbox.runner import SandboxRunner
 from hearthkeep.sandbox.runs import RunStore
 from hearthkeep.secrets import SecretStore, SecretStoreError
 from hearthkeep.sent import SentStore
+from hearthkeep.setupmode import SetupMode
 from hearthkeep.tools.base import ToolRegistry
 from hearthkeep.tools.files import FilesTool
 from hearthkeep.tools.github import GitHubTool
@@ -229,6 +231,16 @@ def _install_static(app: FastAPI, web_dist: Path) -> None:
     root = web_dist.resolve()
     index = root / "index.html"
 
+    @app.get("/setup", include_in_schema=False)
+    async def setup_page(request: Request):
+        # The setup page only while setup mode is on and no passkey exists; afterwards (or
+        # on a normal server) the app itself. Never cached: it must not outlive setup.
+        if not routes_setup.setup_open(services(request)):
+            return RedirectResponse("/", status_code=302)
+        if index.is_file():
+            return FileResponse(index, headers={"Cache-Control": "no-store"})
+        return error_response(404, "not_found")
+
     @app.get("/{path:path}", include_in_schema=False)
     async def spa(path: str):
         if path == "api" or path.startswith("api/"):
@@ -302,13 +314,16 @@ def create_app(
     git: GitRunner | None = None,
     addon_probes: Probes | None = None,
     control: ServerControl | None = None,
+    setup: SetupMode | None = None,
 ) -> FastAPI:
     """`sandbox`, when given (tests), is used as is; otherwise one is made when Docker is
     available. Without one the `python` tool is still offered and answers that Docker is
     needed: nothing ever runs on the host. `push_sender`, when given (tests: a fake, or one
     on a mock transport), is used instead of the real one, so tests never touch the network;
     `github_transport` does the same for the GitHub client, and `git` (a runner on a local
-    bare repo) for host git. `addon_probes` (tests) replaces how the add-on checks are made."""
+    bare repo) for host git. `addon_probes` (tests) replaces how the add-on checks are made.
+    `setup`, given by `hearthkeep setup`, turns on setup mode (`/setup` and `/api/setup/*`);
+    the control then defaults to an unsupervised setup-mode one."""
     # The static files' types come from `mimetypes`, which on Windows reads the registry: a
     # .js mapped to text/plain there would stop the service worker from registering.
     mimetypes.add_type("text/javascript", ".js")
@@ -320,7 +335,7 @@ def create_app(
     check = health_check or chat_model_health_check(settings)
     stack = models or ModelStack()
     store = secrets or SecretStore(Path(settings.data_dir))
-    server_control = control or ServerControl(supervised=False)
+    server_control = control or ServerControl(supervised=False, setup_mode=setup is not None)
 
     def github_token() -> str | None:
         try:
@@ -450,6 +465,7 @@ def create_app(
                 limiter=rate_limiter or RateLimiter(),
                 health_check=check,
                 control=server_control,
+                setup=setup,
                 sse_keepalive=sse_keepalive,
                 gpu=gpu,
                 images=images,
@@ -529,6 +545,7 @@ def create_app(
         }
 
     for module in (
+        routes_setup,
         routes_auth,
         routes_chats,
         routes_approvals,

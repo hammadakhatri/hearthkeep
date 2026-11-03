@@ -24,6 +24,7 @@ DEFAULT_DATA_DIR = PureWindowsPath(r"C:\Hearthkeep\data")
 # llama.cpp's 260-character limit minus the deepest path Hearthkeep makes in the data folder.
 MAX_DATA_DIR_CHARS = 100
 LOCATION_FILE = "location.json"
+DRIVE_REMOTE = 4  # what GetDriveTypeW answers for a network (mapped) drive
 _DATA_MARKERS = ("config.toml", "hearthkeep.db")
 
 UNSUPPORTED_HOST = (
@@ -112,6 +113,12 @@ class Host(Protocol):
     def write_location(self, data_dir: Path) -> None: ...
 
 
+def _drive_type(root: str) -> int:
+    import ctypes
+
+    return ctypes.windll.kernel32.GetDriveTypeW(root)
+
+
 class WindowsHost:
     name = "windows"
     supported = True
@@ -119,8 +126,26 @@ class WindowsHost:
     def default_data_dir(self) -> Path | None:
         return Path(str(DEFAULT_DATA_DIR))
 
+    def drive_type(self, root: str) -> int:
+        return _drive_type(root)
+
+    def on_network_drive(self, path: Path) -> bool:
+        """Whether `path` is on a mapped network drive (`Z:` and the like pass the path rules).
+        False when Windows can't say."""
+        drive = PureWindowsPath(str(path)).drive
+        if not re.fullmatch(r"[A-Za-z]:", drive):
+            return False
+        try:
+            return self.drive_type(drive + "\\") == DRIVE_REMOTE
+        except Exception:  # no kernel32 (not Windows) or no answer: not known to be remote
+            return False
+
     def check_data_dir(self, path: Path) -> str | None:
-        return check_data_dir(path)
+        """`check_data_dir`, plus: not on a mapped network drive."""
+        message = check_data_dir(path)
+        if message is None and self.on_network_drive(path):
+            return NOT_LOCAL
+        return message
 
     def startup_status(self, *, run=subprocess.run) -> StartupStatus:
         return startup.status(run=run)

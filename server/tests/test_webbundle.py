@@ -8,6 +8,7 @@ import io
 import subprocess
 import tomllib
 import zipfile
+import zlib
 from pathlib import Path
 
 import httpx
@@ -22,7 +23,9 @@ from hearthkeep.webbundle import (
     BUILDING,
     BUNDLE_BAD_CHECKSUM,
     BUNDLE_DOWNLOAD_FAILED,
+    BUNDLE_NOT_PUBLISHED,
     BUNDLE_READY,
+    BUNDLE_SWAP_FAILED,
     BUNDLE_UNUSABLE,
     MAIN_IS_FOR_DEVELOPERS,
     MAX_BUNDLE_FILES,
@@ -172,7 +175,15 @@ def test_version_matches_pyproject():
 
 @pytest.mark.parametrize(
     "v, out",
-    [("0.1.0", "0.1.0"), ("0.0.0", None), ("0.2.0.dev0", None), ("1.0", None), ("v1.0.0", None)],
+    [
+        ("0.1.0", "0.1.0"),
+        ("0.0.0", None),
+        ("0.2.0.dev0", None),
+        ("1.0", None),
+        ("v1.0.0", None),
+        ("0.1.0\n", None),  # `$` would match before a trailing newline
+        ("０.1.0", None),  # a full-width digit is a `\d` but not [0-9]
+    ],
 )
 def test_release_version(v, out):
     assert release_version(v) == out
@@ -301,10 +312,42 @@ def test_network_error_says_download_failed(tmp_path):
     assert said == [BUNDLE_DOWNLOAD_FAILED]
 
 
-def test_missing_release_asset_says_download_failed(tmp_path):
+def test_missing_release_asset_says_not_published_yet(tmp_path):
     said = []
     assert ensure(tmp_path, "0.1.0", MockClient({}), said=said) == "failed"
+    assert said == [BUNDLE_NOT_PUBLISHED]
+
+
+def test_server_error_for_the_asset_says_download_failed(tmp_path):
+    routes = {BASE + WEB_ZIP: httpx.Response(503)}
+    said = []
+    assert ensure(tmp_path, "0.1.0", MockClient(routes), said=said) == "failed"
     assert said == [BUNDLE_DOWNLOAD_FAILED]
+
+
+def test_a_failed_swap_says_so_and_keeps_the_old_app(tmp_path, monkeypatch):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_bytes(b"old")
+
+    def refuse(new, dist):
+        raise PermissionError("in use")
+
+    monkeypatch.setattr(webbundle, "_swap_in", refuse)
+    zip_bytes = make_zip({"index.html": b"<html>"})
+    said = []
+    assert ensure(tmp_path, "0.1.0", MockClient(served(zip_bytes)), said=said) == "failed"
+    assert said == [BUNDLE_SWAP_FAILED]
+    assert (dist / "index.html").read_bytes() == b"old"
+    assert not (tmp_path / "dist.new").exists()
+
+
+def test_an_interrupted_swap_is_put_back_first(tmp_path):
+    built_dist(tmp_path).rename(tmp_path / "dist.old")  # a swap stopped between its renames
+    said = []
+    assert ensure(tmp_path, "0.1.0", RaisingClient(), said=said) == "ready"
+    assert verify_dist(tmp_path / "dist", "0.1.0")
+    assert not (tmp_path / "dist.old").exists()
 
 
 def test_http_redirect_is_refused(tmp_path):
@@ -422,6 +465,38 @@ def test_safe_extract_refuses_a_huge_entry(tmp_path):
 def test_safe_extract_refuses_too_many_entries(tmp_path):
     z = tmp_path / "b.zip"
     z.write_bytes(make_zip({f"f{i}.txt": b"" for i in range(MAX_BUNDLE_FILES + 1)}))
+    with pytest.raises(BundleError):
+        safe_extract(z, tmp_path / "out")
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        zlib.error("invalid stored block lengths"),
+        RuntimeError("encrypted"),
+        NotImplementedError("compression type 99"),
+        ValueError("bad entry"),
+    ],
+)
+def test_safe_extract_turns_unpacking_errors_into_bundle_errors(tmp_path, monkeypatch, error):
+    z = tmp_path / "b.zip"
+    z.write_bytes(make_zip({"index.html": b"<html>"}))
+
+    def broken(self, *args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", broken)
+    with pytest.raises(BundleError):
+        safe_extract(z, tmp_path / "out")
+
+
+def test_safe_extract_refuses_corrupt_compressed_data(tmp_path):
+    data = bytearray(make_zip({"index.html": b"<html>" * 200}))
+    start = data.index(b"index.html") + len(b"index.html")  # the local header's name ends here
+    for i in range(start, start + 20):
+        data[i] ^= 0xFF
+    z = tmp_path / "b.zip"
+    z.write_bytes(bytes(data))
     with pytest.raises(BundleError):
         safe_extract(z, tmp_path / "out")
 
@@ -555,6 +630,8 @@ def test_bundle_copy_is_ascii_and_has_no_commands():
         BUNDLE_DOWNLOAD_FAILED,
         BUNDLE_BAD_CHECKSUM,
         BUNDLE_UNUSABLE,
+        BUNDLE_SWAP_FAILED,
+        BUNDLE_NOT_PUBLISHED,
         NO_BUNDLE_NO_REPO.format(v="0.1.0"),
         BUILDING,
         BUILD_FAILED,
