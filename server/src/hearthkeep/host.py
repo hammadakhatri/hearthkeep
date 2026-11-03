@@ -16,7 +16,7 @@ import tempfile
 from pathlib import Path, PureWindowsPath
 from typing import Protocol
 
-from hearthkeep import procutil, startup
+from hearthkeep import procutil, shortcut, startup
 from hearthkeep.startup import StartupStatus
 
 REPO_ROOT: Path = Path(__file__).resolve().parents[3]
@@ -53,7 +53,7 @@ def check_data_dir_text(text: str) -> str | None:
     first failing rule's message, or None when the path is acceptable."""
     path = PureWindowsPath(text)
     drive = path.drive
-    if text.startswith(("\\\\", "//")) or not path.root or len(drive) != 2 or drive[1] != ":":
+    if text.startswith(("\\\\", "//")) or not path.root or not re.fullmatch(r"[A-Za-z]:", drive):
         return NOT_LOCAL
     if len(str(path)) > MAX_DATA_DIR_CHARS:
         return TOO_LONG
@@ -130,7 +130,7 @@ class WindowsHost:
         return startup.disable(run=run)
 
     def install_shortcut(self, data_dir: Path, *, run=subprocess.run) -> None:
-        raise NotImplementedError("The Start menu shortcut is not built yet.")
+        shortcut.install_shortcut(data_dir, run=run)
 
     def spawn_detached(self, argv: list[str], *, popen=subprocess.Popen) -> None:
         popen(argv, **procutil.detached_popen_kwargs())
@@ -153,7 +153,7 @@ class WindowsHost:
         if not isinstance(data_dir, str) or not data_dir:
             return None
         path = Path(data_dir)
-        return path if path.is_dir() else None
+        return path if path.is_absolute() and path.is_dir() else None
 
     def write_location(self, data_dir: Path) -> None:
         """Record the data folder (resolved), replacing the file in one step."""

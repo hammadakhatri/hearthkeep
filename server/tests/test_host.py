@@ -10,7 +10,7 @@ import pytest
 from copy_rules import forbidden_in
 
 from hearthkeep import host as host_module
-from hearthkeep import procutil, startup
+from hearthkeep import procutil, shortcut, startup
 from hearthkeep.host import (
     DEFAULT_DATA_DIR,
     LOCATION_FILE,
@@ -63,6 +63,9 @@ def test_constants():
         (r"\\nas\share\hearthkeep", False),
         (r"hearthkeep\data", False),  # relative
         (r"C:hearthkeep\data", False),  # drive but not absolute
+        (r"1:\data", False),  # the drive must be a letter
+        (r"é:\data", False),
+        (r"$:\data", False),
         (r"\hearthkeep\data", False),  # no drive
         (r"C:\Dåta\Hearthkeep", False),  # non-ASCII
         (r"C:\Hearth%PATH%\data", False),
@@ -83,6 +86,7 @@ def test_unusual_data_paths(text, ok):
 def test_each_rule_has_its_own_message():
     assert "own drive" in check_data_dir_text(r"\\nas\share\hk")
     assert "too long" in check_data_dir_text("C:\\" + "a" * 98)
+    assert f"{MAX_DATA_DIR_CHARS} characters" in check_data_dir_text("C:\\" + "a" * 98)
     assert "English letters" in check_data_dir_text(r"C:\A&B\data")
 
 
@@ -181,9 +185,14 @@ def test_windows_host_startup_delegates_to_startup(windows, monkeypatch):
     assert seen == [("status", run), ("enable", Path("d"), run), ("disable", run)]
 
 
-def test_windows_shortcut_not_yet_built(windows):
-    with pytest.raises(NotImplementedError):
-        current_host().install_shortcut(Path("d"), run=lambda *a, **k: None)
+def test_windows_host_installs_the_shortcut_through_shortcut_module(windows, monkeypatch):
+    seen = []
+    run = object()
+    monkeypatch.setattr(
+        shortcut, "install_shortcut", lambda data_dir, *, run: seen.append((data_dir, run))
+    )
+    current_host().install_shortcut(Path("d"), run=run)
+    assert seen == [(Path("d"), run)]
 
 
 def test_location_round_trip_and_bad_file(tmp_path, local_app_data, windows):
@@ -203,6 +212,16 @@ def test_location_round_trip_and_bad_file(tmp_path, local_app_data, windows):
         file.write_text(garbage, encoding="utf-8")
         assert host.read_location() is None
     file.write_bytes(b"\xff\xfe\x00bad")
+    assert host.read_location() is None
+
+
+def test_location_must_be_absolute(tmp_path, local_app_data, windows, monkeypatch):
+    host = current_host()
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()  # a relative "data" would exist if it were honoured
+    file = local_app_data / "Hearthkeep" / LOCATION_FILE
+    file.parent.mkdir(parents=True)
+    file.write_text(json.dumps({"data_dir": "data"}), encoding="utf-8")
     assert host.read_location() is None
 
 

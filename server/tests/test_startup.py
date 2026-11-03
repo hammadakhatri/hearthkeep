@@ -74,8 +74,7 @@ def test_task_xml_has_logon_trigger_no_window_no_time_limit():
     assert exec_.findtext("t:Command", namespaces=NS) == str(PYTHONW)
     assert exec_.findtext("t:Command", namespaces=NS).endswith("pythonw.exe")
     args = exec_.findtext("t:Arguments", namespaces=NS)
-    log = data / "logs" / "hearthkeep.log"
-    assert args == f'-m hearthkeep serve --data "{data}" --log-file "{log}"'
+    assert args == f'-m hearthkeep launch --data "{data}"'
     assert "--insecure-dev-auth" not in xml
     assert exec_.findtext("t:WorkingDirectory", namespaces=NS) == str(data)
     # the values are escaped, not pasted into the markup
@@ -94,7 +93,7 @@ def test_enable_disable_status_call_schtasks(windows, tmp_path):
     assert f'--data "{tmp_path.resolve()}"' in run.created_xml
 
     status = startup.status(run=run)
-    assert status == startup.StartupStatus(True, True, str(tmp_path.resolve()))
+    assert status == startup.StartupStatus(True, True, str(tmp_path.resolve()), launcher=True)
     assert run.calls[-1][0] == [schtasks, "/Query", "/TN", "Hearthkeep", "/XML"]
 
     assert startup.disable(run=run) is True
@@ -105,7 +104,9 @@ def test_enable_disable_status_call_schtasks(windows, tmp_path):
 
 def test_status_reads_a_disabled_task(windows):
     run = FakeSchtasks(exists=True, enabled=False)
-    assert startup.status(run=run) == startup.StartupStatus(True, False, str(Path("<data>/hk")))
+    assert startup.status(run=run) == startup.StartupStatus(
+        True, False, str(Path("<data>/hk")), launcher=True
+    )
 
 
 def test_status_off_when_task_missing(windows):
@@ -169,8 +170,33 @@ def test_drive_root_data_folder_is_quoted_so_the_quote_survives():
     assert startup.quote_arg("Q:\\hk") == '"Q:\\hk"'
     xml = startup.task_xml(pythonw=PYTHONW, data_dir=Path(root), user="PC\\me")
     args = parse(xml).findtext("t:Actions/t:Exec/t:Arguments", namespaces=NS)
-    assert args.startswith('-m hearthkeep serve --data "Q:\\\\" --log-file ')
+    assert args == '-m hearthkeep launch --data "Q:\\\\"'
     assert startup._parse(xml).data_dir == root
+
+
+def test_task_runs_the_launcher_with_the_data_folder():
+    xml = startup.task_xml(
+        pythonw=Path(r"C:\py\pythonw.exe"),
+        data_dir=Path(r"D:\My Hearthkeep\data"),
+        user=r"PC\me",
+    )
+    args = parse(xml).findtext("t:Actions/t:Exec/t:Arguments", namespaces=NS)
+    assert args == r'-m hearthkeep launch --data "D:\My Hearthkeep\data"'
+    assert "--log-file" not in args
+    status = startup._parse(xml)
+    assert status.launcher and status.data_dir == r"D:\My Hearthkeep\data"
+
+
+def test_todays_task_reads_as_not_launcher():
+    xml = startup.task_xml(pythonw=PYTHONW, data_dir=Path(r"D:\hk"), user=r"PC\me")
+    old = xml.replace(
+        "-m hearthkeep launch --data",
+        r"-m hearthkeep serve --log-file &quot;D:\hk\logs\hearthkeep.log&quot; --data",
+    )
+    assert old != xml
+    status = startup._parse(old)
+    assert status.enabled and status.launcher is False and status.data_dir == r"D:\hk"
+    assert startup.StartupStatus(True, True, None).launcher is False
 
 
 @pytest.mark.parametrize("error", [subprocess.TimeoutExpired("schtasks", 15), OSError("gone")])

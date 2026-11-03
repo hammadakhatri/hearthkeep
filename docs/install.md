@@ -392,7 +392,7 @@ The task runs as **your own Windows user**: the key that decrypts your secrets i
    uv run hearthkeep startup enable --data <data>
    ```
 
-   This creates a Task Scheduler task named `Hearthkeep` that runs at your logon (`pythonw.exe -m hearthkeep serve`, so no window opens) and keeps its output in `<data>\logs\hearthkeep.log`.
+   This creates a Task Scheduler task named `Hearthkeep` that runs at your logon (`pythonw.exe -m hearthkeep launch`, so no window opens). The task starts Hearthkeep's launcher, which starts the server and starts it again if it stops or is restarted from Settings. Its output goes to `<data>\logs\hearthkeep.log` and `<data>\logs\launcher.log`.
 
 2. Check it, or turn it off again:
 
@@ -405,7 +405,7 @@ The task runs as **your own Windows user**: the key that decrypts your secrets i
 
 3. Sign out and back in (or restart) and open your address to test it.
 
-**Logs.** Because there is no window, everything the server prints goes to `<data>\logs\hearthkeep.log`. While no passkey exists yet, the first-device enrollment code is written there too. If you start Hearthkeep this way before your first sign-in, run `uv run hearthkeep enroll-code --data <data>` to get a code (it works only while no passkey exists).
+**Logs.** Because there is no window, everything the server prints goes to `<data>\logs\hearthkeep.log`, and the launcher's own notes (starts, restarts, crashes) go to `<data>\logs\launcher.log`. While no passkey exists yet, the first-device enrollment code is written there too. If you start Hearthkeep this way before your first sign-in, run `uv run hearthkeep enroll-code --data <data>` to get a code (it works only while no passkey exists).
 
 **Stopping Hearthkeep also stops the models it started.** llama-server and ComfyUI run as Hearthkeep's child processes; on Windows they are tied to it so they end even if Hearthkeep is killed. To stop everything, end the `Hearthkeep` task in Task Scheduler (right-click, **End**).
 
@@ -423,7 +423,7 @@ Create the task yourself in Task Scheduler:
    | Field | Value |
    |---|---|
    | Program/script | `<repo>\server\.venv\Scripts\pythonw.exe` |
-   | Add arguments | `-m hearthkeep serve --data "<data>" --log-file "<data>\logs\hearthkeep.log"` |
+   | Add arguments | `-m hearthkeep launch --data "<data>"` |
    | Start in | `<repo>\server` |
 
 5. **Settings** tab: clear **Stop the task if it runs longer than**.
@@ -432,7 +432,7 @@ Create the task yourself in Task Scheduler:
 The same task from PowerShell:
 
 ```powershell
-$action = New-ScheduledTaskAction -Execute '<repo>\server\.venv\Scripts\pythonw.exe' -Argument '-m hearthkeep serve --data "<data>" --log-file "<data>\logs\hearthkeep.log"' -WorkingDirectory '<repo>\server'
+$action = New-ScheduledTaskAction -Execute '<repo>\server\.venv\Scripts\pythonw.exe' -Argument '-m hearthkeep launch --data "<data>"' -WorkingDirectory '<repo>\server'
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero)
 Register-ScheduledTask -TaskName 'Hearthkeep' -Action $action -Trigger $trigger -Settings $settings
