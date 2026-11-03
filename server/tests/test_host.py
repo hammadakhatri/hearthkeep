@@ -184,16 +184,24 @@ def test_windows_host_spawns_detached(windows):
 def test_windows_host_startup_delegates_to_startup(windows, monkeypatch):
     seen = []
     run = object()
-    monkeypatch.setattr(startup, "status", lambda *, run: seen.append(("status", run)) or "st")
+    monkeypatch.setattr(
+        startup, "status", lambda *, run, strict: seen.append(("status", run, strict)) or "st"
+    )
     monkeypatch.setattr(
         startup, "enable", lambda data_dir, *, run: seen.append(("enable", data_dir, run))
     )
     monkeypatch.setattr(startup, "disable", lambda *, run: seen.append(("disable", run)) or True)
     host = current_host()
     assert host.startup_status(run=run) == "st"
+    assert host.startup_status(run=run, strict=True) == "st"
     host.enable_startup(Path("d"), run=run)
     assert host.disable_startup(run=run) is True
-    assert seen == [("status", run), ("enable", Path("d"), run), ("disable", run)]
+    assert seen == [
+        ("status", run, False),
+        ("status", run, True),
+        ("enable", Path("d"), run),
+        ("disable", run),
+    ]
 
 
 def test_windows_host_installs_the_shortcut_through_shortcut_module(windows, monkeypatch):

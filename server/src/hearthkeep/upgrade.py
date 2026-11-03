@@ -32,6 +32,10 @@ UPGRADE_LEVEL = 1
 PLACEHOLDER_LEVELS = ("wallet", "news", "demo")
 LEVEL_KEY = "upgrade_level"
 NOTE_KEY = "update_note"
+ATTEMPTS_KEY = "upgrade_attempts"  # starts that tried the upgrade without finishing it
+ITEMS_KEY = "upgrade_items"  # the note items the last attempt left
+EXISTING_KEY = "upgrade_existing"  # "1" or "0", decided at the first attempt
+MAX_ATTEMPTS = 3  # after this many starts the level is set anyway; the note keeps the items
 ACTOR = "system"
 
 # Note item id -> (text, the add-on whose card the note's button opens, if any).
@@ -122,6 +126,28 @@ def _remove_placeholder_levels(conn: sqlite3.Connection) -> list[str]:
     return removed
 
 
+def _json_list(conn: sqlite3.Connection, key: str) -> list[str] | None:
+    raw = _get(conn, key)
+    if raw is None:
+        return None
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return None
+    return [i for i in value if isinstance(i, str)] if isinstance(value, list) else None
+
+
+def _was_existing(conn: sqlite3.Connection) -> bool:
+    """Whether this is an install that was in use before the upgrade, decided at the first
+    attempt and kept, so that removing placeholder rows can't change the answer on a retry."""
+    stored = _get(conn, EXISTING_KEY)
+    if stored is not None:
+        return stored == "1"
+    existing = _existing(conn)
+    _put(conn, EXISTING_KEY, "1" if existing else "0")
+    return existing
+
+
 def run_upgrade(
     data_dir: Path,
     conn: sqlite3.Connection,
@@ -130,19 +156,21 @@ def run_upgrade(
     run: Callable = subprocess.run,
     version: str = hearthkeep.__version__,
 ) -> UpgradeReport:
-    """Bring an install up to UPGRADE_LEVEL. `data_dir` is the resolved data folder."""
+    """Bring an install up to UPGRADE_LEVEL. `data_dir` is the resolved data folder.
+
+    A step with a note item (start at login, the shortcut) that fails leaves the level unset,
+    so the next start tries again, up to MAX_ATTEMPTS starts; then the level is set anyway
+    and the note keeps the item. A failing step without one (the locator, the levels) only
+    logs: it never blocks the level."""
     if _level(conn) >= UPGRADE_LEVEL:
         return UpgradeReport(False, (), ())
     data_dir = Path(data_dir)
-    existing = _existing(conn)
+    existing = _was_existing(conn)
     changed: list[str] = []
     items: list[str] = []
     succeeded: set[str] = set()  # steps that ran to the end this time
-    failed = False
 
     def failure(step: str, exc: Exception) -> None:
-        nonlocal failed
-        failed = True
         log.warning("upgrade step %s failed: %s", step, type(exc).__name__)
         if step in _STEP_ITEMS:
             items.append(_STEP_ITEMS[step])
@@ -158,7 +186,8 @@ def run_upgrade(
             failure("location", exc)
 
         try:
-            state = host.startup_status(run=run)
+            # Strict: a task that can't be read now is a failure to retry, not "no task".
+            state = host.startup_status(run=run, strict=True)
             if state.enabled and state.serves(data_dir.resolve()) and not state.launcher:
                 host.enable_startup(data_dir, run=run)
                 changed.append("startup")
@@ -181,21 +210,34 @@ def run_upgrade(
         failure("levels", exc)
 
     with db.transaction(conn):
-        if not failed:
+        if _level(conn) >= UPGRADE_LEVEL:
+            # Another start finished the upgrade meanwhile; its note and audit row stand.
+            return UpgradeReport(False, (), ())
+        first_attempt = _get(conn, ATTEMPTS_KEY) is None
+        last_items = _json_list(conn, ITEMS_KEY) or []
+        attempts = int(_get(conn, ATTEMPTS_KEY) or 0) + 1
+        _put(conn, ATTEMPTS_KEY, str(attempts))
+        _put(conn, ITEMS_KEY, json.dumps(sorted(items)))
+        if not items or attempts >= MAX_ATTEMPTS:
             _put(conn, LEVEL_KEY, str(UPGRADE_LEVEL))
         if existing:
             stored = _stored_note(conn)
-            kept = set(stored["items"]) if stored else set()
-            # A step that worked this time takes its earlier failure off the note.
-            kept -= {_STEP_ITEMS[s] for s in succeeded if s in _STEP_ITEMS}
-            note = {"version": version, "items": sorted(kept | set(items))}
-            _put(conn, NOTE_KEY, json.dumps(note))
-        audit.record(
-            conn,
-            ACTOR,
-            "upgrade.ran",
-            {"level": UPGRADE_LEVEL, "changed": changed, "items": items},
-        )
+            new_items = set(items) - set(last_items)
+            # A dismissed note stays dismissed unless something new went wrong.
+            if first_attempt or stored is not None or new_items:
+                kept = set(stored["items"]) if stored else set()
+                # A step that worked this time takes its earlier failure off the note.
+                kept -= {_STEP_ITEMS[s] for s in succeeded if s in _STEP_ITEMS}
+                note = {"version": version, "items": sorted(kept | set(items))}
+                _put(conn, NOTE_KEY, json.dumps(note))
+        # Only a run that did or found something new is audited, not every retry.
+        if changed or sorted(items) != sorted(last_items):
+            audit.record(
+                conn,
+                ACTOR,
+                "upgrade.ran",
+                {"level": UPGRADE_LEVEL, "changed": changed, "items": items},
+            )
     return UpgradeReport(True, tuple(changed), tuple(items))
 
 

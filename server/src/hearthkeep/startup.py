@@ -251,20 +251,30 @@ def _parse(xml: str) -> StartupStatus:
     )
 
 
-def status(*, run: Run = subprocess.run) -> StartupStatus:
-    """Whether the task exists and is enabled, and the data folder it serves."""
+def status(*, run: Run = subprocess.run, strict: bool = False) -> StartupStatus:
+    """Whether the task exists and is enabled, and the data folder it serves.
+
+    By default a task that can't be read counts as off (the web app only shows it). `strict`
+    raises StartupError instead when schtasks can't run, doesn't answer in time or answers
+    with XML that can't be read, so a caller that changes the task can try again later. A
+    task that doesn't exist is off either way."""
     if not is_windows():
         return StartupStatus(supported=False, enabled=False, data_dir=None)
+    off = StartupStatus(supported=True, enabled=False, data_dir=None)
     try:
-        result = _schtasks(run, "/Query", "/TN", TASK_NAME, "/XML")
-    except (OSError, subprocess.SubprocessError, StartupError):
-        return StartupStatus(supported=True, enabled=False, data_dir=None)
+        result = _call(run, "/Query", "/TN", TASK_NAME, "/XML")
+    except StartupError:
+        if strict:
+            raise
+        return off
     if result.returncode != 0:
-        return StartupStatus(supported=True, enabled=False, data_dir=None)
+        return off
     try:
         return _parse(_decode(result.stdout or b""))
     except ET.ParseError:
-        return StartupStatus(supported=True, enabled=False, data_dir=None)
+        if strict:
+            raise StartupError("The start-at-login task couldn't be read.") from None
+        return off
 
 
 # The web app's view of the task, kept STATUS_CACHE_SECONDS so the page cannot make the server
