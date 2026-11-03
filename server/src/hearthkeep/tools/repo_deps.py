@@ -49,7 +49,6 @@ NOTHING_TO_INSTALL = (
     "(with package.json) at its top level, so there is nothing to install."
 )
 CHANGED_AFTER_APPROVAL = "The dependency files changed after you approved. Nothing was installed."
-NEEDS_APPROVAL = "Installing needs the owner's approval for this lock file. Nothing was installed."
 NO_LONGER_INSTALLED = (
     "The dependencies are no longer installed. "
     "Call repo_install again so the owner can approve the install."
@@ -154,7 +153,9 @@ class RepoInstallTool:
             return _fail(NO_LONGER_INSTALLED)
         approved = ctx.approved_detail or {}
         if not approved.get("lock_hash"):
-            return _fail(NEEDS_APPROVAL)
+            # The approved card was the "already installed" one: it carries no lock hash,
+            # and the volume has gone since. Install nothing; the model asks again.
+            return _fail(NO_LONGER_INSTALLED)
         if approved.get("lock_hash") != plan.lock_hash:
             return _fail(CHANGED_AFTER_APPROVAL)
         missing = await self._deps.unavailable()
