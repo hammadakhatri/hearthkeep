@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from hearthkeep import procutil, shortcut
+from hearthkeep import procutil, shortcut, startup
 from hearthkeep.shortcut import (
     SHORTCUT_NAME,
     SHORTCUT_SCRIPT,
@@ -112,3 +112,12 @@ def test_installing_twice_runs_the_same_overwriting_script():
     for _ in range(2):
         install_shortcut(Path(r"C:\hk"), run=run, pythonw=PYTHONW)
     assert run.calls[0] == run.calls[1]
+
+
+def test_drive_root_folder_keeps_its_closing_quote():
+    run = Recorder()
+    install_shortcut(Path("Q:\\"), run=run, pythonw=PYTHONW)
+    env = run.calls[0][1]["env"]
+    assert env["HK_ARGS"] == '-m hearthkeep open --data "Q:\\\\"'
+    assert env["HK_ARGS"].endswith(startup.quote_arg("Q:\\"))
+    assert env["HK_DIR"] == "Q:\\"
