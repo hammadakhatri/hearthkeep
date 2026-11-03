@@ -39,6 +39,14 @@ CRASH_PAUSE_S = 5.0
 HEALTH_TIMEOUT_S = 1.0
 START_WAIT_S = 60.0
 HEALTH_POLL_S = 0.5
+LAUNCHER_NOT_READY = (
+    "Hearthkeep isn't ready to start. To finish setting up, double-click Setup.cmd in the "
+    "Hearthkeep folder."
+)
+LAUNCHER_GAVE_UP = (
+    "Hearthkeep couldn't start. Another program may be using its port, or it keeps stopping. "
+    "Double-click Setup.cmd in the Hearthkeep folder to check."
+)
 
 
 def serve_argv(data_dir: Path) -> list[str]:
@@ -172,6 +180,14 @@ def health(base_url: str, *, timeout: float = HEALTH_TIMEOUT_S) -> dict | None:
     return None
 
 
+def launcher_ended(process) -> int | None:
+    """The exit code of a launcher that has ended and is not just handing over, else None.
+    Exit 0 is a second launcher finding the first one running (or a stop): the server may
+    still be coming up, so that is not an end."""
+    code = process.poll() if process is not None else None
+    return None if code in (None, EXIT_STOPPED) else code
+
+
 def wait_for_health(
     base_url: str,
     timeout_s: float = START_WAIT_S,
@@ -180,15 +196,17 @@ def wait_for_health(
     sleep=time.sleep,
     clock=time.monotonic,
     want_setup_mode: bool | None = None,
+    process=None,
 ) -> bool:
     """Whether `probe` answers (with `setup_mode == want_setup_mode`, when given) within
-    `timeout_s`."""
+    `timeout_s`. It returns as soon as it answers, and gives up early when `process` (the
+    launcher just started) has ended without the server answering."""
     deadline = clock() + timeout_s
     while True:
         body = probe(base_url)
         if body is not None and (want_setup_mode is None or body["setup_mode"] == want_setup_mode):
             return True
-        if clock() >= deadline:
+        if launcher_ended(process) is not None or clock() >= deadline:
             return False
         sleep(HEALTH_POLL_S)
 
@@ -202,10 +220,18 @@ def open_app(
     wait=wait_for_health,
 ) -> int:
     """Start the launcher when Hearthkeep isn't answering, then open it in the browser either
-    way (the app shows "Can't reach Hearthkeep" with Retry if it's still starting)."""
+    way (the app shows "Can't reach Hearthkeep" with Retry if it's still starting). Returns 1
+    with a plain sentence when the launcher it started ended before the server answered."""
     base = f"http://127.0.0.1:{settings.port}"
+    result = 0
     if probe(base) is None:
-        host.spawn_detached(launcher_argv(Path(settings.data_dir)))
-        wait(base)
+        process = host.spawn_detached(launcher_argv(Path(settings.data_dir)))
+        if not wait(base, process=process):
+            code = launcher_ended(process)
+            if code is not None:
+                print(
+                    LAUNCHER_NOT_READY if code == EXIT_USAGE else LAUNCHER_GAVE_UP, file=sys.stderr
+                )
+                result = 1
     open_url(settings.public_origin)
-    return 0
+    return result

@@ -173,8 +173,10 @@ def test_windows_host_spawns_detached(windows):
 
     def popen(argv, **kw):
         calls.append((argv, kw))
+        return "the process"
 
-    current_host().spawn_detached(["pythonw.exe", "-m", "hearthkeep"], popen=popen)
+    started = current_host().spawn_detached(["pythonw.exe", "-m", "hearthkeep"], popen=popen)
+    assert started == "the process"
     assert calls == [(["pythonw.exe", "-m", "hearthkeep"], procutil.detached_popen_kwargs())]
 
 

@@ -87,6 +87,7 @@ def harness(tmp_path):
             git=None,
             addon_probes=None,
             registry=None,
+            control=None,
         ):
             self.chat = FakeChatClient(list(scripts))
 
@@ -109,6 +110,7 @@ def harness(tmp_path):
                 github_transport=github_transport,
                 git=git,
                 addon_probes=addon_probes,
+                control=control,
             )
             client = TestClient(app, base_url=ORIGIN)
             client.__enter__()
@@ -304,6 +306,7 @@ def test_unauthenticated_requests_401(harness):
         "/api/audit",
         "/api/devices",
         "/api/addons",
+        "/api/server",
         "/api/auth/session",
         "/api/chats/x/messages",
         "/api/chats/x/turns/t/events",
@@ -321,6 +324,8 @@ def test_unauthenticated_requests_401(harness):
         ("POST", "/api/devices/add-code", {"step_up_token": "x"}),
         ("DELETE", "/api/devices/cred-1", None),
         ("POST", "/api/addons/refresh", None),
+        ("POST", "/api/server/restart", {"step_up_token": "x"}),
+        ("POST", "/api/server/stop", {"step_up_token": "x"}),
     ):
         response = client.request(method, path, json=body, headers=CSRF)
         assert response.status_code == 401, path
@@ -776,6 +781,7 @@ def test_health_reports_model_reachability(harness):
     assert client.get("/api/health").json() == {
         "status": "ok",
         "chat_model": "gemma-4-12b",
+        "setup_mode": False,
         "chat_model_reachable": False,
         "chat_model_state": "offline",
     }

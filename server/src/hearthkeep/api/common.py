@@ -32,6 +32,7 @@ from hearthkeep.github.deps import DepsCache
 from hearthkeep.github.repos import RepoStore
 from hearthkeep.github.testrun import RepoTestRunner
 from hearthkeep.images import ImageStore
+from hearthkeep.lifecycle import ServerControl
 from hearthkeep.models.cards import CardError, ModelCard
 from hearthkeep.numbercheck import NumberChecker
 from hearthkeep.push import PushSender, PushSubscriptions
@@ -157,6 +158,7 @@ class Services:
     deps: DepsCache | None = None  # each repo's installed dependencies
     repo_tests: RepoTestRunner | None = None  # each repo's test runs
     addons: Addons | None = None  # what each add-on can do right now
+    control: ServerControl | None = None  # restart and stop requests
     chat_mode: Literal["owned", "external", "none"] = "external"
     health_cache: tuple[float, bool] | None = None
     health_lock: asyncio.Lock = field(default_factory=asyncio.Lock)

@@ -325,8 +325,7 @@ def build_app(
 ) -> tuple[FastAPI, list[str]]:
     """The app `serve` runs, and the startup lines to print. Builds nothing that runs yet and
     never issues an enrollment code (only `cmd_serve` does, on a console). Raises
-    ProcessError when a model server can't be set up. `control` is not passed on yet:
-    `create_app` doesn't take it so far."""
+    ProcessError when a model server can't be set up."""
     from hearthkeep.api.app import create_app
 
     secrets = SecretStore(settings.data_dir)
@@ -340,6 +339,7 @@ def build_app(
         registry=build_registry(),  # the image tool is added at startup when it can be built
         secrets=secrets,
         models=stack,
+        control=control,
     )
     return app, lines
 
