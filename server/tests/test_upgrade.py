@@ -19,7 +19,7 @@ from test_no_chat_model import copy_owned_models, copy_todays_config
 from test_setup_mode import run_cmd_setup  # noqa: F401  (a fixture)
 
 import hearthkeep
-from hearthkeep import cli, db, startup
+from hearthkeep import cli, db, startup, upgrade
 from hearthkeep.api.app import DB_FILE
 from hearthkeep.config import init_data_dir
 from hearthkeep.db import connect
@@ -363,6 +363,12 @@ def test_note_copy_follows_the_rules(item):
     text, addon = NOTE_ITEMS[item]
     assert forbidden_in(text) == [] and "\\" not in text and text.endswith(".")
     assert addon in (None, "analysis", "startup")
+    # The note stays after the last retry, so it never promises one.
+    assert "tries again" not in text and "next time" not in text
+
+
+def test_shortcut_note_matches_what_setup_says():
+    assert NOTE_ITEMS["shortcut_failed"][0] == cli.SHORTCUT_FAILED
 
 
 def test_migration_10_adds_app_state(tmp_path):
@@ -561,6 +567,36 @@ def test_gives_up_after_three_attempts_and_keeps_the_note(tmp_path):
     assert level_stored(conn)
     assert [i["id"] for i in update_note(conn, None)["items"]] == ["startup_not_moved"]
     assert run_upgrade(data, conn, host=host).ran is False
+
+
+def test_the_give_up_leaves_an_audit_row(tmp_path):
+    data = (tmp_path / "data").resolve()
+    init_data_dir(data)  # no shortcut step: the retries in between change nothing
+    host = FakeWindowsHost(task=old_task_xml(data), enable_fails=True)
+    conn = connect(data / DB_FILE)
+    counts = []
+    for _ in range(3):
+        run_upgrade(data, conn, host=host)
+        counts.append(len(events(conn, "upgrade.ran")))
+    assert counts == [1, 1, 2] and level_stored(conn)
+
+
+def test_a_later_upgrade_level_starts_with_fresh_retries(tmp_path, monkeypatch):
+    data = todays_install(tmp_path)
+    host = FakeWindowsHost(task=old_task_xml(data), enable_fails=True)
+    conn = connect(data / DB_FILE)
+    for _ in range(3):
+        run_upgrade(data, conn, host=host)
+    assert level_stored(conn)  # gave up at level 1
+    # Level 2's first attempt: the existing-install answer is decided again from the database.
+    conn.execute("DELETE FROM credentials")
+    conn.execute("DELETE FROM tool_levels")
+    monkeypatch.setattr(upgrade, "UPGRADE_LEVEL", 2)
+    report = run_upgrade(data, conn, host=host)
+    assert report.ran and report.items == ("startup_not_moved",)
+    level = conn.execute("SELECT value FROM app_state WHERE key = 'upgrade_level'").fetchone()
+    assert level[0] == "1"  # not given up at once
+    assert "shortcut" not in report.changed  # a fresh `existing`: no longer an existing install
 
 
 def test_failure_of_a_step_without_a_note_item_does_not_block(tmp_path, caplog):

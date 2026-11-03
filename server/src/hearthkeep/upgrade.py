@@ -32,6 +32,8 @@ UPGRADE_LEVEL = 1
 PLACEHOLDER_LEVELS = ("wallet", "news", "demo")
 LEVEL_KEY = "upgrade_level"
 NOTE_KEY = "update_note"
+# Kept per upgrade level (`_key`), so a later level starts with fresh retries and decides
+# again whether the install was in use:
 ATTEMPTS_KEY = "upgrade_attempts"  # starts that tried the upgrade without finishing it
 ITEMS_KEY = "upgrade_items"  # the note items the last attempt left
 EXISTING_KEY = "upgrade_existing"  # "1" or "0", decided at the first attempt
@@ -42,11 +44,13 @@ ACTOR = "system"
 NOTE_ITEMS: dict[str, tuple[str, str | None]] = {
     "sandbox_image": ("The analysis sandbox needs rebuilding.", "analysis"),
     "startup_not_moved": (
-        "Start at login couldn't be updated. Hearthkeep tries again the next time it starts.",
+        "Start at login couldn't be moved to the new way Hearthkeep starts. Check it in "
+        "Settings › Add-ons.",
         "startup",
     ),
     "shortcut_failed": (
-        "The Start menu shortcut couldn't be made. Hearthkeep tries again the next time it starts.",
+        "The Start menu shortcut couldn't be made. You can still open Hearthkeep by "
+        "double-clicking Setup.cmd.",
         None,
     ),
 }
@@ -126,6 +130,11 @@ def _remove_placeholder_levels(conn: sqlite3.Connection) -> list[str]:
     return removed
 
 
+def _key(name: str) -> str:
+    """`name` for the current upgrade level, e.g. `upgrade_attempts:1`."""
+    return f"{name}:{UPGRADE_LEVEL}"
+
+
 def _json_list(conn: sqlite3.Connection, key: str) -> list[str] | None:
     raw = _get(conn, key)
     if raw is None:
@@ -140,11 +149,11 @@ def _json_list(conn: sqlite3.Connection, key: str) -> list[str] | None:
 def _was_existing(conn: sqlite3.Connection) -> bool:
     """Whether this is an install that was in use before the upgrade, decided at the first
     attempt and kept, so that removing placeholder rows can't change the answer on a retry."""
-    stored = _get(conn, EXISTING_KEY)
+    stored = _get(conn, _key(EXISTING_KEY))
     if stored is not None:
         return stored == "1"
     existing = _existing(conn)
-    _put(conn, EXISTING_KEY, "1" if existing else "0")
+    _put(conn, _key(EXISTING_KEY), "1" if existing else "0")
     return existing
 
 
@@ -213,12 +222,13 @@ def run_upgrade(
         if _level(conn) >= UPGRADE_LEVEL:
             # Another start finished the upgrade meanwhile; its note and audit row stand.
             return UpgradeReport(False, (), ())
-        first_attempt = _get(conn, ATTEMPTS_KEY) is None
-        last_items = _json_list(conn, ITEMS_KEY) or []
-        attempts = int(_get(conn, ATTEMPTS_KEY) or 0) + 1
-        _put(conn, ATTEMPTS_KEY, str(attempts))
-        _put(conn, ITEMS_KEY, json.dumps(sorted(items)))
-        if not items or attempts >= MAX_ATTEMPTS:
+        first_attempt = _get(conn, _key(ATTEMPTS_KEY)) is None
+        last_items = _json_list(conn, _key(ITEMS_KEY)) or []
+        attempts = int(_get(conn, _key(ATTEMPTS_KEY)) or 0) + 1
+        _put(conn, _key(ATTEMPTS_KEY), str(attempts))
+        _put(conn, _key(ITEMS_KEY), json.dumps(sorted(items)))
+        gave_up = bool(items) and attempts >= MAX_ATTEMPTS
+        if not items or gave_up:
             _put(conn, LEVEL_KEY, str(UPGRADE_LEVEL))
         if existing:
             stored = _stored_note(conn)
@@ -230,8 +240,8 @@ def run_upgrade(
                 kept -= {_STEP_ITEMS[s] for s in succeeded if s in _STEP_ITEMS}
                 note = {"version": version, "items": sorted(kept | set(items))}
                 _put(conn, NOTE_KEY, json.dumps(note))
-        # Only a run that did or found something new is audited, not every retry.
-        if changed or sorted(items) != sorted(last_items):
+        # Only a run that did or found something new, or gave up, is audited.
+        if changed or sorted(items) != sorted(last_items) or gave_up:
             audit.record(
                 conn,
                 ACTOR,
