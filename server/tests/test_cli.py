@@ -3,9 +3,12 @@
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from hearthkeep import cli
+from hearthkeep import cli, db
+from hearthkeep.api.app import DB_FILE
+from hearthkeep.lifecycle import EXIT_RESTART, EXIT_USAGE, SUPERVISED_ENV
 from hearthkeep.providers.chat import OpenAIChatClient
 from hearthkeep.providers.comfyui import ComfyUIClient
 from hearthkeep.providers.scheduled_chat import ScheduledChatClient
@@ -45,16 +48,35 @@ class Serve:
         self.hk = None
         self.gpu_status = None
         self.during = None  # called with the TestClient while the server runs
+        self.control = None
+        self.exit_code = None  # requested on the control while the server runs
         monkeypatch.setattr(cli, "run_server", self._run_server)
 
-    def _run_server(self, app, host, port) -> None:
+    def _run_server(self, app, host, port, *, control=None, **kw) -> int:
         assert host == "127.0.0.1"
+        self.control = control
         with TestClient(app, base_url=ORIGIN) as client:
             self.hk = app.state.hk
             self.gpu_status = self.hk.gpu.status()
             self.log.append(("running",))
             if self.during is not None:
                 self.during(client)
+            if self.exit_code is not None:
+                control.request(self.exit_code)
+        return control.exit_code or 0
+
+    def query(self, sql: str) -> list[tuple]:
+        conn = db.connect(self.data / DB_FILE)
+        try:
+            return [tuple(row) for row in conn.execute(sql).fetchall()]
+        finally:
+            conn.close()
+
+    def add_passkey(self) -> None:
+        cli._settings(self.data)  # creates the database
+        conn = db.connect(self.data / DB_FILE)
+        conn.execute("INSERT INTO credentials (id, public_key, sign_count) VALUES ('k', x'00', 0)")
+        conn.close()
 
     def make_llama(self, card, rt, data_dir, api_key_file, *, api_key):
         self.llama_calls.append((card, rt, data_dir, api_key_file, api_key))
@@ -248,7 +270,7 @@ def test_health_owned_chat_model_starts_on_first_use(serve, tmp_path, monkeypatc
     write(serve.data, "models.toml", owned_models_toml(tmp_path))
     seen = []
 
-    def run_server(app, host, port):
+    def run_server(app, host, port, **kw):
         with TestClient(app, base_url=ORIGIN) as client:
             seen.append(client.get("/api/health").json())
             gpu = app.state.hk.gpu
@@ -259,6 +281,7 @@ def test_health_owned_chat_model_starts_on_first_use(serve, tmp_path, monkeypatc
 
             client.portal.call(use_chat)
             seen.append(client.get("/api/health").json())
+        return 0
 
     monkeypatch.setattr(cli, "run_server", run_server)
     assert serve(vram=16.0) == 0
@@ -355,8 +378,9 @@ def test_cli_startup_other_folder_and_schtasks_failures(
 def test_serve_log_file_redirects_output(serve, monkeypatch):
     import sys
 
+    serve.add_passkey()  # without one, serve --log-file stops before starting (C3)
     log = serve.data / "logs" / "hearthkeep.log"
-    log.parent.mkdir(parents=True)
+    log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text("earlier line\n", encoding="utf-8")
     monkeypatch.setattr(sys, "stdout", sys.stdout)
     monkeypatch.setattr(sys, "stderr", sys.stderr)
@@ -370,6 +394,128 @@ def test_serve_log_file_redirects_output(serve, monkeypatch):
     text = log.read_text(encoding="utf-8")
     assert text.startswith("earlier line\n")
     assert "Models:" in text and "Chat:" in text and "é after start" in text
+
+
+def test_serve_returns_the_requested_exit_code(serve, monkeypatch):
+    monkeypatch.delenv(SUPERVISED_ENV, raising=False)
+    serve.exit_code = EXIT_RESTART
+    assert serve() == EXIT_RESTART
+    assert serve.control.supervised is False and serve.control.exit_code == EXIT_RESTART
+
+    monkeypatch.setenv(SUPERVISED_ENV, "1")
+    serve.exit_code = None
+    assert serve() == 0
+    assert serve.control.supervised is True and serve.control.exit_code is None
+
+
+def test_serve_with_log_file_never_writes_the_code(serve, tmp_path, monkeypatch):
+    import sys
+
+    # _log_to rebinds stdout and stderr; put them back after the test (C20)
+    monkeypatch.setattr(sys, "stdout", sys.stdout)
+    monkeypatch.setattr(sys, "stderr", sys.stderr)
+    log = tmp_path / "out.log"
+    try:
+        # C3: no passkey under the launcher: say so and stop, so the launcher stops too
+        assert serve("--log-file", str(log)) == EXIT_USAGE
+    finally:
+        if sys.stdout.name == str(log):
+            sys.stdout.close()
+    text = log.read_text(encoding="utf-8")
+    assert cli.NO_PASSKEY_YET in text and "enrollment code" not in text.lower()
+    assert serve.query("SELECT COUNT(*) FROM enrollment_codes") == [(0,)]
+    assert serve.hk is None  # the server never started
+
+
+def test_serve_without_a_console_issues_no_code(serve, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_interactive", lambda: False)
+    assert serve() == 0  # no log file: it still runs (developers, CI)
+    out = capsys.readouterr().out
+    assert cli.NO_PASSKEY_YET in out and "enrollment code" not in out.lower()
+    assert serve.query("SELECT COUNT(*) FROM enrollment_codes") == [(0,)]
+
+
+def test_serve_prints_the_code_on_an_interactive_console(serve, monkeypatch, capsys):
+    import sys
+
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    assert serve() == 0
+    out = capsys.readouterr().out
+    assert "First-device enrollment code:" in out and cli.NO_PASSKEY_YET not in out
+    assert serve.query("SELECT COUNT(*) FROM enrollment_codes") == [(1,)]
+
+
+def test_serve_with_a_passkey_says_nothing_about_setup(serve, monkeypatch, capsys):
+    serve.add_passkey()
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    assert serve() == 0
+    out = capsys.readouterr().out
+    assert "enrollment code" not in out.lower() and cli.NO_PASSKEY_YET not in out
+
+
+def test_build_app_returns_the_app_and_lines_and_issues_no_code(serve):
+    from hearthkeep.auth.webauthn import PyWebAuthnVerifier
+    from hearthkeep.lifecycle import ServerControl
+
+    settings = cli._settings(serve.data)
+    app, lines = cli.build_app(
+        settings,
+        verifier=PyWebAuthnVerifier(settings),
+        control=ServerControl(supervised=False),
+        make_llama=serve.make_llama,
+        make_comfy=serve.make_comfy,
+        detect_vram=lambda: 12.0,
+    )
+    assert isinstance(app, FastAPI) and lines[0].startswith("Models: ")
+    assert serve.query("SELECT COUNT(*) FROM enrollment_codes") == [(0,)]  # C1
+
+
+def test_run_server_returns_the_requested_exit_code(monkeypatch):
+    import threading
+
+    import uvicorn
+
+    from hearthkeep.lifecycle import ServerControl
+
+    built = {}
+
+    class FakeServer:
+        def __init__(self, config):
+            built["config"] = config
+            self.started = False
+            self.should_exit = False
+
+        def run(self):
+            self.started = True
+            built["control"].request(EXIT_RESTART)
+            built["should_exit"] = self.should_exit
+
+    monkeypatch.setattr(uvicorn, "Server", FakeServer)
+    control = ServerControl(supervised=True)
+    built["control"] = control
+    started = threading.Event()
+    assert cli.run_server(object(), "127.0.0.1", 8765, control=control,
+                          on_started=started.set) == EXIT_RESTART  # fmt: skip
+    assert built["should_exit"] is True
+    config = built["config"]
+    assert config.proxy_headers is False and config.timeout_graceful_shutdown == 5
+    assert (config.host, config.port) == ("127.0.0.1", 8765)
+    assert started.wait(5)
+
+    class NeverStarts(FakeServer):
+        def run(self):
+            pass
+
+    monkeypatch.setattr(uvicorn, "Server", NeverStarts)
+    # uvicorn.run exits 3 when the server could not start (port busy); keep that code
+    assert cli.run_server(object(), "127.0.0.1", 8765) == 3
+
+    class Stops(FakeServer):
+        def run(self):
+            self.started = True
+
+    monkeypatch.setattr(uvicorn, "Server", Stops)
+    assert cli.run_server(object(), "127.0.0.1", 8765) == 0
 
 
 def test_main_module_calls_cli_main(monkeypatch):

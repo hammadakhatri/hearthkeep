@@ -19,7 +19,7 @@ This page describes what the code in this repository does today. Phase 1 is the 
 ## Signing in: passkeys and step-up
 
 - Sign-in uses passkeys (WebAuthn). There are no passwords.
-- The first device is enrolled with a one-time code printed by `hearthkeep serve` (or `hearthkeep enroll-code`). The code is valid for 15 minutes, works once, and first-device codes stop working as soon as a passkey exists.
+- The first device is enrolled with a one-time code printed by `hearthkeep serve` on an interactive console (or by `hearthkeep enroll-code`); it is never written to a log file. The code is valid for 15 minutes, works once, and first-device codes stop working as soon as a passkey exists.
 - More devices are added from an already signed-in device, which needs a passkey step-up before it will issue a 15-minute code.
 - Sessions are an unguessable cookie (`HttpOnly`, `SameSite=Strict`); only a hash of it is stored. They expire after 14 idle days by default (`session_idle_days`).
 - The last remaining device cannot be removed, so you cannot lock yourself out. Add a second device first, then remove the old one. Removing a device ends its sessions.
