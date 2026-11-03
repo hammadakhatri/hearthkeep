@@ -50,6 +50,15 @@ jobs:
         with:
           name: release-assets
           path: ${{ runner.temp }}/release
+      - name: Check the assets
+        working-directory: ${{ runner.temp }}/release
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          for name in "hearthkeep-$v.zip" "hearthkeep-web-$v.zip"; do
+            test -f "$name" || { echo "missing $name"; exit 1; }
+            test -f "$name.sha256" || { echo "missing $name.sha256"; exit 1; }
+          done
+          sha256sum -c ./*.sha256
       - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
