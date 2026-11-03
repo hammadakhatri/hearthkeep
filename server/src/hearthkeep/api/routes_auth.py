@@ -31,9 +31,11 @@ from hearthkeep.auth.webauthn import VerificationError, b64url_decode
 router = APIRouter(prefix="/api")
 
 OWNER_USER_ID = b"hearthkeep-owner"
-StepUpPurpose = Literal["approval", "settings", "add_device", "add_folder", "delete"]
-# What a `delete` step-up is for: exactly one chat or one file.
-STEP_UP_TARGET = r"^(chat|file):[A-Za-z0-9_-]{1,32}$"
+StepUpPurpose = Literal[
+    "approval", "settings", "add_device", "add_folder", "github_token", "add_repo", "delete"
+]
+# What a `delete` step-up is for: exactly one chat, one file or one repo.
+STEP_UP_TARGET = r"^(chat|file|repo):[A-Za-z0-9_-]{1,32}$"
 
 SessionDep = Annotated[Session, Depends(current_session)]
 
@@ -218,6 +220,12 @@ def _check_step_up_target(hk: Services, body: StepUpOptionsBody) -> None:
     if purpose == "delete":
         if body.target is None:
             raise ApiError(422, "target_required")
+        if body.target.startswith("repo:"):
+            found = hk.conn.execute(
+                "SELECT 1 FROM repos WHERE id = ?", (body.target.removeprefix("repo:"),)
+            ).fetchone()
+            if found is None:
+                raise ApiError(404, "not_found")
     elif body.target is not None:
         raise ApiError(422, "target_not_allowed")
     if purpose != "approval":

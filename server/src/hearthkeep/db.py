@@ -207,6 +207,41 @@ MIGRATIONS: dict[int, str] = {
     );
     CREATE INDEX IF NOT EXISTS sent_targets_credential ON sent_targets(credential_id);
     """,
+    9: """
+    CREATE TABLE IF NOT EXISTS github_account (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        login TEXT,
+        user_id INTEGER,
+        checked_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS repos (
+        id TEXT PRIMARY KEY,
+        full_name TEXT UNIQUE COLLATE NOCASE,
+        default_branch TEXT,
+        private INTEGER,
+        created_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS repo_deps (
+        repo_id TEXT,
+        lock_hash TEXT,
+        ecosystem TEXT,
+        volume TEXT,
+        installed_at TEXT,
+        PRIMARY KEY (repo_id, lock_hash)
+    );
+    CREATE TABLE IF NOT EXISTS repo_runs (
+        id TEXT PRIMARY KEY,
+        repo_id TEXT,
+        chat_id TEXT,
+        command TEXT,
+        status TEXT,
+        exit_code INTEGER,
+        duration_ms INTEGER,
+        output TEXT,
+        created_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS repo_runs_repo ON repo_runs(repo_id, created_at);
+    """,
 }
 
 

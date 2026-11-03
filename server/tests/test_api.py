@@ -83,6 +83,7 @@ def harness(tmp_path):
             monotonic=time.monotonic,
             sandbox=None,
             push_sender=None,
+            github_transport=None,
         ):
             self.chat = FakeChatClient(list(scripts))
 
@@ -102,6 +103,7 @@ def harness(tmp_path):
                 monotonic=monotonic,
                 sandbox=sandbox,
                 push_sender=push_sender,
+                github_transport=github_transport,
             )
             client = TestClient(app, base_url=ORIGIN)
             client.__enter__()
