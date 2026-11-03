@@ -62,7 +62,7 @@ def github_ready(repos: RepoStore | None) -> bool:
     Every GitHub tool's `is_available` is this."""
     if repos is None:
         return False
-    return repos.git.available() and repos.token() is not None
+    return repos.git.available() and repos.token_saved()
 
 
 def _cut(line: str, limit: int) -> str:

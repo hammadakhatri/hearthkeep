@@ -158,3 +158,35 @@ def test_delete_step_up_for_repo_target_needs_an_existing_repo(harness, api_clie
     c.close()
     assert options("repo:r1").status_code == 200
     assert options("repo:bad id").status_code == 422
+
+
+def test_token_presence_is_cached_and_follows_save_and_remove(harness, fake_github, monkeypatch):
+    """The GitHub add-on doesn't read the secret store on every poll, and a save or a removal
+    shows at once."""
+    monkeypatch.setattr(GitRunner, "available", lambda self: True)
+    reads = []
+    real_get = SecretStore.get
+
+    def counting_get(self, name):
+        if name == "github_token":
+            reads.append(name)
+        return real_get(self, name)
+
+    monkeypatch.setattr(SecretStore, "get", counting_get)
+    client = signed_in(harness, github_transport=fake_github.transport)
+
+    def github_state():
+        addons = client.get("/api/addons").json()["addons"]
+        return next(a["state"] for a in addons if a["id"] == "github")
+
+    assert github_state() == "needs_token"
+    before = len(reads)
+    for _ in range(3):
+        assert github_state() == "needs_token"
+    assert len(reads) == before  # remembered, not read again per poll
+    assert put_token(client).status_code == 200
+    assert github_state() == "ready"
+    after_save = len(reads)
+    assert github_state() == "ready" and len(reads) == after_save
+    assert client.delete("/api/github/token", headers=CSRF).status_code == 200
+    assert github_state() == "needs_token"

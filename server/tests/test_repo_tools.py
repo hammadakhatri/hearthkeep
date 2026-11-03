@@ -208,6 +208,7 @@ def test_tool_shape_and_availability(tmp_path):
     assert tool.is_available() is False  # no host git
     store.git._available = True
     store._secrets.delete("github_token")
+    store.token_changed()  # as DELETE /api/github/token does
     assert tool.is_available() is False  # no saved token
     store.conn.close()
 
@@ -299,7 +300,8 @@ async def test_repo_read_is_denied_once_the_token_is_gone(tmp_path):
     class TokenRemoved(FakeChatClient):
         async def stream(self, messages, tools, think):
             async for event in super().stream(messages, tools, think):
-                store._secrets.delete("github_token")  # removed in Settings meanwhile
+                store._secrets.delete("github_token")  # removed in Settings meanwhile,
+                store.token_changed()  # which forgets the remembered "token saved"
                 yield event
 
     client = TokenRemoved(

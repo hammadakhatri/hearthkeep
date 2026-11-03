@@ -130,6 +130,12 @@ async def github_state(session: SessionDep, request: Request) -> dict:
     }
 
 
+def _token_changed(hk: Services) -> None:
+    """Whether a token is saved is remembered (the add-on checks read it often): forget it."""
+    if hk.repos is not None:
+        hk.repos.token_changed()
+
+
 @router.put("/github/token")
 async def save_token(body: TokenBody, session: SessionDep, request: Request) -> dict:
     hk = services(request)
@@ -149,6 +155,8 @@ async def save_token(body: TokenBody, session: SessionDep, request: Request) -> 
         hk.secrets.put(TOKEN_SECRET, body.token)
     except SecretStoreError:
         raise ApiError(503, "secrets_unreadable", message=SECRETS_UNREADABLE) from None
+    finally:
+        _token_changed(hk)
     with transaction(hk.conn):
         hk.conn.execute(
             "INSERT INTO github_account (id, login, user_id, checked_at) VALUES (1, ?, ?, ?) "
@@ -168,6 +176,8 @@ async def remove_token(session: SessionDep, request: Request) -> dict:
         hk.secrets.delete(TOKEN_SECRET)
     except SecretStoreError:
         raise ApiError(503, "secrets_unreadable", message=SECRETS_UNREADABLE) from None
+    finally:
+        _token_changed(hk)
     with transaction(hk.conn):
         hk.conn.execute("DELETE FROM github_account")
     record(hk, actor(session), "github.token_removed", {})
