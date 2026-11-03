@@ -441,8 +441,10 @@ class RepoEditTool:
     @staticmethod
     def _read_text(target: Path) -> tuple[str, bool]:
         """(text with LF line ends, whether the file used CRLF) of an existing text file."""
+        if target.stat().st_size > EDIT_MAX_BYTES:
+            raise ValueError(NOT_TEXT)  # refused before a byte of it is read
         raw = target.read_bytes()
-        if len(raw) > EDIT_MAX_BYTES or b"\0" in raw[:BINARY_SNIFF_BYTES]:
+        if b"\0" in raw[:BINARY_SNIFF_BYTES]:
             raise ValueError(NOT_TEXT)
         try:
             text = raw.decode("utf-8")

@@ -297,3 +297,29 @@ async def test_delete_binary_and_large_files(setup):
         assert detail["diff"] == f"Binary or large file {path} deleted\n"
         got = await edit(tool, store, action="delete", path=path)
         assert got.ok and not (clone / path).exists()
+
+
+async def test_oversized_file_is_never_read(setup, monkeypatch):
+    from pathlib import Path
+
+    store, repo, tool = setup
+    await on_branch(tool, store)
+    big = store.dir(repo) / "big.txt"
+    big.write_bytes(b"a" * (512 * 1024 + 1))
+    real = Path.read_bytes
+
+    def guarded(self):
+        if self.name == "big.txt":
+            raise AssertionError("read an oversized file")
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded)
+    write = {"repo": R, "action": "write", "path": "big.txt", "content": "x"}
+    detail = await tool.approval_detail(write, ctx_for(store))
+    assert detail["diff"] == ""
+    got = await tool.run(write, ctx_for(store))
+    assert not got.ok and "UTF-8" in got.content
+    delete = {"repo": R, "action": "delete", "path": "big.txt"}
+    detail = await tool.approval_detail(delete, ctx_for(store))
+    assert detail["diff"] == "Binary or large file big.txt deleted\n"
+    assert (await tool.run(delete, ctx_for(store))).ok and not big.exists()
