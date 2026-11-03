@@ -35,7 +35,7 @@ export const VIEWS: Record<ViewId, ViewInfo> = {
   settings: {
     title: 'Settings',
     icon: SettingsIcon,
-    blurb: 'Your devices, the folders Hearthkeep can see, GitHub, notifications and start at login.',
+    blurb: 'Add-ons, your devices, the folders Hearthkeep can see, GitHub, notifications and start at login.',
   },
 }
 

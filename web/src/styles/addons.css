@@ -1,0 +1,59 @@
+/* Settings › Add-ons: one card per add-on, in a grid that folds to one column on a phone. */
+
+.addons-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.addons-head .btn[aria-busy='true'] {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.addons-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
+  gap: var(--sp-3);
+}
+
+.addon {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.addon-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.addon-top h3 {
+  font-size: var(--text-md);
+  font-weight: 600;
+  min-width: 0;
+}
+
+.addon-about {
+  font-size: var(--text-sm);
+  color: var(--fg2);
+}
+
+.addon-needs,
+.addon-message {
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+
+.addon-message {
+  color: var(--amber);
+}
+
+.addon .settings-actions {
+  margin-top: auto;
+  padding-top: var(--sp-2);
+}

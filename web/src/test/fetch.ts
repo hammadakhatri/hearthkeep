@@ -49,3 +49,6 @@ export const signedOut = { status: 401, body: { reason: 'unauthenticated' } }
 export const signedIn = {
   body: { device: { id: 'cred-1', device_name: 'Laptop', created_at: '2026-10-26T00:00:00Z', current: true } },
 }
+
+// Add-ons fixtures live in addonFixtures.ts; re-exported here with the other replies.
+export { addonList, addonsReady, addonsWith } from './addonFixtures'

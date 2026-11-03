@@ -70,7 +70,13 @@ export function FoldersPanel() {
   }
 
   return (
-    <section className="settings-section" aria-labelledby={titleId} aria-busy={busy || undefined}>
+    <section
+      id="settings-folders"
+      className="settings-section"
+      aria-labelledby={titleId}
+      aria-busy={busy || undefined}
+      tabIndex={-1}
+    >
       <h2 id={titleId}>Folders Hearthkeep can see</h2>
       <p className="settings-lede">
         Your assistant can find files only in these folders, and never changes them. Adding a folder asks for your
