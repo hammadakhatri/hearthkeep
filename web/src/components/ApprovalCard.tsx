@@ -102,7 +102,7 @@ function DiffDetail({ detail, diff }: { detail: Record<string, unknown>; diff: s
           ))}
         </dl>
       )}
-      <DiffView diff={diff} />
+      {diff.trim() ? <DiffView diff={diff} alwaysOpen /> : <p className="diff-note approval-nodiff">No changes to show.</p>}
     </div>
   )
 }

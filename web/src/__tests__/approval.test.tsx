@@ -146,4 +146,24 @@ describe('ApprovalCard', () => {
     render(<ApprovalCard request={request} status="pending" />)
     expect(screen.getByTestId('approval-detail')).toHaveTextContent('"text": "Buy milk"')
   })
+
+  it('a 6-file push card shows every file open, and an empty diff says so', () => {
+    mockFetch({})
+    const files = Array.from({ length: 6 }, (_, i) =>
+      [`diff --git a/f${i}.txt b/f${i}.txt`, `--- a/f${i}.txt`, `+++ b/f${i}.txt`, '@@ -1 +1 @@', '-x', `+line${i}`].join('\n'),
+    ).join('\n')
+    const make = (diff: string): ApprovalRequest => ({
+      approval_id: 'p2',
+      tool: 'github',
+      summary: 'Push',
+      detail: { repo: 'octo/widgets', branch: 'hearthkeep/fix', diff },
+      requires_step_up: true,
+    })
+    const { unmount } = render(<ApprovalCard request={make(files)} status="pending" />)
+    for (let i = 0; i < 6; i++) expect(screen.getByText(`line${i}`)).toBeInTheDocument()
+    unmount()
+    render(<ApprovalCard request={make('')} status="pending" />)
+    expect(screen.getByText('No changes to show.')).toBeInTheDocument()
+    expect(screen.getByText('octo/widgets')).toBeInTheDocument()
+  })
 })
