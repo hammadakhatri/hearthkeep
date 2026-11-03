@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from hearthkeep.config import Settings
 from hearthkeep.permissions import ActionClass, ToolLevel, effective_level, get_level
+
+if TYPE_CHECKING:
+    from hearthkeep.addons import Addons
 
 
 @dataclass
@@ -64,6 +67,7 @@ def _is_available(tool: Tool) -> bool:
 class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
+        self.addons: Addons | None = None  # set by the app; Task 4's availability reads it
 
     def register(self, tool: Tool) -> None:
         if not tool.name:

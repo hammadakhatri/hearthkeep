@@ -10,12 +10,14 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Literal
 from urllib.parse import urlparse
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from hearthkeep import audit
+from hearthkeep.addons import Addons
 from hearthkeep.agent.runner import TurnRunner
 from hearthkeep.approvals import ApprovalStore
 from hearthkeep.auth.credentials import CredentialStore
@@ -154,6 +156,8 @@ class Services:
     repos: RepoStore | None = None  # the added GitHub repos and their clones
     deps: DepsCache | None = None  # each repo's installed dependencies
     repo_tests: RepoTestRunner | None = None  # each repo's test runs
+    addons: Addons | None = None  # what each add-on can do right now
+    chat_mode: Literal["owned", "external", "none"] = "external"
     health_cache: tuple[float, bool] | None = None
     health_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
