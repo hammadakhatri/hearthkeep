@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from hearthkeep import db
+from hearthkeep import db, webbundle
 from hearthkeep.addons import Addons, Probes, github_probes, handle_sandbox_probe, model_setup
 from hearthkeep.agent.loop import AgentLoop
 from hearthkeep.agent.runner import TurnRunner, recover_after_restart
@@ -89,7 +89,7 @@ from hearthkeep.tools.repo_deps import RepoInstallTool, RepoTestTool
 from hearthkeep.tools.send import SendToDevicesTool
 
 DB_FILE = "hearthkeep.db"
-DEFAULT_WEB_DIST = Path(__file__).resolve().parents[4] / "web" / "dist"
+DEFAULT_WEB_DIST = webbundle.WEB_DIST
 HEALTH_TIMEOUT_SECONDS = 2.0
 SSE_KEEPALIVE_SECONDS = 15.0
 

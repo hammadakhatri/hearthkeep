@@ -41,3 +41,19 @@ cd server
 uv run pytest
 uv run ruff check . ../scripts
 ```
+
+## Releasing
+
+Owners install Hearthkeep from a GitHub release, which carries the prebuilt web app. `main` is for developers and carries a `0.0.0` or `.devN` version; only an `x.y.z` version (not `0.0.0`) is a release.
+
+1. Set the version in both `server/pyproject.toml` and `server/src/hearthkeep/__init__.py` (a test keeps them equal), for example `0.1.0`, and commit.
+2. Tag that commit `vX.Y.Z` (for example `v0.1.0`) and push the tag.
+3. The `Release` workflow (`.github/workflows/release.yml`) builds and tests the web app, runs `scripts/build_release.py` (it fails when the tag and the code's version differ), and makes a **draft** release with four assets: the Hearthkeep zip (the tag's source plus the prebuilt `web/dist` and its manifest), the web-app zip on its own (for people who cloned the tag; setup downloads it from the release of the clone's `origin` remote), and a `.sha256` beside each.
+4. Write the release notes on the draft, then publish it.
+5. On `main`, set the version to the next development version, `X.Y.(Z+1).dev0` (for example `0.1.1.dev0`), in both files.
+
+To try the assets locally, run `npm run build` in `web`, set a release version as in step 1, then run from the repository root (`.cache/` is gitignored):
+
+```
+uv run --project server python scripts/build_release.py --version X.Y.Z --out .cache/release
+```
