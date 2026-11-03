@@ -1,0 +1,130 @@
+import { useEffect, useId } from 'react'
+import { useAddons, type Addon, type AddonsState } from '../api/addons'
+import { actionTarget, useAddonsState, useOpenSettings, type SettingsAnchor } from '../shell/AddonsContext'
+import { AlertIcon } from '../shell/icons'
+
+type Badge = { label: string; green?: boolean }
+
+function badgeFor(addon: Addon): Badge {
+  switch (addon.state) {
+    case 'ready':
+      return { label: 'Ready', green: true }
+    case 'on':
+      return { label: 'On', green: true }
+    case 'off':
+      return { label: 'Off' }
+    case 'unsupported':
+      return { label: 'Only on Windows' }
+    case 'this_pc_only':
+      return { label: 'This PC only' }
+    case 'starting':
+      return { label: 'Loading' }
+    case 'offline':
+      return { label: 'Offline' }
+    case 'error':
+      return { label: 'Needs attention' }
+    default:
+      return { label: 'Not set up' }
+  }
+}
+
+/** The one button an add-on's card gets, when its fix leads to a screen that acts. */
+function actionLabel(addon: Addon): string | null {
+  if (addon.action === 'add_token') return 'Add a GitHub token'
+  if (addon.action === 'turn_on') return 'Start at login settings'
+  return null
+}
+
+type Props = {
+  /** Where a button sends the owner; the app shell's own when it provides one. */
+  onNavigate?: (anchor: SettingsAnchor) => void
+  /** Called once the add-ons are on screen, so their cards can be focused. */
+  onLoaded?: () => void
+}
+
+/** Settings › Add-ons: what can be used on this PC, what each add-on needs, and "Check again". */
+export function AddonsPanel(props: Props) {
+  const shared = useAddonsState()
+  // Without the app shell (Settings on its own) the panel loads the list itself.
+  return shared ? <AddonsView state={shared} {...props} /> : <OwnAddons {...props} />
+}
+
+function OwnAddons(props: Props) {
+  return <AddonsView state={useAddons()} {...props} />
+}
+
+function AddonsView({ state, onNavigate, onLoaded }: Props & { state: AddonsState }) {
+  const titleId = useId()
+  const openSettings = useOpenSettings()
+  const go = onNavigate ?? openSettings
+  const { addons, failed, refreshing } = state
+
+  useEffect(() => {
+    if (addons) onLoaded?.()
+  }, [addons, onLoaded])
+
+  return (
+    <section id="settings-addons" className="settings-section" aria-labelledby={titleId} tabIndex={-1}>
+      <div className="addons-head">
+        <h2 id={titleId}>Add-ons</h2>
+        <button
+          type="button"
+          className="btn ghost"
+          aria-busy={refreshing || undefined}
+          onClick={() => {
+            if (!refreshing) void state.refresh()
+          }}
+        >
+          Check again
+        </button>
+      </div>
+      <p className="settings-lede">What Hearthkeep can use on this PC, and what each part still needs.</p>
+      {failed && (
+        <div className="note error" role="alert">
+          <AlertIcon />
+          <span>Couldn't check the add-ons. Try again.</span>
+        </div>
+      )}
+      {addons === null ? (
+        !failed && (
+          <div className="device-list skeleton" aria-busy="true" aria-label="Loading add-ons">
+            <span className="bar w30" />
+            <span className="bar w60" />
+          </div>
+        )
+      ) : (
+        <div className="addons-grid">
+          {addons.map((addon) => {
+            const badge = badgeFor(addon)
+            const label = actionLabel(addon)
+            return (
+              <article key={addon.id} id={`addon-${addon.id}`} className="tile addon" tabIndex={-1}>
+                <div className="addon-top">
+                  <h3>{addon.name}</h3>
+                  <span className={`badge${badge.green ? ' green' : ''}`}>{badge.label}</span>
+                </div>
+                <p className="addon-about">{addon.about}</p>
+                <p className="addon-needs">Needs: {addon.requires}</p>
+                {!addon.ready && <p className="addon-message">{addon.message}</p>}
+                {(label || addon.id === 'analysis') && (
+                  <div className="settings-actions">
+                    {label && (
+                      <button type="button" className="btn" onClick={() => go(actionTarget(addon))}>
+                        {label}
+                      </button>
+                    )}
+                    {addon.id === 'analysis' && (
+                      <button type="button" className="btn ghost" onClick={() => go('settings-folders')}>
+                        Shared folders
+                      </button>
+                    )}
+                  </div>
+                )}
+              </article>
+            )
+          })}
+        </div>
+      )}
+    </section>
+  )
+}

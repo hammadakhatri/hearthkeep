@@ -1,9 +1,11 @@
-import { useEffect, useId, useState } from 'react'
+import { useCallback, useEffect, useId, useState } from 'react'
 import { api } from '../api/client'
+import { AddonsPanel } from '../components/AddonsPanel'
 import { DevicesPanel } from '../components/DevicesPanel'
 import { FoldersPanel } from '../components/FoldersPanel'
 import { GitHubPanel } from '../components/GitHubPanel'
 import { NotificationToggle } from '../components/NotificationToggle'
+import { useAddonsState, type SettingsAnchor } from '../shell/AddonsContext'
 import { AlertIcon, CopyIcon } from '../shell/icons'
 
 type Startup = {
@@ -52,7 +54,7 @@ function StartupPanel() {
             ? 'On'
             : 'Off'
   return (
-    <section className="settings-section" aria-labelledby={titleId}>
+    <section id="settings-startup" className="settings-section" aria-labelledby={titleId} tabIndex={-1}>
       <h2 id={titleId}>Start at login</h2>
       <div className="tile startup" aria-busy={(state === null && !failed) || undefined}>
         <div className="startup-row">
@@ -87,10 +89,38 @@ function StartupPanel() {
   )
 }
 
-export function Settings() {
+type Props = {
+  /** A section or add-on card to scroll to and focus once it is on screen. */
+  focus?: SettingsAnchor | null
+  /** Called after the focus moved, so the anchor can be cleared and a later visit doesn't jump. */
+  onFocused?: () => void
+}
+
+export function Settings({ focus, onFocused }: Props = {}) {
   const notifyId = useId()
+  // Inside the app shell its anchors arrive as `focus`; on its own, Settings moves itself.
+  const inShell = useAddonsState() !== null
+  const [own, setOwn] = useState<SettingsAnchor | null>(null)
+  const [addonsLoaded, setAddonsLoaded] = useState(false)
+  const onLoaded = useCallback(() => setAddonsLoaded(true), [])
+  const target = focus ?? own
+
+  useEffect(() => {
+    if (!target) return
+    const el = document.getElementById(target)
+    // An add-on's card exists only once the add-ons are loaded; wait for them.
+    if (!el && target.startsWith('addon-') && !addonsLoaded) return
+    if (el) {
+      el.scrollIntoView?.({ block: 'start' })
+      el.focus({ preventScroll: true })
+    }
+    setOwn(null)
+    onFocused?.()
+  }, [target, addonsLoaded, onFocused])
+
   return (
     <div className="settings">
+      <AddonsPanel onNavigate={inShell ? undefined : setOwn} onLoaded={onLoaded} />
       <DevicesPanel />
       <FoldersPanel />
       <GitHubPanel />

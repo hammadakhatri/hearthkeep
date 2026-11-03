@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useAddons, type AddonsState } from '../api/addons'
 import { SentTray, useUnreadSent } from '../components/SentTray'
 import { Analysis } from '../views/Analysis'
 import { Chat, type ChatTarget } from '../views/Chat'
@@ -7,6 +8,7 @@ import { Placeholder } from '../views/Placeholder'
 import { Repos } from '../views/Repos'
 import { Settings } from '../views/Settings'
 import { ToolsPermissions } from '../views/ToolsPermissions'
+import { AddonsProvider, type SettingsAnchor } from './AddonsContext'
 import { BottomTabs, Sidebar } from './Sidebar'
 import { TopBar, useHealth, type HealthState } from './TopBar'
 import { DEFAULT_VIEW, VIEWS, type ViewId } from './views'
@@ -38,6 +40,9 @@ export function AppShell({ initialView = DEFAULT_VIEW, onSignOut }: Props) {
   // A chat (and maybe a run's turn) another view asked Chat to open.
   const [target, setTarget] = useState<ChatTarget | null>(null)
   const health = useHealth()
+  const addons: AddonsState = useAddons()
+  // The Settings section or add-on card another view asked to show.
+  const [settingsFocus, setSettingsFocus] = useState<SettingsAnchor | null>(null)
   const scroller = useRef<HTMLDivElement>(null)
   const shell = useRef<HTMLDivElement>(null)
   const [unread, setUnread] = useUnreadSent()
@@ -87,8 +92,15 @@ export function AppShell({ initialView = DEFAULT_VIEW, onSignOut }: Props) {
     select('chat')
   }
 
+  const clearSettingsFocus = useCallback(() => setSettingsFocus(null), [])
+
+  function openSettings(anchor: SettingsAnchor) {
+    setSettingsFocus(anchor)
+    select('settings')
+  }
+
   return (
-    <>
+    <AddonsProvider value={{ ...addons, openSettings }}>
     <div className="shell" ref={shell}>
       <Sidebar current={view} onSelect={select} onSignOut={onSignOut} />
       <main className="main">
@@ -111,7 +123,7 @@ export function AppShell({ initialView = DEFAULT_VIEW, onSignOut }: Props) {
               ) : view === 'repos' ? (
                 <Repos />
               ) : view === 'settings' ? (
-                <Settings />
+                <Settings focus={settingsFocus} onFocused={clearSettingsFocus} />
               ) : (
                 <Placeholder view={view} />
               )}
@@ -122,6 +134,6 @@ export function AppShell({ initialView = DEFAULT_VIEW, onSignOut }: Props) {
       <BottomTabs current={view} onSelect={select} onSignOut={onSignOut} />
     </div>
       <SentTray open={trayOpen} onClose={() => setTrayOpen(false)} onUnread={setUnread} reloadKey={arrivals} />
-    </>
+    </AddonsProvider>
   )
 }

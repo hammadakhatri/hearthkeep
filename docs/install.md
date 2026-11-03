@@ -459,6 +459,8 @@ Hearthkeep can read the files you attach to a chat and analyse them with Python.
 
    The command builds two images: `hearthkeep-sandbox` (Python analysis) and `hearthkeep-repo` (running a GitHub repo's tests and installing its dependencies). Hearthkeep never builds or downloads an image by itself.
 
+   **Settings › Add-ons** shows whether Analysis is ready, and what is missing if it is not.
+
 3. Check Docker and the image:
 
    ```
@@ -476,6 +478,8 @@ Docker Desktop has to be running whenever you want to analyse a file. After an u
 ## 12. Optional: GitHub
 
 Hearthkeep can work on GitHub repos you choose: read them, change them on a branch of its own, run their tests, and push or open a pull request after you approve. It needs Git 2.31 or newer on this PC (step 1), a token you make on GitHub, and, to run tests, Docker and the repo image (step 11). Without Git or without a saved token, the GitHub tools are not offered to the assistant at all.
+
+**Settings › Add-ons** shows whether the GitHub add-on is ready, and what is missing if it is not.
 
 What it does and never does is in [security.md](security.md#github).
 

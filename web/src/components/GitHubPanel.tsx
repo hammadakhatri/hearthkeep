@@ -81,7 +81,13 @@ export function GitHubPanel() {
   const showForm = state !== null && state.git && (!state.connected || replacing)
 
   return (
-    <section className="settings-section" aria-labelledby={titleId} aria-busy={busy || undefined}>
+    <section
+      id="settings-github"
+      className="settings-section"
+      aria-labelledby={titleId}
+      aria-busy={busy || undefined}
+      tabIndex={-1}
+    >
       <h2 id={titleId}>GitHub</h2>
       <p className="settings-lede">
         With a token, your assistant can read your repositories, change them on your computer, and push only after
