@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
+import type { Addon } from '../api/addons'
 import type { ModelsResponse } from '../api/models'
+import { useAddon } from './AddonsContext'
 import { SentIcon } from './icons'
 
 type Health = {
@@ -8,7 +10,7 @@ type Health = {
   chat_model: string
   chat_model_reachable: boolean
   /** "starts_on_first_use": Hearthkeep runs the model itself and starts it when needed. */
-  chat_model_state?: 'ready' | 'offline' | 'starts_on_first_use'
+  chat_model_state?: 'ready' | 'offline' | 'starts_on_first_use' | 'not_set_up'
 }
 
 export type GpuUse = { used_gb: number; total_gb: number }
@@ -18,6 +20,7 @@ export type HealthState =
   | { state: 'online'; model: string; gpu?: GpuUse }
   | { state: 'standby'; model: string; gpu?: GpuUse }
   | { state: 'offline'; model: string; gpu?: GpuUse }
+  | { state: 'not_set_up'; model: string; gpu?: GpuUse }
   | { state: 'unreachable' }
 
 const POLL_MS = 15_000
@@ -42,7 +45,8 @@ export function useHealth(): HealthState {
         g && typeof g.total_gb === 'number' && typeof g.used_gb === 'number'
           ? { used_gb: g.used_gb, total_gb: g.total_gb }
           : undefined
-      if (!h.value.chat_model_reachable) setHealth({ state: 'offline', model, gpu })
+      if (h.value.chat_model_state === 'not_set_up') setHealth({ state: 'not_set_up', model, gpu })
+      else if (!h.value.chat_model_reachable) setHealth({ state: 'offline', model, gpu })
       else if (h.value.chat_model_state === 'starts_on_first_use') setHealth({ state: 'standby', model, gpu })
       else setHealth({ state: 'online', model, gpu })
     }
@@ -62,31 +66,63 @@ export function useHealth(): HealthState {
   return health
 }
 
-function StatusPill({ health }: { health: HealthState }) {
-  let text: string
-  let title: string
+type Pill = { text: string; title: string; state: string }
+
+/** The pill from the chat add-on, the same state Settings › Add-ons shows. */
+function pillFromChat(chat: Addon): Pill {
+  const model = chat.details.model ?? ''
+  switch (chat.state) {
+    case 'not_set_up':
+      return { text: 'No chat model', title: chat.message, state: 'not_set_up' }
+    case 'starting':
+      return { text: 'Loading the chat model…', title: chat.message, state: 'standby' }
+    case 'offline':
+      return { text: 'Chat model offline', title: chat.message, state: 'offline' }
+    case 'error':
+      return { text: 'Chat model needs attention', title: chat.message, state: 'offline' }
+    default:
+      return chat.details.loaded === false
+        ? {
+            text: `${model} · starts when needed`,
+            title: `Hearthkeep starts ${model} when you send a message`,
+            state: 'standby',
+          }
+        : { text: model, title: `Chat model ${model} is ready`, state: 'online' }
+  }
+}
+
+/** Today's health-based pill, for when the add-ons aren't known. */
+function pillFromHealth(health: HealthState): Pill {
   switch (health.state) {
     case 'checking':
-      text = 'Checking…'
-      title = 'Checking the chat model'
-      break
+      return { text: 'Checking…', title: 'Checking the chat model', state: 'checking' }
     case 'online':
-      text = health.model
-      title = `Chat model ${health.model} is ready`
-      break
+      return { text: health.model, title: `Chat model ${health.model} is ready`, state: 'online' }
     case 'standby':
-      text = `${health.model} · starts when needed`
-      title = `Hearthkeep starts ${health.model} when you send a message`
-      break
+      return {
+        text: `${health.model} · starts when needed`,
+        title: `Hearthkeep starts ${health.model} when you send a message`,
+        state: 'standby',
+      }
     case 'offline':
-      text = 'Chat model offline'
-      title = `${health.model} is not answering. Check that your chat server is running.`
-      break
+      return {
+        text: 'Chat model offline',
+        title: `${health.model} is not answering. Check that your chat server is running.`,
+        state: 'offline',
+      }
+    case 'not_set_up':
+      return { text: 'No chat model', title: 'No chat model is set up on this PC.', state: 'not_set_up' }
     case 'unreachable':
-      text = "Can't reach Hearthkeep"
-      title = 'The Hearthkeep server is not answering.'
-      break
+      return { text: "Can't reach Hearthkeep", title: 'The Hearthkeep server is not answering.', state: 'unreachable' }
   }
+}
+
+export function StatusPill({ health, chat }: { health: HealthState; chat: Addon | null }) {
+  // The server being away, or the first check still running, comes from health; otherwise the
+  // chat add-on wins, so the pill never says "ready" while Settings says the model has an error.
+  const fromChat = chat !== null && health.state !== 'unreachable' && health.state !== 'checking'
+  const { text, state, title: base } = fromChat ? pillFromChat(chat) : pillFromHealth(health)
+  let title = base
   const gpu = 'gpu' in health ? health.gpu : undefined
   const gpuText =
     gpu && gpu.total_gb > 0 ? `GPU ${gpu.used_gb.toFixed(1)} of ${gpu.total_gb.toFixed(1)} GB in use` : null
@@ -96,7 +132,7 @@ function StatusPill({ health }: { health: HealthState }) {
       <div
         className="status"
         role="status"
-        data-state={health.state}
+        data-state={state}
         title={title}
         aria-describedby={gpuText ? 'status-gpu' : undefined}
       >
@@ -146,6 +182,8 @@ export function TopBar({
   unread?: number
   onOpenSent?: () => void
 }) {
+  // Null without the add-ons (no provider, or not loaded yet): the pill then follows health.
+  const chat = useAddon('chat')
   return (
     <header className="topbar">
       <div className="topbar-title">
@@ -153,7 +191,7 @@ export function TopBar({
         <h1>{title}</h1>
       </div>
       <div className="topbar-end">
-        <StatusPill health={health} />
+        <StatusPill health={health} chat={chat} />
         {onOpenSent && <SentButton unread={unread} onOpen={onOpenSent} />}
       </div>
     </header>

@@ -19,19 +19,35 @@ type Props = {
   files?: { uploading: boolean; ready: number }
   /** One call per picked file, photo or not; the caller routes each by type. */
   onPickFile?: (file: File) => void
+  /** The chat model can't answer: the box and Send are off, and the message says why in plain text. */
+  blocked?: { message: string; onSetUp?: () => void } | null
+  /** A passing state that doesn't stop typing or sending, such as the model loading. */
+  notice?: string | null
 }
 
 const MAX_HEIGHT = 200
 
 /** The floating message box: text, photos and files, Think, the model in use, Send. */
-export function Composer({ onSend, busy, think, onThinkChange, thinkLocked, model, photo, files, onPickFile }: Props) {
+export function Composer({
+  onSend,
+  busy,
+  think,
+  onThinkChange,
+  thinkLocked,
+  model,
+  photo,
+  files,
+  onPickFile,
+  blocked = null,
+  notice = null,
+}: Props) {
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
   const box = useRef<HTMLTextAreaElement>(null)
   // A ready photo or file can go on its own; one still uploading holds the message back.
   const hasContent = text.trim() !== '' || photo?.state === 'ready' || (files?.ready ?? 0) > 0
   const uploading = photo?.state === 'uploading' || files?.uploading === true
-  const canSend = hasContent && !uploading && !busy && !sending
+  const canSend = hasContent && !uploading && !busy && !sending && !blocked
 
   // Grow with the text, up to a few lines, then scroll inside.
   useLayoutEffect(() => {
@@ -65,61 +81,77 @@ export function Composer({ onSend, busy, think, onThinkChange, thinkLocked, mode
     ? `Thinking is ${think ? 'on' : 'off'} for this chat. Start a new chat to change it.`
     : 'Let the model think before it answers. Slower, often better for hard questions.'
 
+  const stateText = blocked?.message ?? notice
   return (
-    <form className="composer" onSubmit={submit} aria-label="Message">
-      <label className="sr-only" htmlFor="composer-input">
-        Message Hearthkeep
-      </label>
-      <textarea
-        id="composer-input"
-        ref={box}
-        className="composer-input"
-        rows={1}
-        value={text}
-        placeholder="Ask Hearthkeep anything…"
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={onKeyDown}
-        maxLength={20000}
-        enterKeyHint="send"
-        aria-describedby={busy ? 'composer-busy' : undefined}
-      />
-      {busy && (
-        <span id="composer-busy" className="sr-only">
-          Hearthkeep is answering. You can send when it's done.
-        </span>
+    <>
+      {stateText && (
+        <p id="composer-state" className="composer-state" role={blocked ? undefined : 'status'}>
+          <span>{stateText}</span>
+          {blocked?.onSetUp && (
+            <button type="button" className="btn" onClick={blocked.onSetUp}>
+              Set up
+            </button>
+          )}
+        </p>
       )}
-      <div className="composer-tools">
-        {onPickFile && (
-          <PhotoButton
-            className="chipbtn opt attach"
-            label="Attach a photo or file"
-            accept={FILE_ACCEPT}
-            multiple
-            onPick={onPickFile}
-          >
-            <PaperclipIcon />
-          </PhotoButton>
-        )}
-        <button
-          type="button"
-          className="chipbtn opt"
-          aria-pressed={think}
-          disabled={thinkLocked}
-          title={thinkTitle}
-          onClick={() => onThinkChange(!think)}
-        >
-          <ThinkIcon />
-          Think
-        </button>
-        {model && (
-          <span className="chip opt model" title={`Answers come from ${model} on your computer`}>
-            {model}
+      <form className="composer" onSubmit={submit} aria-label="Message">
+        <label className="sr-only" htmlFor="composer-input">
+          Message Hearthkeep
+        </label>
+        <textarea
+          id="composer-input"
+          ref={box}
+          className="composer-input"
+          rows={1}
+          value={text}
+          placeholder="Ask Hearthkeep anything…"
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={onKeyDown}
+          maxLength={20000}
+          enterKeyHint="send"
+          disabled={blocked !== null}
+          aria-describedby={
+            [stateText ? 'composer-state' : null, busy ? 'composer-busy' : null].filter(Boolean).join(' ') || undefined
+          }
+        />
+        {busy && (
+          <span id="composer-busy" className="sr-only">
+            Hearthkeep is answering. You can send when it's done.
           </span>
         )}
-        <button type="submit" className="go" aria-label="Send" disabled={!canSend}>
-          <SendIcon />
-        </button>
-      </div>
-    </form>
+        <div className="composer-tools">
+          {onPickFile && (
+            <PhotoButton
+              className="chipbtn opt attach"
+              label="Attach a photo or file"
+              accept={FILE_ACCEPT}
+              multiple
+              onPick={onPickFile}
+            >
+              <PaperclipIcon />
+            </PhotoButton>
+          )}
+          <button
+            type="button"
+            className="chipbtn opt"
+            aria-pressed={think}
+            disabled={thinkLocked}
+            title={thinkTitle}
+            onClick={() => onThinkChange(!think)}
+          >
+            <ThinkIcon />
+            Think
+          </button>
+          {model && (
+            <span className="chip opt model" title={`Answers come from ${model} on your computer`}>
+              {model}
+            </span>
+          )}
+          <button type="submit" className="go" aria-label="Send" disabled={!canSend}>
+            <SendIcon />
+          </button>
+        </div>
+      </form>
+    </>
   )
 }

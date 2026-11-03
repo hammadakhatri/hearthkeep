@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useState, type FormEvent } from 'react'
 import { isApiError } from '../api/client'
 import { getGitHub, removeToken, saveToken, type GitHubState } from '../api/github'
 import { passkeyErrorMessage } from '../api/webauthn'
+import { useOpenSettings } from '../shell/AddonsContext'
 import { AlertIcon, PasskeyIcon } from '../shell/icons'
 
 /** GitHub's own page for making a fine-grained token; the install guide's "Add GitHub" section says which permissions to pick. */
@@ -31,6 +32,7 @@ export function tokenErrorMessage(error: unknown, action: string): string {
 /** The GitHub token: save or replace it (passkey), or remove it (session only). */
 export function GitHubPanel() {
   const titleId = useId()
+  const openSettings = useOpenSettings()
   const [state, setState] = useState<GitHubState | null>(null)
   const [failed, setFailed] = useState(false)
   const [token, setToken] = useState('')
@@ -109,6 +111,9 @@ export function GitHubPanel() {
       ) : !state.git ? (
         <div className="note info">
           <span>Install Git to use GitHub with Hearthkeep.</span>
+          <button type="button" className="btn" onClick={() => openSettings('addon-github')}>
+            Set up
+          </button>
         </div>
       ) : (
         <>

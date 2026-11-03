@@ -2,7 +2,9 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Chat } from '../views/Chat'
 import { IMAGES_CHAT_KEY, Images, composeMessage, nearestShape } from '../views/Images'
-import { bodyOf, headerOf, mockFetch, type Reply } from '../test/fetch'
+import type { Addon } from '../api/addons'
+import { renderWithAddons } from '../test/addons'
+import { addonList, bodyOf, headerOf, mockFetch, type Reply } from '../test/fetch'
 import { emit, FakeEventSource, installEventSource, lastSource } from '../test/eventsource'
 
 const PAGE = '/api/images?limit=24'
@@ -176,7 +178,7 @@ describe('Images', () => {
     expect(await screen.findByText('Your images will appear here. Describe one above to start.')).toBeInTheDocument()
   })
 
-  it('shows not-set-up state when there are no image models', async () => {
+  it('no longer shows the old not-set-up block or its docs line', async () => {
     routes({
       'GET /api/models': {
         body: {
@@ -186,10 +188,10 @@ describe('Images', () => {
         },
       },
     })
-    render(<Images />)
-    expect(await screen.findByText("Image generation isn't set up on this PC yet.")).toBeInTheDocument()
-    expect(screen.getByText('See docs/models.md in the Hearthkeep repository.')).toBeInTheDocument()
-    expect(screen.queryByRole('link')).toBeNull()
+    renderWithAddons(<Images />, addonList({ images: 'not_set_up' }) as Addon[])
+    expect(await screen.findByRole('button', { name: 'Set up Images' })).toBeInTheDocument()
+    expect(screen.queryByText("Image generation isn't set up on this PC yet.")).toBeNull()
+    expect(screen.queryByText(/docs\/models\.md/)).toBeNull()
     expect(screen.queryByRole('button', { name: 'Create' })).toBeNull()
     expect(screen.queryByText('Your images will appear here. Describe one above to start.')).toBeNull()
   })

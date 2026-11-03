@@ -9,14 +9,28 @@ vi.mock('../api/webauthn', async (importOriginal) => ({
   stepUp: vi.fn(),
 }))
 
-const demo = {
-  tool: 'demo',
+const github = {
+  tool: 'github',
   level: 'ask',
   effective_level: 'ask',
-  description: 'Get the current local date and time. Save a short note for the owner to read later.',
-  tools: ['clock', 'note'],
+  description: 'Read your GitHub repositories and open pull requests.',
+  tools: ['github_read'],
+  addon: null,
 }
-const python = { tool: 'python', level: 'allowed', effective_level: 'ask', description: 'Run Python.', tools: ['python'] }
+const python = {
+  tool: 'python',
+  level: 'allowed',
+  effective_level: 'allowed',
+  description: 'Run Python.',
+  tools: [],
+  addon: {
+    id: 'analysis',
+    state: 'docker_stopped',
+    ready: false,
+    short: 'Needs Docker',
+    message: "Docker Desktop isn't running. Start it, then check again.",
+  },
+}
 
 beforeEach(() => {
   vi.mocked(stepUp).mockReset().mockResolvedValue('settings-token')
@@ -24,35 +38,29 @@ beforeEach(() => {
 
 describe('Tools & permissions', () => {
   it('lists each tool with its description and current level', async () => {
-    mockFetch({ 'GET /api/settings/tools': { body: [demo, python] } })
+    mockFetch({ 'GET /api/settings/tools': { body: [github, python] } })
     render(<ToolsPermissions />)
-    const row = (await screen.findByText('Demo tools')).closest('li')!
-    expect(within(row).getByText(demo.description)).toBeInTheDocument()
-    const levels = within(row).getByRole('radiogroup', { name: 'Demo tools' })
+    const row = (await screen.findByText('GitHub')).closest('li')!
+    expect(within(row).getByText(github.description)).toBeInTheDocument()
+    const levels = within(row).getByRole('radiogroup', { name: 'GitHub' })
     expect(within(levels).getAllByRole('radio').map((r) => r.textContent)).toEqual(['Allowed', 'Ask', 'Off'])
     expect(within(levels).getByRole('radio', { name: 'Ask' })).toHaveAttribute('aria-checked', 'true')
     expect(within(row).queryByText(/Needs Docker/)).toBeNull()
   })
 
-  it('shows a Docker note when the effective level differs', async () => {
-    mockFetch({ 'GET /api/settings/tools': { body: [demo, python] } })
-    render(<ToolsPermissions />)
-    const row = (await screen.findByText('Python')).closest('li')!
-    expect(within(row).getByText('Needs Docker to run freely')).toBeInTheDocument()
-  })
 
   it('widening a tool level asks for step-up; narrowing does not', async () => {
-    let current = { ...demo }
+    let current = { ...github }
     const { calls } = mockFetch({
-      'GET /api/settings/tools': { body: [demo] },
-      'PUT /api/settings/tools/demo': (init) => {
+      'GET /api/settings/tools': { body: [github] },
+      'PUT /api/settings/tools/github': (init) => {
         const level = bodyOf({ path: '', init }).level as string
         current = { ...current, level, effective_level: level }
         return { body: current }
       },
     })
     render(<ToolsPermissions />)
-    const levels = await screen.findByRole('radiogroup', { name: 'Demo tools' })
+    const levels = await screen.findByRole('radiogroup', { name: 'GitHub' })
 
     fireEvent.click(within(levels).getByRole('radio', { name: 'Allowed' }))
     await screen.findByRole('radio', { name: 'Allowed', checked: true })
@@ -67,11 +75,11 @@ describe('Tools & permissions', () => {
     expect(bodyOf(narrow[1])).toEqual({ level: 'off' })
   })
 
-  it('keeps the level when Face ID / Touch ID is cancelled', async () => {
+  it('keeps the level when the passkey is cancelled', async () => {
     vi.mocked(stepUp).mockRejectedValue(Object.assign(new Error('no'), { name: 'NotAllowedError' }))
-    const { calls } = mockFetch({ 'GET /api/settings/tools': { body: [demo] } })
+    const { calls } = mockFetch({ 'GET /api/settings/tools': { body: [github] } })
     render(<ToolsPermissions />)
-    const levels = await screen.findByRole('radiogroup', { name: 'Demo tools' })
+    const levels = await screen.findByRole('radiogroup', { name: 'GitHub' })
     fireEvent.click(within(levels).getByRole('radio', { name: 'Allowed' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Change was cancelled.')
     expect(within(levels).getByRole('radio', { name: 'Ask' })).toHaveAttribute('aria-checked', 'true')

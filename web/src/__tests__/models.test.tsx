@@ -53,6 +53,18 @@ describe('Models list', () => {
     expect(ready.querySelector('.dot')).toHaveAttribute('aria-hidden', 'true')
   })
 
+  it('lists an image card that Hearthkeep does not manage as Not set up', async () => {
+    const models = [base.models[0], { ...base.models[1], managed: false }]
+    mockFetch({ 'GET /api/models': { body: { ...base, models } } })
+    render(<ModelList />)
+    const img = (await screen.findByText('Picture maker')).closest('li')!
+    expect(within(img).getByText('Not set up')).toBeInTheDocument()
+    expect(within(img).queryByText('Ready')).toBeNull()
+    // A chat card on an external server is still just ready.
+    const chat = screen.getByText('Local chat 12B').closest('li')!
+    expect(within(chat).queryByText('Not set up')).toBeNull()
+  })
+
   it('omits the chip list when a model has no capabilities', async () => {
     const models = [{ ...base.models[0], capabilities: [] }]
     mockFetch({ 'GET /api/models': { body: { ...base, models } } })

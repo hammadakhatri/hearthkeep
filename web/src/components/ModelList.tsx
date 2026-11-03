@@ -106,7 +106,7 @@ export function ModelList() {
                 <span className="model-source">{SOURCE[m.source]}</span>
                 <span className={`model-status${m.resident ? ' loaded' : ''}`}>
                   <span className="dot" aria-hidden="true" />
-                  {m.resident ? 'Loaded' : 'Ready'}
+                  {m.resident ? 'Loaded' : m.kind === 'image' && !m.managed ? 'Not set up' : 'Ready'}
                 </span>
               </li>
             ))}
