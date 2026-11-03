@@ -93,13 +93,22 @@
   align-items: center;
   gap: var(--sp-2);
   margin: 0 0 6px;
-  padding: 0 4px;
   font-size: var(--text-sm, 13px);
-  color: var(--muted);
+  color: var(--fg2);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  border-radius: 14px;
+  padding: 6px 12px;
 }
 
 .status[data-state='not_set_up'] {
   color: var(--muted);
+}
+
+.status[data-state='not_set_up'] .dot {
+  background: var(--muted);
+  opacity: 0.7;
 }
 
 .typing-wrap {
