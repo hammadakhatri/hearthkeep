@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import struct
 import subprocess
 import tomllib
 import zipfile
@@ -490,11 +491,13 @@ def test_safe_extract_turns_unpacking_errors_into_bundle_errors(tmp_path, monkey
         safe_extract(z, tmp_path / "out")
 
 
-def test_safe_extract_refuses_corrupt_compressed_data(tmp_path):
+def test_safe_extract_refuses_a_corrupt_deflate_stream(tmp_path):
+    """Headers intact, deflate data broken: zipfile raises zlib.error (before any CRC check)."""
     data = bytearray(make_zip({"index.html": b"<html>" * 200}))
-    start = data.index(b"index.html") + len(b"index.html")  # the local header's name ends here
-    for i in range(start, start + 20):
-        data[i] ^= 0xFF
+    name_len, extra_len = struct.unpack("<HH", data[26:30])
+    data[30 + name_len + extra_len] = 0xFF  # BTYPE 11: an invalid deflate block type
+    with zipfile.ZipFile(io.BytesIO(bytes(data))) as zf, pytest.raises(zlib.error):
+        zf.read("index.html")  # the fixture really is a corrupt deflate stream
     z = tmp_path / "b.zip"
     z.write_bytes(bytes(data))
     with pytest.raises(BundleError):

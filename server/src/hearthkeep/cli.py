@@ -97,6 +97,10 @@ FINISHED_SLOW = (
     "Setup is finished, but Hearthkeep is taking a while to start. Open it from the Start "
     "menu in a minute. You can close this window now."
 )
+LAUNCHER_NOT_STARTED = (
+    "Setup is finished, but Hearthkeep couldn't be started in the background. Double-click "
+    "Setup.cmd again to start it."
+)
 LOCATION_NOT_SAVED = (
     "Hearthkeep couldn't note where its data folder is on this PC. Setup carries on without it."
 )
@@ -153,9 +157,12 @@ def run_server(
     *,
     control: ServerControl | None = None,
     on_started: Callable[[], None] | None = None,
+    log_level: str = "info",
+    access_log: bool = True,
 ) -> int:  # replaced in tests
     """Serve `app` until it is stopped; the exit code a restart or stop request asked for,
-    else 0 (or STARTUP_FAILURE, as uvicorn.run, when the server never started)."""
+    else 0 (or STARTUP_FAILURE, as uvicorn.run, when the server never started). Setup passes
+    a quieter `log_level` and no access log: its window is the owner's, not a log."""
     import uvicorn
 
     # proxy_headers=False: never derive the client address from X-Forwarded-For, so a local
@@ -166,7 +173,8 @@ def run_server(
         app,
         host=host,
         port=port,
-        log_level="info",
+        log_level=log_level,
+        access_log=access_log,
         proxy_headers=False,
         timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECONDS,
     )
@@ -514,7 +522,8 @@ def cmd_setup(
     # The folder: the one asked for, else the one setup recorded, else the default.
     recorded = host.read_location()
     data = Path(args.data) if args.data else (recorded or host.default_data_dir())
-    # The folder rules are for a new folder; an existing install is used where it is.
+    # The folder rules are for a new folder. An existing Hearthkeep data folder skips all of
+    # check_data_dir (controller ruling on C2): existing installs must keep working as they are.
     if not _is_data_folder(data):
         problem = host.check_data_dir(data)
         if problem:
@@ -577,9 +586,13 @@ def cmd_setup(
             print(BROWSER_FAILED)
             print(link)
 
-    run_server(app, host_ip, settings.port, control=control, on_started=announce)
+    code = run_server(
+        app, host_ip, settings.port, control=control, on_started=announce,
+        log_level="warning", access_log=False,
+    )  # fmt: skip
     if not setup.completed:
-        print(STOPPED_EARLY)
+        # The server never started: something took the port after the check above.
+        print(PORT_BUSY.format(port=settings.port) if code == STARTUP_FAILURE else STOPPED_EARLY)
         return 1
 
     try:
@@ -589,7 +602,8 @@ def cmd_setup(
     try:
         process = host.spawn_detached(launcher.launcher_argv(data))
     except OSError:
-        process = None
+        print(LAUNCHER_NOT_STARTED)
+        return 1
     base = f"http://127.0.0.1:{settings.port}"
     print(FINISHED if wait(base, want_setup_mode=False, process=process) else FINISHED_SLOW)
     return 0

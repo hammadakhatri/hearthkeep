@@ -500,7 +500,12 @@ def test_run_server_returns_the_requested_exit_code(monkeypatch):
     config = built["config"]
     assert config.proxy_headers is False and config.timeout_graceful_shutdown == 5
     assert (config.host, config.port) == ("127.0.0.1", 8765)
+    assert (config.log_level, config.access_log) == ("info", True)  # serve: full logs
     assert started.wait(5)
+
+    # Setup's window is the owner's: warnings only, no access log.
+    cli.run_server(object(), "127.0.0.1", 8765, log_level="warning", access_log=False)
+    assert (built["config"].log_level, built["config"].access_log) == ("warning", False)
 
     class NeverStarts(FakeServer):
         def run(self):

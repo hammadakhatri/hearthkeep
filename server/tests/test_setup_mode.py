@@ -31,6 +31,7 @@ from hearthkeep.cli import (
     FINISHED,
     FINISHED_SLOW,
     KEEP_OPEN,
+    LAUNCHER_NOT_STARTED,
     LOCATION_NOT_SAVED,
     PORT_BUSY,
     SETUP_INTRO,
@@ -83,6 +84,7 @@ class FakeHost(WindowsHost):
         self.shortcuts: list[Path] = []
         self.shortcut_error = False
         self.spawned: list[list[str]] = []
+        self.spawn_error = False
 
     def drive_type(self, root: str) -> int:
         return 3  # a fixed local disk
@@ -105,6 +107,8 @@ class FakeHost(WindowsHost):
         self.shortcuts.append(Path(data_dir))
 
     def spawn_detached(self, argv: list[str], *, popen=None):
+        if self.spawn_error:
+            raise OSError("pythonw.exe is missing")
         self.spawned.append(list(argv))
         return None
 
@@ -116,12 +120,17 @@ class FakeRunServer:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, int]] = []
+        self.kwargs: list[dict] = []
         self.enroll = True
+        self.never_starts = False  # as uvicorn when the port was taken: STARTUP_FAILURE
         self.secret: str | None = None
         self.code: str | None = None
 
-    def __call__(self, app, host, port, *, control=None, on_started=None) -> int:
+    def __call__(self, app, host, port, *, control=None, on_started=None, **kw) -> int:
         self.calls.append((host, port))
+        self.kwargs.append(kw)
+        if self.never_starts:
+            return cli.STARTUP_FAILURE
         with TestClient(app, base_url=ORIGIN, client=LOOPBACK_PEER) as client:
             self.secret = app.state.hk.setup.secret
             if on_started is not None:
@@ -253,6 +262,13 @@ def test_setup_code_needs_the_secret_and_loopback(harness):
         assert secret not in detail and code not in detail
 
 
+def test_forwarded_for_does_not_make_a_remote_peer_local(harness):
+    client, secret = setup_client(harness, peer=("192.168.1.20", 50000))
+    headers = {**CSRF, "X-Forwarded-For": "127.0.0.1", "X-Real-IP": "127.0.0.1"}
+    r = client.post("/api/setup/enrollment-code", json={"secret": secret}, headers=headers)
+    assert (r.status_code, r.json()["reason"]) == (403, "loopback_only")
+
+
 def test_setup_answers_ipv6_loopback(harness):
     client, secret = setup_client(harness, peer=("::1", 50000))
     r = client.post("/api/setup/status", json={"secret": secret}, headers=CSRF)
@@ -353,6 +369,8 @@ def test_setup_secret_and_code_never_logged(tmp_path, caplog, capsys, run_cmd_se
     assert len(host.spawned) == 1 and host.spawned[0][3:5] == ["launch", "--data"]
     assert host.spawned[0][5] == str(data.resolve())
     assert run_cmd_setup.run_server.calls == [("127.0.0.1", 8765)]
+    # The window is the owner's: no uvicorn banner or access-log lines in it.
+    assert run_cmd_setup.run_server.kwargs == [{"log_level": "warning", "access_log": False}]
 
 
 def test_setup_opens_the_browser_without_printing_the_link(tmp_path, capsys, run_cmd_setup):
@@ -380,6 +398,24 @@ def test_setup_stopped_before_passkey_says_so(tmp_path, capsys, run_cmd_setup):
     out = capsys.readouterr().out
     assert STOPPED_EARLY in out and FINISHED not in out
     assert run_cmd_setup.host.spawned == [] and run_cmd_setup.host.shortcuts == []
+
+
+def test_setup_server_that_never_starts_says_the_port_is_busy(tmp_path, capsys, run_cmd_setup):
+    run_cmd_setup.run_server.never_starts = True
+    assert run_cmd_setup(tmp_path / "data") == 1
+    out = capsys.readouterr().out
+    assert PORT_BUSY.format(port=8765) in out and STOPPED_EARLY not in out
+    assert run_cmd_setup.host.spawned == []
+
+
+def test_setup_says_at_once_when_the_launcher_cant_start(tmp_path, capsys, run_cmd_setup):
+    run_cmd_setup.host.spawn_error = True
+    waited = []
+    result = run_cmd_setup(tmp_path / "data", wait=lambda *a, **k: waited.append(a) or True)
+    assert result == 1 and waited == []  # no 60-second wait for a launcher that never ran
+    out = capsys.readouterr().out
+    assert LAUNCHER_NOT_STARTED in out
+    assert FINISHED not in out and FINISHED_SLOW not in out
 
 
 def test_setup_refuses_a_bad_data_folder_before_creating_it(tmp_path, capsys, run_cmd_setup):
@@ -525,6 +561,7 @@ def test_setup_copy_is_ascii_without_commands():
         FINISHED,
         FINISHED_SLOW,
         LOCATION_NOT_SAVED,
+        LAUNCHER_NOT_STARTED,
     ]
     for text in copy:
         assert text.isascii(), text
