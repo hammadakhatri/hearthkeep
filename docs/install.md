@@ -515,7 +515,7 @@ Running tests needs the repo's dependencies. The assistant asks to install them 
 
 When the assistant sends you a file or a summary, it appears in the tray in the app. You can also get a notification that says "A file is ready in Hearthkeep". It carries no content, only that nudge.
 
-**Android (Chrome or Samsung Internet).** Open Hearthkeep on the phone, then turn notifications on in **Settings** or from the tray, and allow notifications when the browser asks. The push is delivered through Google's push service, which sees only your phone's push address and a signature from your server, never the file or its name. See [security.md](security.md#notifications-hearthkeeps-only-outgoing-connection).
+**Android (Chrome or Samsung Internet).** Open Hearthkeep on the phone, then turn notifications on in **Settings** or from the tray, and allow notifications when the browser asks. The push is delivered through Google's push service, which sees only your phone's push address and a signature from your server, never the file or its name. See [security.md](security.md#notifications).
 
 **iPhone and iPad.** Add Hearthkeep to the Home Screen first (Share, then **Add to Home Screen**) and open it from there; Safari only allows notifications for apps added this way. This is not the tested path, so treat it as best effort. Notifications go through Apple's push service on the same terms.
 
