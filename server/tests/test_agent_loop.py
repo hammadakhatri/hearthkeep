@@ -1085,3 +1085,118 @@ async def test_every_validator_names_the_field_and_limit_never_the_value(
         prefix + "'odd' breaks the multipleOf rule.",
     ]
     assert not any("VALUE" in e or "7777" in e for e in errors)
+
+
+class DetailTool:
+    """Change-local tool at level Ask whose approval carries a diff."""
+
+    name = "edit_thing"
+    level_key = "thing"
+    description = "Edit a thing."
+    parameters = {"type": "object", "properties": {}, "additionalProperties": False}
+
+    def __init__(self, detail=None, fail=False):
+        self._detail = detail
+        self._fail = fail
+        self.seen_ctx = None
+        self.ran = 0
+
+    def classify(self, args):
+        return ActionClass.CHANGE_LOCAL
+
+    def summarize(self, args):
+        return "Edit the thing"
+
+    async def approval_detail(self, args, ctx):
+        if self._fail:
+            raise RuntimeError(f"nope {SECRET_VALUE}")
+        return self._detail
+
+    async def run(self, args, ctx):
+        self.ran += 1
+        self.seen_ctx = ctx
+        return ToolResult(ok=True, content="done")
+
+
+def _detail_loop(conn, settings, approvals, registry, tool):
+    registry.register(tool)
+    set_level(conn, "thing", ToolLevel.ASK)
+    client = FakeChatClient(
+        [
+            [call("edit_thing", {}), StreamDone("tool_calls")],
+            [TextDelta("Done."), StreamDone("stop")],
+        ]
+    )
+    return make_loop(client, registry, approvals, conn, settings)
+
+
+async def test_approval_detail_is_shown_and_passed_back(conn, settings, approvals, registry):
+    tool = DetailTool({"diff": "+x", "tool": "spoof", "arguments": "spoof"})
+    loop = _detail_loop(conn, settings, approvals, registry, tool)
+
+    def approve(event):
+        approvals.resolve(event["approval_id"], "sess1", approve=True, step_up_verified=False)
+
+    events = await drain(loop, user("go"), on_approval=approve)
+    card = next(e for e in events if e["type"] == "approval_required")
+    assert card["detail"]["diff"] == "+x"
+    assert card["detail"]["tool"] == "edit_thing" and card["detail"]["arguments"] == {}
+    assert tool.seen_ctx.approved_detail["diff"] == "+x"
+
+
+async def test_approval_detail_is_redacted(conn, settings, approvals, registry):
+    SecretStore(settings.data_dir).put("github_token", SECRET_VALUE)
+    tool = DetailTool({"diff": f"+{SECRET_VALUE}"})
+    loop = _detail_loop(conn, settings, approvals, registry, tool)
+
+    def decline(event):
+        assert SECRET_VALUE not in json.dumps(event)
+        approvals.resolve(event["approval_id"], "sess1", approve=False, step_up_verified=False)
+
+    await drain(loop, user("go"), on_approval=decline)
+
+
+async def test_failing_approval_detail_fails_closed(conn, settings, approvals, registry):
+    tool = DetailTool(fail=True)
+    loop = _detail_loop(conn, settings, approvals, registry, tool)
+    events = await drain(loop, user("go"))
+    assert "approval_required" not in types(events)
+    finished = next(e for e in events if e["type"] == "step_finished")
+    assert finished["ok"] is False
+    assert SECRET_VALUE not in json.dumps(events)
+    assert tool.ran == 0
+    assert conn.execute("SELECT COUNT(*) FROM approvals").fetchone()[0] == 0
+
+
+class PlainChangeTool(DetailTool):
+    approval_detail = None  # a tool that never heard of approval_detail
+
+
+async def test_tool_without_approval_detail_still_works(conn, settings, approvals, registry):
+    tool = PlainChangeTool()
+    loop = _detail_loop(conn, settings, approvals, registry, tool)
+
+    def approve(event):
+        assert set(event["detail"]) == {"tool", "arguments"}
+        approvals.resolve(event["approval_id"], "sess1", approve=True, step_up_verified=False)
+
+    await drain(loop, user("go"), on_approval=approve)
+    assert tool.ran == 1
+    assert tool.seen_ctx.approved_detail == {"tool": "edit_thing", "arguments": {}}
+
+
+def test_unavailable_tool_is_not_offered(conn, registry):
+    class Gated(DetailTool):
+        name = "gated"
+        up = False
+
+        def is_available(self):
+            return self.up
+
+    gated = Gated()
+    registry.register(gated)
+    set_level(conn, "thing", ToolLevel.ALLOWED)
+    names = lambda: [t.name for t in registry.available(conn, False)]  # noqa: E731
+    assert "gated" not in names() and "clock" in names()
+    gated.up = True
+    assert "gated" in names()

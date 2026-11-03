@@ -75,6 +75,7 @@ from hearthkeep.tools.base import ToolRegistry
 from hearthkeep.tools.files import FilesTool
 from hearthkeep.tools.python import PythonTool, analysis_context
 from hearthkeep.tools.read_pages import ReadPagesTool
+from hearthkeep.tools.repo import RepoReadTool
 from hearthkeep.tools.send import SendToDevicesTool
 
 DB_FILE = "hearthkeep.db"
@@ -360,6 +361,12 @@ def create_app(
             sent = SentStore(conn, runs, files, credentials, checker, push, subscriptions)
             if registry.get(SendToDevicesTool.name) is None:
                 registry.register(SendToDevicesTool(sent, credentials))
+            github = GitHubClient(github_token, transport=github_transport)
+            git_runner = git or GitRunner(Path(settings.data_dir))
+            repo_store = RepoStore(conn, Path(settings.data_dir), git_runner, github, store)
+            # Offered only while host git exists and a token is saved (checked each turn).
+            if registry.get(RepoReadTool.name) is None:
+                registry.register(RepoReadTool(repo_store))
             loop = AgentLoop(
                 chat,
                 registry,
@@ -372,8 +379,6 @@ def create_app(
                 reply_checker=checker,
             )
             runner = TurnRunner(conn, loop)
-            github = GitHubClient(github_token, transport=github_transport)
-            git_runner = git or GitRunner(Path(settings.data_dir))
             sessions = SessionStore(conn, settings.session_idle_days, clock=clock)
             app.state.hk = Services(
                 settings=settings,
@@ -409,7 +414,7 @@ def create_app(
                 sent=sent,
                 secrets=store,
                 github=github,
-                repos=RepoStore(conn, Path(settings.data_dir), git_runner, github, store),
+                repos=repo_store,
             )
             yield
         finally:
