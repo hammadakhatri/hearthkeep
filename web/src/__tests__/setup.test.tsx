@@ -689,6 +689,28 @@ describe('Setup wizard', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(STARTUP_FAILED)
   })
 
+  it('a sandbox status answered 403 says the setup link has ended', async () => {
+    window.sessionStorage.setItem('hk.setup.step', '3')
+    wizardRoutes({
+      'POST /api/setup/addons': addonsReply({ analysis: 'needs_image' }),
+      'POST /api/setup/sandbox/status': { status: 403, body: { reason: 'setup_secret' } },
+    })
+    renderWizard()
+    expect(await screen.findByText(ENDED)).toBeInTheDocument()
+  })
+
+  it('a sandbox build answered 404 leaves for the normal app', async () => {
+    window.sessionStorage.setItem('hk.setup.step', '3')
+    const onLeave = vi.fn()
+    wizardRoutes({
+      'POST /api/setup/addons': addonsReply({ analysis: 'needs_image' }),
+      'POST /api/setup/sandbox/build': { status: 404, body: { reason: 'not_found' } },
+    })
+    render(<SetupPage onLeave={onLeave} pollMs={20} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Build the sandbox' }))
+    await waitFor(() => expect(onLeave).toHaveBeenCalled())
+  })
+
   it('start at login is hidden on a PC that is not Windows', async () => {
     window.sessionStorage.setItem('hk.setup.step', '3')
     wizardRoutes({ 'POST /api/setup/addons': addonsReply({ startup: 'unsupported' }) })
@@ -882,6 +904,27 @@ describe('Setup wizard › Done', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Create passkey' }))
     await heading('Hearthkeep is ready')
     expect(screen.queryByText(/Start at login/)).toBeNull()
+  })
+
+  it('a sandbox build running at the hand-over is said to have stopped', async () => {
+    window.sessionStorage.setItem('hk.setup.step', '4')
+    wizardRoutes({
+      'POST /api/setup/sandbox/status': { body: { build: { state: 'building', step: 'repo', reason: null } } },
+    })
+    renderWizard()
+    await next()
+    fireEvent.click(await screen.findByRole('button', { name: 'Create passkey' }))
+    await heading('Hearthkeep is ready')
+    expect(screen.getByText(SETUP_COPY.doneBuildStopped)).toBeInTheDocument()
+    expect(SETUP_COPY.doneBuildStopped).toBe(
+      'The sandbox build stopped when setup finished. Build it from Settings › Add-ons.',
+    )
+    expect(forbiddenIn(SETUP_COPY.doneBuildStopped)).toEqual([])
+  })
+
+  it('no build line when no build was running', async () => {
+    await doneWith(jobWith('done', [['llama-cuda', 'done']]))
+    expect(screen.queryByText(SETUP_COPY.doneBuildStopped)).toBeNull()
   })
 
   it('a chat model that did not finish is not listed as set up', async () => {

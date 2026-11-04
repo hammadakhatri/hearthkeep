@@ -10,12 +10,14 @@ type Props = {
   carryOnLine: string
   /** Downloads that were stopped or failed: nothing carries them on. */
   stopped: string[]
+  /** A sandbox build was running when setup finished, and stopped with it. */
+  buildStopped?: boolean
   onOpen(): void
   focus: boolean
 }
 
 /** Step 7: what's set up, what's still downloading, what was stopped, and "Open Hearthkeep". */
-export function Done({ setUp, carryOn, carryOnLine, stopped, onOpen, focus }: Props) {
+export function Done({ setUp, carryOn, carryOnLine, stopped, buildStopped = false, onOpen, focus }: Props) {
   return (
     <StepFrame title={SETUP_COPY.doneTitle} focus={focus}>
       <h3 className="setup-sub">{SETUP_COPY.doneSetUp}</h3>
@@ -50,6 +52,7 @@ export function Done({ setUp, carryOn, carryOnLine, stopped, onOpen, focus }: Pr
           <p className="setup-text">{SETUP_COPY.doneStopped}</p>
         </>
       )}
+      {buildStopped && <p className="setup-text">{SETUP_COPY.doneBuildStopped}</p>}
       <div className="setup-nav">
         <button type="button" className="btn primary" onClick={onOpen}>
           Open Hearthkeep
