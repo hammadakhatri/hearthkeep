@@ -61,7 +61,11 @@ def allowed_url(url: httpx.URL, *, exact: frozenset[str], suffixes: tuple[str, .
     if url.scheme != "https" or url.port not in (None, 443) or url.userinfo:
         return False
     host = url.host
-    return host in exact or any(host.endswith(suffix) for suffix in suffixes)
+    if host in exact:
+        return True
+    if not host or host.startswith(".") or ".." in host:
+        return False
+    return any(host.endswith(suffix) and len(host) > len(suffix) for suffix in suffixes)
 
 
 def sha256_file(path: Path) -> str:
@@ -127,7 +131,10 @@ async def download_file(
         await _fetch_body(url, part, have, size, client, on_progress, cancelled, hosts, suffixes)
     else:
         on_progress(Progress(size, size))
-    digest = await asyncio.to_thread(sha256_file, part)
+    try:
+        digest = await asyncio.to_thread(sha256_file, part)
+    except OSError as exc:
+        raise FetchError("network", f"could not read the file to check it: {exc}") from exc
     if digest != sha256.lower():
         _remove(part)
         raise FetchError("checksum", f"expected {sha256}, got {digest}")
@@ -149,8 +156,14 @@ async def _fetch_body(
         for _ in range(MAX_REDIRECTS + 1):
             if not allowed_url(current, exact=hosts, suffixes=suffixes):
                 raise FetchError("network", "refused a URL outside the allowed HTTPS hosts")
-            headers = {"Range": f"bytes={have}-"} if have else {}
-            async with client.stream("GET", current, headers=headers) as response:
+            # Raw bytes only, so sizes, Range offsets and the hash all mean the file itself.
+            headers = {"Accept-Encoding": "identity"}
+            if have:
+                headers["Range"] = f"bytes={have}-"
+            # Never let the client follow redirects: every hop must pass allowed_url.
+            async with client.stream(
+                "GET", current, headers=headers, follow_redirects=False
+            ) as response:
                 if response.is_redirect:
                     location = response.headers.get("location")
                     if not location:
