@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Catalog, CatalogItem, Job, JobItem, ModelsResponse } from '../api/models'
-import { formatBytes } from '../api/models'
+import { formatBytes, sessionModelsApi } from '../api/models'
 import { stepUp } from '../api/webauthn'
 import { AppShell } from '../shell/AppShell'
 import { AddonsPanel } from '../components/AddonsPanel'
@@ -11,6 +11,7 @@ import { ModelList } from '../components/ModelList'
 import { ServerProvider } from '../components/RestartNotice'
 import { SetUpPanel } from '../components/SetUpPanel'
 import { forbiddenIn } from '../test/copyRules'
+import { Settings } from '../views/Settings'
 import { renderWithAddons } from '../test/addons'
 import { addonList, bodyOf, healthy, mockFetch, serverInfo, type Handler, type Reply } from '../test/fetch'
 import type { Addon } from '../api/addons'
@@ -1046,5 +1047,27 @@ describe('Settings › Chat model and Image models', () => {
     for (const a of addonList({ chat: 'not_set_up', images: 'not_set_up' })) {
       expect(forbiddenIn(a.message)).toEqual([])
     }
+  })
+
+  it('settings still uses the session adapter', async () => {
+    const getCatalog = vi.spyOn(sessionModelsApi, 'getCatalog')
+    const startInstall = vi.spyOn(sessionModelsApi, 'startInstall')
+    const started = job([jobItem({ id: 'chat-gemma-4-12b', name: 'Gemma 4 12B' })])
+    const { calls } = modelRoutes(catalog(), {
+      'POST /api/models/install': { status: 202, body: { job: started } },
+      'GET /api/devices': { body: [] },
+      'GET /api/folders': { body: { folders: [], suggestions: [] } },
+      'GET /api/settings/startup': { body: { supported: true, enabled: false } },
+    })
+    render(<Settings />)
+    fireEvent.click(within(await row('Gemma 4 12B')).getByRole('button', { name: 'Download Gemma 4 12B' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Download with passkey' }))
+    await screen.findByRole('region', { name: 'Downloads' })
+    expect(getCatalog).toHaveBeenCalled()
+    expect(startInstall).toHaveBeenCalledWith(['chat-gemma-4-12b'], true)
+    expect(stepUp).toHaveBeenCalledWith('download')
+    const install = calls.find((c) => c.path === '/api/models/install' && c.init.method === 'POST')!
+    expect(bodyOf(install)).toMatchObject({ step_up_token: 'step-token' })
+    expect(calls.some((c) => c.path.startsWith('/api/setup/'))).toBe(false)
   })
 })

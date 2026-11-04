@@ -36,7 +36,7 @@ export type WaitOptions = { timeoutMs?: number; intervalMs?: number }
 /** Ask `check` until it says yes or the time is up. A failed ask (the server is between
  *  processes) is a no, never the end, and each ask has its own time limit, so one that hangs
  *  can't keep the wait going forever. */
-async function waitUntil(
+export async function waitUntil(
   check: (signal: AbortSignal) => Promise<boolean>,
   { timeoutMs = 60_000, intervalMs = 1000 }: WaitOptions,
 ) {

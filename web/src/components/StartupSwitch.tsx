@@ -1,6 +1,9 @@
 import { useId } from 'react'
 import { AlertIcon } from '../shell/icons'
 
+/** When the choice couldn't be saved; Settings and setup say the same. */
+export const STARTUP_FAILED = "Start at login couldn't be changed. Try again."
+
 /** What the switch shows; the same shape `GET /api/settings/startup` answers. */
 export type StartupState = {
   supported: boolean

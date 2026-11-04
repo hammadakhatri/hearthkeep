@@ -7,6 +7,9 @@ import { SandboxBuild } from './SandboxBuild'
 
 type Badge = { label: string; green?: boolean }
 
+/** When the add-on list can't be read; the setup wizard says the same. */
+export const ADDONS_FAILED = "Couldn't check the add-ons. Try again."
+
 function badgeFor(addon: Addon): Badge {
   switch (addon.state) {
     case 'ready':
@@ -41,7 +44,7 @@ function actionLabel(addon: Addon): string | null {
 }
 
 /** What the add-on check knows about Docker, for the sandbox build on the Analysis card. */
-function dockerHint(addon: Addon): 'missing' | 'stopped' | 'ready' | null {
+export function dockerHint(addon: Addon): 'missing' | 'stopped' | 'ready' | null {
   if (addon.id !== 'analysis' || addon.ready) return null
   if (addon.action === 'install') return 'missing'
   if (addon.action === 'start_docker') return 'stopped'
@@ -111,7 +114,7 @@ function AddonsView({ state, onNavigate, onLoaded }: Props & { state: AddonsStat
       {failed && (
         <div className="note error" role="alert">
           <AlertIcon />
-          <span>Couldn't check the add-ons. Try again.</span>
+          <span>{ADDONS_FAILED}</span>
         </div>
       )}
       {addons === null ? (

@@ -1,0 +1,234 @@
+/* The setup wizard: a calm single column with a stepper above one step at a time. */
+
+.setup {
+  min-height: 100dvh;
+  padding: var(--sp-9) 16px var(--sp-8);
+  padding-top: max(var(--sp-9), env(safe-area-inset-top));
+  padding-bottom: max(var(--sp-8), env(safe-area-inset-bottom));
+  padding-left: max(16px, env(safe-area-inset-left));
+  padding-right: max(16px, env(safe-area-inset-right));
+  background:
+    radial-gradient(60% 32% at 50% 0%, rgba(41, 151, 255, 0.08), transparent 70%),
+    var(--black);
+  overflow-x: hidden;
+}
+
+.setup-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  width: min(720px, 100%);
+  margin: 0 auto;
+  min-width: 0;
+}
+
+.setup-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.setup-mark {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+}
+
+.setup-title {
+  font-size: var(--text-xl);
+  letter-spacing: var(--tracking-snug);
+}
+
+/* ---- the stepper ---- */
+
+.stepper {
+  display: flex;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+}
+
+.stepper li {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  padding-top: var(--sp-2);
+  border-top: 2px solid var(--line);
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.stepper li.done {
+  border-top-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  color: var(--fg2);
+}
+
+.stepper li.current {
+  border-top-color: var(--accent);
+  color: var(--fg);
+}
+
+.stepper-num {
+  flex: none;
+  font-family: var(--mono);
+}
+
+.stepper-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Phone width: numbers for every step, the name for the current one only (the others keep
+   theirs for screen readers). */
+@media (max-width: 640px) {
+  .stepper li {
+    flex: 0 0 auto;
+  }
+
+  .stepper li.current {
+    flex: 1 1 auto;
+  }
+
+  .stepper li:not(.current) .stepper-name {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+}
+
+/* ---- a step ---- */
+
+.setup-step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  min-width: 0;
+  animation: rise var(--dur-view) var(--ease);
+}
+
+.setup-step-title {
+  font-size: clamp(1.6rem, 4vw, 2rem);
+  line-height: 1.1;
+  letter-spacing: var(--tracking-tight);
+}
+
+.setup-step-title:focus {
+  outline: none;
+}
+
+.setup-step-title:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: var(--r-sm);
+}
+
+.setup-lede {
+  max-width: 60ch;
+  font-size: var(--text-lg);
+  line-height: 1.45;
+  color: var(--fg2);
+}
+
+.setup-text {
+  max-width: 62ch;
+  line-height: 1.5;
+  color: var(--fg2);
+}
+
+.setup-text:empty {
+  display: none;
+}
+
+.setup-sub {
+  margin-top: var(--sp-2);
+  font-size: var(--text-md);
+}
+
+.setup-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding-left: 1.2em;
+  color: var(--fg2);
+}
+
+.setup-nav {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--sp-3);
+  margin-top: var(--sp-4);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--line);
+}
+
+/* ---- your PC ---- */
+
+.setup-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr));
+  gap: var(--sp-3);
+  margin: 0;
+}
+
+.setup-facts > div {
+  min-width: 0;
+  padding: var(--sp-4);
+  background: var(--s1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+
+.setup-facts dt {
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.setup-facts dd {
+  margin: var(--sp-1) 0 0;
+  overflow-wrap: anywhere;
+}
+
+.setup-move {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+/* ---- add-ons and the passkey ---- */
+
+.setup-addons {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+  gap: var(--sp-3);
+}
+
+.setup-addons .device-list {
+  margin-top: var(--sp-2);
+}
+
+.setup-passkey {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  width: min(400px, 100%);
+}
+
+.device.model.chosen {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+@media (max-width: 640px) {
+  .setup-nav .btn {
+    flex: 1 1 auto;
+  }
+}

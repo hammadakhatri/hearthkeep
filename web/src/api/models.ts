@@ -152,3 +152,31 @@ export async function switchToExternalChat(
     post({ source: 'external', base_url: baseUrl, api_key: apiKey, model, step_up_token: token }),
   )
 }
+
+/** What the model screens need from the server. Settings passes `sessionModelsApi` (a passkey
+ *  inside the calls that widen what Hearthkeep does); setup passes `setupModelsApi(secret)` from
+ *  `./setup`, where the setup secret stands in for the passkey. The rows, the confirm box and the
+ *  download list are the same either way. */
+export type ModelsApi = {
+  getCatalog(): Promise<Catalog>
+  startInstall(items: string[], makeDefault: boolean): Promise<Job>
+  getJob(): Promise<Job | null>
+  cancel(): Promise<Job | null>
+  retry(): Promise<Job>
+  switchLocal(card: string): Promise<ChatSwitch>
+  switchExternal(baseUrl: string, apiKey: string | null, model: string | null): Promise<ChatSwitch>
+  /** Whether starting a download or saving a model server asks for the passkey. */
+  passkey: boolean
+}
+
+/** The session adapter: the functions above, step-up inside. */
+export const sessionModelsApi: ModelsApi = {
+  getCatalog: () => getCatalog(),
+  startInstall: (items, makeDefault) => startInstall(items, makeDefault),
+  getJob: () => getJob(),
+  cancel: () => cancelInstall(),
+  retry: () => retryInstall(),
+  switchLocal: (card) => switchToLocalChat(card),
+  switchExternal: (baseUrl, apiKey, model) => switchToExternalChat(baseUrl, apiKey, model),
+  passkey: true,
+}
