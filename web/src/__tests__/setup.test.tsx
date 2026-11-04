@@ -811,6 +811,41 @@ describe('Setup wizard › Done', () => {
     expect(screen.getByText("These didn't finish. Download them again in Settings.")).toBeInTheDocument()
   })
 
+  it('after Stop with the chat model done, it is listed as set up (ruling Q13)', async () => {
+    await doneWith(
+      jobWith('cancelled', [
+        ['llama-cuda', 'done'],
+        ['chat-gemma-4-12b', 'done'],
+        ['comfyui', 'done'],
+        ['image-z-image-turbo', 'cancelled'],
+      ]),
+    )
+    expect(listAfter("What's set up")).toContain('Chat model: Gemma 4 12B')
+    expect(listAfter("What's set up")).not.toContain('Images: Z-Image Turbo')
+    expect(listAfter('Not downloaded')).toEqual(['Z-Image Turbo'])
+  })
+
+  it('after a failed job with the chat model done, it is listed as set up', async () => {
+    await doneWith(
+      jobWith('failed', [
+        ['llama-cuda', 'done'],
+        ['chat-gemma-4-12b', 'done'],
+        ['comfyui', 'failed'],
+      ]),
+    )
+    expect(listAfter("What's set up")).toContain('Chat model: Gemma 4 12B')
+  })
+
+  it('a chat model that did not finish is not listed as set up', async () => {
+    await doneWith(
+      jobWith('cancelled', [
+        ['llama-cuda', 'done'],
+        ['chat-gemma-4-12b', 'cancelled'],
+      ]),
+    )
+    expect(screen.queryByText(/^Chat model:/)).toBeNull()
+  })
+
   it('after a failed job, the failed and unreached items are listed as not downloaded', async () => {
     await doneWith(
       jobWith('failed', [

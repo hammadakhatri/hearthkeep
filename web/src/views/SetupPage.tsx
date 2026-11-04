@@ -453,19 +453,21 @@ export function SetupPage({ onLeave, retryMs = BUSY_RETRY_MS, pollMs = POLL_MS, 
 
   function setUpLines(): string[] {
     const lines: string[] = []
+    // An item is set up once it is done, whatever the job's state: a stopped or failed job still
+    // writes the finished ones into the model settings (ruling Q13).
     const finished = new Set(job?.items.filter((i) => i.state === 'done').map((i) => i.id))
     const items = catalog?.items ?? []
     const chat = catalog?.chat
     if (chat?.source === 'external') {
       lines.push(SETUP_COPY.doneExternal)
     } else {
-      const downloaded = items.find((i) => i.kind === 'chat' && choices.chosen.includes(i.id) && finished.has(i.id))
+      const downloaded = items.filter((i) => i.kind === 'chat' && finished.has(i.id)).at(-1)
       const inUse = chat?.source === 'local' ? items.find((i) => i.kind === 'chat' && i.card === chat.model) : undefined
       const model = downloaded ?? inUse
       if (model) lines.push(`Chat model: ${model.name}`)
     }
     for (const item of items) {
-      if (item.kind === 'image' && choices.chosen.includes(item.id) && finished.has(item.id)) {
+      if (item.kind === 'image' && finished.has(item.id)) {
         lines.push(`Images: ${item.name}`)
       }
     }

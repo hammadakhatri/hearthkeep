@@ -12,6 +12,9 @@ the server stops) stop at once. A hash or a zip extract runs in a thread that ca
 own in the background; the next run clears the unpack folder first, and a `.part` that was being
 hashed is simply hashed again. `cancel()` lets such a step finish, then stops before the next one.
 
+A job that ends stopped or failed still points models.toml at the items that finished (ruling
+Q13), so a model that is verified and in place can be used after the restart.
+
 A model file already at its destination with the catalog size counts as in place: only this
 installer writes there, and only after the SHA-256 check, so it isn't hashed again.
 
@@ -573,12 +576,16 @@ class Installer:
                 self._end(job, todo, current, "cancelled", None)
             else:
                 self._end(job, todo, current, "failed", exc.reason)
+            await self._config_after_stop(job)
         except asyncio.CancelledError:
             self._end(job, todo, current, "cancelled", None)
+            # The cancellation was delivered; the edit below runs unless another one comes.
+            await self._config_after_stop(job)
             raise
         except Exception:  # a bug, not the owner's network: keep the server running
             _log.exception("the install job stopped unexpectedly")
             self._end(job, todo, current, "failed", "network")
+            await self._config_after_stop(job)
         finally:
             self._interruptible = False
             self._record(
@@ -762,8 +769,11 @@ class Installer:
     # ---- models.toml ----------------------------------------
 
     def _config_changes(self, job: Job) -> tuple[dict, dict]:
+        """What models.toml gets for the job's finished items (all of them, when it ends
+        well). The local chat default is written only if chat isn't external at this moment
+        (ruling Q14): an owner who chose their own server meanwhile keeps it."""
         rt = load_runtime(self.data)  # ConfigError: the file can't be read, so can't be edited
-        items = [self._catalog[i.id] for i in job.items]
+        items = [self._catalog[i.id] for i in job.items if i.state == "done"]
         kinds = {i.kind for i in items}
         set_top: dict[str, str] = {}
         model_dirs: dict[str, str] = {}
@@ -784,13 +794,13 @@ class Installer:
         chats = [i for i in items if i.kind == "chat"]
         for chat in chats:
             model_dirs[chat.card] = str(self.data / "models" / "chat" / chat.card)
-        if chats and job.make_default:
-            set_top["default_chat_model"] = chats[-1].card
-            set_top["chat_server"] = "local"
-        elif chats and self._chat_is_external():
+        if chats and self._chat_is_external():
             # The owner's own server stays in use: without this, a downloaded card that is
             # also the default (Gemma) would make the local engine win after the restart.
             set_top["chat_server"] = "external"
+        elif chats and job.make_default:
+            set_top["default_chat_model"] = chats[-1].card
+            set_top["chat_server"] = "local"
 
         comfys = [i for i in items if i.kind == "comfyui"]
         if not comfys and "image" in kinds:
@@ -817,7 +827,9 @@ class Installer:
 
         return set_top, ({"model_dirs": model_dirs} if model_dirs else {})
 
-    async def _update_config(self, job: Job) -> None:
+    async def _write_config(self, job: Job) -> bool:
+        """Point models.toml at the job's finished items, under `config_lock`; False when the
+        file can't be read or edited (it is then left as it was)."""
         try:
             async with self.config_lock:
                 set_top, set_table = self._config_changes(job)
@@ -829,13 +841,35 @@ class Installer:
                     backup=self.data / BACKUP_NAME,
                 )
         except (TomlEditError, ConfigError, OSError):
+            return False
+        self._control.mark_restart_needed("models")
+        job.restart_needed = True
+        return True
+
+    async def _update_config(self, job: Job) -> None:
+        if not await self._write_config(job):
             last = job.items[-1]
             last.state, last.error = "failed", CONFIG_NOT_UPDATED
             job.state = "failed"
             return
-        self._control.mark_restart_needed("models")
-        job.restart_needed = True
         job.state = "done"
+
+    async def _config_after_stop(self, job: Job) -> None:
+        """A job that was stopped or failed still sets up what finished (ruling Q13): a model
+        that is verified and in place is usable. When models.toml can't be edited, the finished
+        items are marked so, and a retry does the edit. Never raises but for a cancellation."""
+        done = [i for i in job.items if i.state == "done"]
+        if not done:
+            return
+        self._interruptible = False
+        try:
+            written = await self._write_config(job)
+        except Exception:  # a bug: the job has ended already, so say so and keep the server
+            _log.exception("the install job's models.toml edit failed")
+            written = False
+        if not written:
+            for item in done:
+                item.state, item.error = "failed", CONFIG_NOT_UPDATED
 
 
 def chat_is_external_default(data: Path) -> bool:
