@@ -415,6 +415,8 @@ class Addons:
         self._chat_reachable: bool | None = None
         self._cache: dict[AddonId, AddonStatus] = {}
         self.checked_at: datetime | None = None
+        # Whether the sandbox images are being built; set by the app once the builder exists.
+        self.building: Callable[[], bool] | None = None
 
     # -- refresh ------------------------------------------------------------------------------
 
@@ -484,6 +486,11 @@ class Addons:
                 action="open_setup",
                 short="Docker turned off",
             )
+            return
+        if self.building is not None and self.building():
+            # Mid-build the image isn't there yet, whatever the half-built layers say: the
+            # card keeps showing the build's progress.
+            self._cache["analysis"] = _status("analysis", "needs_image")
             return
         state = await self._probe("sandbox", lambda: self._probes.sandbox(fresh), None)
         if state is None or not state.docker:

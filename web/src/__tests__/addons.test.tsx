@@ -409,6 +409,36 @@ describe('Building the analysis sandbox', () => {
     expect(await within(analysis).findByText('Building the sandbox, step 1 of 2.')).toBeInTheDocument()
   })
 
+  it('an add-ons reload mid-build keeps the step 2 progress on screen', async () => {
+    let analysis = 'needs_image'
+    mockFetch({
+      'GET /api/addons': () => addonsWith({ analysis }),
+      'POST /api/addons/refresh': () => addonsWith({ analysis }),
+      'GET /api/addons/analysis/build': idle,
+      'POST /api/addons/analysis/build': { status: 202, body: building('repo') },
+    })
+    render(<AddonsPanel />)
+    const panel = await findCard('analysis')
+    fireEvent.click(await within(panel).findByRole('button', { name: 'Build the sandbox' }))
+    expect(await within(panel).findByText('Building the sandbox, step 2 of 2.')).toBeInTheDocument()
+    // Even if the list said Ready (or had no Docker action) while images still build.
+    analysis = 'ready'
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
+    await waitFor(() => expect(within(card('analysis')).getByText('Ready', { selector: '.badge' })).toBeInTheDocument())
+    expect(within(card('analysis')).getByText('Building the sandbox, step 2 of 2.')).toBeInTheDocument()
+  })
+
+  it('tells the caller when a start comes back already ended', async () => {
+    const finished = vi.fn()
+    const api = {
+      getBuild: vi.fn(async () => ({ state: 'idle', step: null, reason: null }) as never),
+      startBuild: vi.fn(async () => ({ state: 'failed', step: null, reason: 'docker_stopped' }) as never),
+    }
+    render(<SandboxBuild api={api} onFinished={finished} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Build the sandbox' }))
+    await waitFor(() => expect(finished).toHaveBeenCalledTimes(1))
+  })
+
   it('polls every 2 seconds while building, shows step 2, and stops when it is done', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
     let now: object = { state: 'building', step: 'sandbox', reason: null }

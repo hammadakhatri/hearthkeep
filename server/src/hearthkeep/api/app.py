@@ -488,6 +488,7 @@ def create_app(
                 record=record_build,
                 refresh=lambda: addons.refresh("analysis", fresh=True),
             )
+            addons.building = sandbox_builder.busy
             app.state.hk = Services(
                 settings=settings,
                 conn=conn,

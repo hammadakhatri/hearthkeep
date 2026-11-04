@@ -577,6 +577,7 @@ SETUP_FILES: dict[str, Callable[[Path], bool]] = {
         lambda folder: (folder / "runtime/git-home/empty.gitconfig").stat().st_size == 0
     ),
     "secrets/store.bin": _setup_secrets_only,
+    "logs/sandbox-build.log": lambda folder: True,  # the last lines of a sandbox build
 }
 SETUP_DIRS = frozenset(
     "/".join(sub.split("/")[:n]) for sub in DATA_SUBDIRS for n in range(1, sub.count("/") + 2)
@@ -1046,6 +1047,7 @@ def _echo_build_line(line: str) -> None:
 def cmd_sandbox_build(args: argparse.Namespace) -> int:
     _settings(Path(args.data))
     print(SANDBOX_BUILD_INTRO, flush=True)
+    # Builds the same way as the app: the same targets and `build_image(on_line=...)`.
     if not sandbox_image.docker_ok(sandbox_image.DOCKER):
         print(
             "error: Docker is not running or not installed. Start Docker Desktop and try again.",

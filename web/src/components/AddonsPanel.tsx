@@ -72,6 +72,8 @@ function AddonsView({ state, onNavigate, onLoaded }: Props & { state: AddonsStat
   const openSettings = useOpenSettings()
   const go = onNavigate ?? openSettings
   const { addons, failed, refreshing } = state
+  // The build in progress stays on screen whatever a reload of the list says about Docker.
+  const [sandboxBusy, setSandboxBusy] = useState(false)
 
   useEffect(() => {
     if (addons || failed) onLoaded?.()
@@ -126,7 +128,7 @@ function AddonsView({ state, onNavigate, onLoaded }: Props & { state: AddonsStat
             const label = actionLabel(addon)
             // Only once Analysis works: the folders it reads don't fix anything else.
             const folders = addon.id === 'analysis' && addon.ready
-            const docker = dockerHint(addon)
+            const docker = dockerHint(addon) ?? (addon.id === 'analysis' && sandboxBusy ? 'ready' : null)
             return (
               <article key={addon.id} id={`addon-${addon.id}`} className="tile addon" tabIndex={-1}>
                 <div className="addon-top">
@@ -136,7 +138,7 @@ function AddonsView({ state, onNavigate, onLoaded }: Props & { state: AddonsStat
                 <p className="addon-about">{addon.about}</p>
                 <p className="addon-needs">Needs: {addon.requires}</p>
                 {!addon.ready && <p className="addon-message">{addon.message}</p>}
-                {docker && <SandboxBuild api={sessionSandboxApi} docker={docker} onFinished={state.reload} />}
+                {docker && <SandboxBuild api={sessionSandboxApi} docker={docker} onFinished={state.reload} onBusyChange={setSandboxBusy} />}
                 {(label || folders) && (
                   <div className="settings-actions">
                     {label && (
