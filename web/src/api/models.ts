@@ -139,11 +139,16 @@ export function switchToLocalChat(card: string): Promise<ChatSwitch> {
 }
 
 /** Chat from a model server the owner runs. Asks for the passkey (purpose `settings`). A null
- *  key keeps the stored one; an empty one removes it. */
-export async function switchToExternalChat(baseUrl: string, apiKey: string | null): Promise<ChatSwitch> {
+ *  key keeps the stored one (when chat already uses a server the owner runs); an empty one
+ *  removes it. A null model keeps the saved model name. */
+export async function switchToExternalChat(
+  baseUrl: string,
+  apiKey: string | null,
+  model: string | null = null,
+): Promise<ChatSwitch> {
   const token = await stepUp('settings')
   return api<ChatSwitch>(
     '/api/models/chat',
-    post({ source: 'external', base_url: baseUrl, api_key: apiKey, step_up_token: token }),
+    post({ source: 'external', base_url: baseUrl, api_key: apiKey, model, step_up_token: token }),
   )
 }
