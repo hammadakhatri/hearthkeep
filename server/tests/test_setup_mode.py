@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import socket
+import sys
 import tomllib
 from pathlib import Path
 
@@ -37,6 +38,7 @@ from hearthkeep.cli import (
     LAUNCHER_NOT_STARTED,
     LOCATION_NOT_SAVED,
     MOVING_DATA,
+    OLD_FOLDER_KEPT,
     PORT_BUSY,
     SETUP_INTRO,
     SHORTCUT_FAILED,
@@ -98,6 +100,8 @@ class FakeHost(WindowsHost):
         self.enabled: list[Path] = []
         self.protected: list[Path] = []
         self.protect_error = False
+        self.reset: list[Path] = []
+        self.reset_error = False
         self.status_error = False
         self.status_strict: list[bool] = []
 
@@ -139,6 +143,11 @@ class FakeHost(WindowsHost):
         if self.protect_error:
             raise host_module.FolderProtectError("icacls.exe exit code 5")
         self.protected.append(Path(path))
+
+    def reset_folder_permissions(self, path: Path, *, run=None) -> None:
+        if self.reset_error:
+            raise host_module.FolderProtectError("icacls.exe exit code 5")
+        self.reset.append(Path(path))
 
     def spawn_detached(self, argv: list[str], *, popen=None):
         if self.spawn_error:
@@ -834,6 +843,7 @@ def test_move_restarts_setup_in_the_new_folder_with_the_same_secret(
     assert server.created == [True, True]
     assert run_cmd_setup.opened == [f"http://localhost:8765/setup#{server.secrets[0]}"]
     assert out.count(MOVING_DATA) == 1 and out.count(BROWSER_OPENING) == 1
+    assert OLD_FOLDER_KEPT not in out
     assert out.index(MOVING_DATA) < out.index(FINISHED)
     assert run_cmd_setup.bundle_calls == 1  # the web app is the program's, not the folder's
     assert not old.exists()  # it held only setup's own files
@@ -843,6 +853,7 @@ def test_move_restarts_setup_in_the_new_folder_with_the_same_secret(
     assert host.location == new.resolve()
     assert host.protected == [old.resolve(), new.resolve()]
     assert host.shortcuts == [new.resolve()]
+    assert host.reset == []  # removed whole: no permissions to give back
     assert len(host.spawned) == 1 and host.spawned[0][5] == str(new.resolve())
 
 
@@ -855,7 +866,21 @@ def test_move_keeps_the_old_folder_when_something_else_is_in_it(tmp_path, capsys
     assert (old / "logs" / "mine.txt").is_file() and (old / "hearthkeep.db").is_file()
     assert (new / "hearthkeep.db").is_file()
     assert run_cmd_setup.host.location == new.resolve()
-    assert MOVING_DATA in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert MOVING_DATA in out and out.count(OLD_FOLDER_KEPT) == 1
+
+
+def test_move_says_so_when_the_old_folder_cant_be_removed(
+    tmp_path, capsys, monkeypatch, run_cmd_setup
+):
+    """A file another program still has open: nothing is removed, and the owner is told."""
+    old, new = tmp_path / "data", tmp_path / "elsewhere"
+    monkeypatch.setattr(cli, "_removable", lambda path: path.name != DB_FILE)
+    run_cmd_setup.run_server.moves = [new]
+    assert run_cmd_setup(old) == 0
+    assert (old / DB_FILE).is_file() and (old / "secrets" / "store.bin").is_file()
+    assert (old / "config.toml").is_file()
+    assert capsys.readouterr().out.count(OLD_FOLDER_KEPT) == 1
 
 
 def test_move_keeps_a_folder_that_was_there_before_setup(tmp_path, run_cmd_setup):
@@ -868,6 +893,20 @@ def test_move_keeps_a_folder_that_was_there_before_setup(tmp_path, run_cmd_setup
     assert server.created == [True, True] and server.existed == [True, False]
     assert old.is_dir() and list(old.iterdir()) == []
     assert (new / "hearthkeep.db").is_file()
+    # The folder is the owner's again: its permissions inherit as before setup protected it.
+    assert run_cmd_setup.host.reset == [old.resolve()]
+
+
+def test_move_goes_on_when_a_kept_folders_permissions_cant_be_reset(
+    tmp_path, capsys, run_cmd_setup
+):
+    old = tmp_path / "chosen"
+    old.mkdir()
+    run_cmd_setup.host.reset_error = True
+    run_cmd_setup.run_server.moves = [tmp_path / "elsewhere"]
+    assert run_cmd_setup(old) == 0
+    out = capsys.readouterr().out
+    assert FINISHED in out and "icacls" not in out and OLD_FOLDER_KEPT not in out
 
 
 def test_move_removes_the_old_folders_secret_key(tmp_path, run_cmd_setup, memory_keyring):
@@ -1040,9 +1079,38 @@ def test_old_folder_that_is_a_file_or_gone_is_left_alone(tmp_path):
     assert cli._remove_setup_folder(file) is False and file.is_file()
 
 
+def test_old_folder_with_a_locked_file_is_left_whole(tmp_path, memory_keyring, monkeypatch):
+    """One dry pass first: a file that can't be deleted keeps everything, the key included."""
+    folder = tmp_path / "old"
+    _setup_files(folder)
+    _with_own_keys(folder)
+    before = sorted(str(p.relative_to(folder)) for p in folder.rglob("*"))
+    monkeypatch.setattr(cli, "_removable", lambda path: path.name != "hearthkeep.db-wal")
+    assert cli._remove_setup_folder(folder) is False
+    assert sorted(str(p.relative_to(folder)) for p in folder.rglob("*")) == before
+    assert len(memory_keyring.store) == 1 and SecretStore(folder).get(VAPID_SECRET)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows refuses to delete an open file")
+def test_old_folder_with_an_open_database_is_left_whole(tmp_path):
+    folder = tmp_path / "old"
+    _setup_files(folder)
+    (folder / DB_FILE).unlink()
+    conn = db.connect(folder / DB_FILE)
+    try:
+        assert cli._remove_setup_folder(folder) is False
+        assert (folder / "config.toml").is_file() and (folder / DB_FILE).is_file()
+    finally:
+        conn.close()
+    assert not any(p.name.endswith(".hk-probe") for p in folder.rglob("*"))
+    assert cli._removable(folder / "config.toml") and (folder / "config.toml").is_file()
+
+
 def test_move_copy_is_ascii_and_clean():
     assert MOVING_DATA == "Moving Hearthkeep's data to the folder you chose."
-    assert MOVING_DATA.isascii() and forbidden_in(MOVING_DATA) == []
+    assert OLD_FOLDER_KEPT == "The old data folder was left in place. You can delete it yourself."
+    for text in (MOVING_DATA, OLD_FOLDER_KEPT):
+        assert text.isascii() and forbidden_in(text) == [], text
     assert EXIT_RELOCATE == 76
 
 

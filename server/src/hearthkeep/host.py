@@ -166,6 +166,8 @@ class Host(Protocol):
 
     def protect_folder(self, path: Path, *, run=None) -> None: ...
 
+    def reset_folder_permissions(self, path: Path, *, run=None) -> None: ...
+
 
 def _drive_type(root: str) -> int:
     import ctypes
@@ -261,6 +263,12 @@ class WindowsHost:
         sid = current_user_sid(run=run)
         _acl_tool("icacls.exe", protect_folder_argv(Path(path), sid), run)
 
+    def reset_folder_permissions(self, path: Path, *, run=None) -> None:
+        """Give `path` back the permissions it inherits from its parent, undoing
+        `protect_folder` (a folder the owner had before setup, kept after a move). Raises
+        FolderProtectError when it can't be done."""
+        _acl_tool("icacls.exe", [str(Path(path)), "/reset", "/Q"], run or acl_run)
+
 
 class UnsupportedHost:
     name = "unsupported"
@@ -295,6 +303,9 @@ class UnsupportedHost:
 
     def protect_folder(self, path: Path, *, run=None) -> None:
         return None  # nothing is set up on this OS, so there is nothing to protect
+
+    def reset_folder_permissions(self, path: Path, *, run=None) -> None:
+        return None  # nothing was protected on this OS
 
 
 def current_host() -> Host:

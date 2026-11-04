@@ -118,6 +118,7 @@ LOCATION_NOT_SAVED = (
     "Hearthkeep couldn't note where its data folder is on this PC. Setup carries on without it."
 )
 MOVING_DATA = "Moving Hearthkeep's data to the folder you chose."
+OLD_FOLDER_KEPT = "The old data folder was left in place. You can delete it yourself."
 FOLDER_NOT_PROTECTED = (
     "Hearthkeep couldn't limit who on this PC can open its folders. Setup carries on without it."
 )
@@ -609,16 +610,37 @@ def _setup_folder_contents(folder: Path) -> list[Path] | None:
     return files + dirs
 
 
+def _removable(path: Path) -> bool:
+    """Whether the file `path` can be deleted now: it is renamed aside and straight back
+    (Windows refuses that, as it refuses the delete, while another program has it open)."""
+    probe = path.with_name(path.name + ".hk-probe")
+    try:
+        os.rename(path, probe)
+    except OSError:
+        return False
+    try:
+        os.rename(probe, path)
+    except OSError as exc:
+        log.warning("a file in the old data folder couldn't be put back: %s", type(exc).__name__)
+        return False
+    return True
+
+
 def _remove_setup_folder(folder: Path, *, keep_folder: bool = False) -> bool:
     """Take setup's own files out of a data folder this run is moving away from, only when it
     holds nothing else (an owner's file anywhere in it keeps all of it), and then the folder
-    itself unless `keep_folder` (it was there before this run). The secret store goes with its
-    master key in the OS keyring. Whether it was all done; a failure part way leaves the rest,
-    and is logged by type only."""
+    itself unless `keep_folder` (it was there before this run). A dry pass first: when any
+    file can't be deleted (another program has it open) nothing at all is removed. The secret
+    store goes first, with its master key in the OS keyring. Whether it was all done. When the
+    keyring can't forget that key, the store file is already gone, its key stays in the
+    keyring and every other file stays; any other failure part way leaves what was not yet
+    removed. Failures are logged by type only."""
     if folder.is_symlink() or not folder.is_dir():
         return False
     contents = _setup_folder_contents(folder)
     if contents is None:
+        return False
+    if not all(_removable(path) for path in contents if not path.is_dir()):
         return False
     store = folder / "secrets" / "store.bin"
     try:
@@ -645,6 +667,15 @@ def _protect_folder(host: Host, path: Path) -> None:
     except Exception as exc:
         log.warning("a folder couldn't be protected: %s", type(exc).__name__)
         print(FOLDER_NOT_PROTECTED)
+
+
+def _reset_folder(host: Host, path: Path) -> None:
+    """Give a kept folder back its inherited permissions. A failure is logged by type and
+    never stops setup (the folder stays limited to the owner, SYSTEM and Administrators)."""
+    try:
+        host.reset_folder_permissions(path)
+    except Exception as exc:
+        log.warning("a folder's permissions couldn't be reset: %s", type(exc).__name__)
 
 
 def _has_passkey(settings: Settings) -> bool:
@@ -844,7 +875,10 @@ def cmd_setup(
             if setup.created_folder:
                 # Only when nothing but setup's own files is there; a folder that was there
                 # before this run is emptied of them and kept.
-                _remove_setup_folder(data, keep_folder=setup.folder_existed)
+                if not _remove_setup_folder(data, keep_folder=setup.folder_existed):
+                    print(OLD_FOLDER_KEPT)
+                elif setup.folder_existed:
+                    _reset_folder(host, data)
             data, new_folder, moved = target.resolve(), True, True
             write_record = record_follows_moves
             continue

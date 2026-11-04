@@ -421,3 +421,27 @@ def test_unsupported_host_protects_nothing():
         raise AssertionError("ran something")
 
     assert UnsupportedHost().protect_folder(Path("x"), run=forbidden) is None
+
+
+def test_reset_folder_permissions_runs_system32_icacls_reset(monkeypatch, windows):
+    """A kept folder the owner chose gets its inherited permissions back (ruling Q5)."""
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    run = AclRun()
+    WindowsHost().reset_folder_permissions(Path(r"C:\Mine\data"), run=run)
+    icacls = str(Path(r"C:\Windows") / "System32" / "icacls.exe")
+    assert run.calls == [[icacls, str(Path(r"C:\Mine\data")), "/reset", "/Q"]]
+    assert run.kwargs[0]["creationflags"] == procutil.NO_WINDOW
+
+
+def test_reset_folder_permissions_failure_raises_one_error_type(monkeypatch, windows):
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    with pytest.raises(host_module.FolderProtectError) as caught:
+        WindowsHost().reset_folder_permissions(Path(r"C:\Mine\data"), run=AclRun(icacls_code=5))
+    assert "Mine" not in str(caught.value)
+
+
+def test_unsupported_host_resets_nothing():
+    def forbidden(*a, **k):
+        raise AssertionError("ran something")
+
+    assert UnsupportedHost().reset_folder_permissions(Path("x"), run=forbidden) is None

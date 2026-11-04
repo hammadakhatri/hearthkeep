@@ -158,8 +158,10 @@ def folder_move_problem(host: Host, target: Path, current: Path) -> str | None:
     resolved, current = target.resolve(), current.resolve()
     if resolved == current or current in resolved.parents:
         return INSIDE_CURRENT
-    if any((resolved / name).exists() for name in DATA_MARKERS):
-        return NOT_EMPTY
+    # Another install's folder, or a folder inside one.
+    for folder in (resolved, *resolved.parents):
+        if any((folder / name).exists() for name in DATA_MARKERS):
+            return NOT_EMPTY
     return None
 
 
@@ -185,6 +187,10 @@ async def setup_data_folder(
     free = await asyncio.to_thread(free_bytes, target)
     if free < MIN_FREE_GB * _GB:
         raise ApiError(400, "not_enough_space", free_gb=round(free / _GB, 1), needed_gb=MIN_FREE_GB)
+    # Checked again with no await before the folder is set: a download that started while the
+    # folder was being checked wins. From here on downloads answer `moving` (below).
+    if _download_started(hk):
+        raise ApiError(409, "too_late")
     hk.setup.next_data_dir = target
     # As the 2a hand-over: the server stops only after this answer has gone out.
     return JSONResponse(
@@ -195,6 +201,12 @@ async def setup_data_folder(
 
 
 # ---- the catalog and downloads --------------------------------------------------------------
+
+
+def _not_moving(hk: Services) -> None:
+    """No download once the data folder is moving: it would land in the folder being left."""
+    if hk.setup.next_data_dir is not None:
+        raise ApiError(409, "moving")
 
 
 class SetupInstallBody(SetupBody):
@@ -210,6 +222,7 @@ async def setup_catalog(_: SetupDep, body: SetupBody, request: Request) -> dict:
 @router.post("/install", status_code=202)
 async def setup_install(_: SetupDep, body: SetupInstallBody, request: Request) -> JSONResponse:
     hk = services(request)
+    _not_moving(hk)
     job = await service.start_install(hk, list(body.items), body.make_default, ACTOR)
     return JSONResponse({"job": job.to_json()}, status_code=202)
 
@@ -226,7 +239,9 @@ async def setup_install_cancel(_: SetupDep, body: SetupBody, request: Request) -
 
 @router.post("/install/retry", status_code=202)
 async def setup_install_retry(_: SetupDep, body: SetupBody, request: Request) -> JSONResponse:
-    job = service.retry_install(services(request), ACTOR)
+    hk = services(request)
+    _not_moving(hk)
+    job = service.retry_install(hk, ACTOR)
     return JSONResponse({"job": job.to_json()}, status_code=202)
 
 

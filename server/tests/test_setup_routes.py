@@ -565,3 +565,41 @@ def test_move_copy_is_clean():
 
     text = routes_setup.INSIDE_CURRENT
     assert text.isascii() and forbidden_in(text) == [] and "<" not in text
+
+
+def test_a_download_that_starts_during_the_move_check_wins(
+    setup_app, tmp_path, folder_host, monkeypatch
+):
+    client = mover(setup_app)
+    real = routes_setup.folder_move_problem
+
+    def racing(host, target, current):
+        client.fake.start(["chat-qwen3.5-4b"], make_default=True)  # lands mid-check
+        return real(host, target, current)
+
+    monkeypatch.setattr(routes_setup, "folder_move_problem", racing)
+    r = post(client, "/api/setup/data-folder", {"path": str(moved(tmp_path))})
+    assert (r.status_code, r.json()) == (409, {"reason": "too_late"})
+    assert client.mode.next_data_dir is None and client.control.exit_code is None
+
+
+def test_downloads_wait_while_a_move_is_under_way(setup_app, tmp_path, folder_host):
+    client = mover(setup_app)
+    target = str(moved(tmp_path))
+    assert post(client, "/api/setup/data-folder", {"path": target}).status_code == 202
+    for path, body in (
+        ("/api/setup/install", {"items": ["chat-qwen3.5-4b"]}),
+        ("/api/setup/install/retry", {}),
+    ):
+        r = post(client, path, body)
+        assert (r.status_code, r.json()) == (409, {"reason": "moving"}), path
+    assert client.fake.calls == [] and client.fake.current() is None
+
+
+def test_move_refuses_a_folder_inside_another_data_folder(setup_app, tmp_path, folder_host):
+    client = mover(setup_app)
+    other = moved(tmp_path, "other")
+    other.mkdir()
+    (other / "hearthkeep.db").write_bytes(b"")
+    r = post(client, "/api/setup/data-folder", {"path": str(other / "inner" / "data")})
+    assert (r.status_code, r.json()) == (400, {"reason": "bad_folder", "message": NOT_EMPTY})
