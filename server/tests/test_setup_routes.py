@@ -32,7 +32,7 @@ from hearthkeep.auth.enrollment import EnrollmentCodes
 from hearthkeep.config import Settings
 from hearthkeep.db import connect
 from hearthkeep.host import BAD_CHARACTERS, NOT_EMPTY, NOT_LOCAL, TOO_LONG, WindowsHost
-from hearthkeep.installer import NotEnoughSpace, NothingToDo
+from hearthkeep.installer import Job, NotEnoughSpace, NothingToDo
 from hearthkeep.lifecycle import EXIT_RELOCATE, ServerControl
 from hearthkeep.models.runtime import load_runtime
 from hearthkeep.secrets import SecretStore
@@ -791,3 +791,134 @@ def test_move_refused_while_the_sandbox_builds(setup_app, tmp_path, folder_host)
     assert (r.status_code, r.json()) == (409, {"reason": "too_late"})
     assert client.mode.next_data_dir is None and control.exit_code is None
     assert post(client, "/api/setup/pc").json()["can_move_data"] is False
+
+
+# ---- downloads that outlive setup (ruling Q8) -----------------------------------------------
+
+RESUME_KEY = "setup_resume"
+
+
+def resume_state(data: Path):
+    conn = connect(data / DB_FILE)
+    try:
+        row = conn.execute("SELECT value FROM app_state WHERE key = ?", (RESUME_KEY,)).fetchone()
+    finally:
+        conn.close()
+    return None if row is None else json.loads(row[0])
+
+
+def write_resume_state(data: Path, value: dict) -> None:
+    conn = connect(data / DB_FILE)
+    try:
+        conn.execute(
+            "INSERT INTO app_state (key, value) VALUES (?, ?)", (RESUME_KEY, json.dumps(value))
+        )
+    finally:
+        conn.close()
+
+
+def finish_setup(client) -> None:
+    code = post(client, "/api/setup/enrollment-code").json()["code"]
+    enroll(client, code)  # the first passkey: setup hands over
+
+
+def test_handover_remembers_an_unfinished_download(setup_app, tmp_path):
+    client = setup_app()
+    ids = ["llama-cpu", "chat-qwen3.5-4b"]
+    assert post(client, "/api/setup/install", {"items": ids}).status_code == 202
+    client.fake.job.items[0].state = "done"
+    finish_setup(client)
+    assert resume_state(tmp_path) == {"items": ["chat-qwen3.5-4b"], "make_default": True}
+
+
+def test_handover_without_an_unfinished_download_remembers_nothing(setup_app, tmp_path):
+    client = setup_app()
+    finish_setup(client)  # no job at all
+    assert resume_state(tmp_path) is None
+
+
+def test_handover_after_a_finished_or_stopped_download_remembers_nothing(setup_app, tmp_path):
+    client = setup_app()
+    assert post(client, "/api/setup/install", {"items": ["chat-qwen3.5-4b"]}).status_code == 202
+    client.fake.job.state = "done"
+    for item in client.fake.job.items:
+        item.state = "done"
+    finish_setup(client)
+    assert resume_state(tmp_path) is None
+
+    # Stopped by the owner: it isn't started again behind their back.
+    other = tmp_path / "other"
+    other.mkdir()
+    stopped = _normal_or_setup_app(other, FakeInstaller(), setup=True)
+    with stopped as c:
+        assert post(c, "/api/setup/install", {"items": ["chat-qwen3.5-4b"]}).status_code == 202
+        assert post(c, "/api/setup/install/cancel").status_code == 200
+        finish_setup(c)
+    assert resume_state(other) is None
+
+
+def _normal_or_setup_app(data: Path, fake: FakeInstaller, *, setup: bool = False) -> TestClient:
+    app = create_app(
+        Settings(data_dir=data, docker_available=False),
+        verifier=FakeVerifier(),
+        chat_client=FakeChatClient([]),
+        registry=registry_with(),
+        health_check=_healthy,
+        web_dist=None,
+        setup=SetupMode(SECRET) if setup else None,
+        installer_factory=lambda d, ctl, **kw: fake,
+        pc_reader=PcReader(NO_GPU),
+    )
+    return TestClient(app, base_url=ORIGIN, client=LOOPBACK)
+
+
+def test_a_normal_start_resumes_the_setup_download_once(tmp_path):
+    connect(tmp_path / DB_FILE).close()
+    write_resume_state(tmp_path, {"items": ["chat-qwen3.5-4b"], "make_default": True})
+    fake = FakeInstaller()
+    with _normal_or_setup_app(tmp_path, fake):
+        assert fake.calls == [("start", ["chat-qwen3.5-4b"], True)]
+    assert resume_state(tmp_path) is None
+    rows = [e for e in events(tmp_path) if e["event"] == "models.install_resumed"]
+    assert [(e["actor"], e["detail"]) for e in rows] == [("setup", {"items": ["chat-qwen3.5-4b"]})]
+
+    again = FakeInstaller()
+    with _normal_or_setup_app(tmp_path, again):
+        pass
+    assert [c for c in again.calls if c[0] == "start"] == []
+
+
+def test_setup_mode_does_not_resume(tmp_path):
+    connect(tmp_path / DB_FILE).close()
+    write_resume_state(tmp_path, {"items": ["chat-qwen3.5-4b"], "make_default": True})
+    fake = FakeInstaller()
+    with _normal_or_setup_app(tmp_path, fake, setup=True):
+        assert [c for c in fake.calls if c[0] == "start"] == []
+
+
+@pytest.mark.parametrize(
+    "error", [NotEnoughSpace(10, 1), NothingToDo(), "busy"], ids=["space", "nothing", "busy"]
+)
+def test_a_resume_that_cannot_start_still_clears_the_key(tmp_path, caplog, error):
+    connect(tmp_path / DB_FILE).close()
+    write_resume_state(tmp_path, {"items": ["chat-qwen3.5-4b"], "make_default": False})
+    fake = FakeInstaller()
+    if error == "busy":
+        fake.job, fake.running = Job("j", [], "running", False), True
+    else:
+        fake.start_error = error
+    with _normal_or_setup_app(tmp_path, fake) as client:
+        assert client.get("/api/health").status_code == 200  # started all the same
+    assert resume_state(tmp_path) is None
+    assert not [e for e in events(tmp_path) if e["event"] == "models.install_resumed"]
+    assert any("could not resume" in r.getMessage() for r in caplog.records)
+
+
+def test_a_damaged_resume_record_is_cleared(tmp_path):
+    connect(tmp_path / DB_FILE).close()
+    write_resume_state(tmp_path, {"items": "nope"})
+    fake = FakeInstaller()
+    with _normal_or_setup_app(tmp_path, fake):
+        pass
+    assert resume_state(tmp_path) is None
+    assert [c for c in fake.calls if c[0] == "start"] == []

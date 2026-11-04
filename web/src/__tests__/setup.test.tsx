@@ -456,6 +456,14 @@ describe('Setup wizard', () => {
     expect(await heading('Your passkey')).toBeInTheDocument()
     fireEvent.click(await screen.findByRole('button', { name: 'Create passkey' }))
     expect(await heading('Hearthkeep is ready')).toBeInTheDocument()
+    // The download still running when the passkey was made carries on after the hand-over.
+    const still = screen.getByRole('heading', { level: 3, name: 'Still downloading' })
+    expect(still.nextElementSibling).toHaveTextContent('Gemma 4 12B')
+    expect(
+      screen.getByText(
+        "They'll carry on in a moment, when Hearthkeep starts on its own. You'll see their progress in Settings › Chat model.",
+      ),
+    ).toBeInTheDocument()
     await openApp()
 
     const setupCalls = calls.filter((c) => c.path.startsWith('/api/setup/'))

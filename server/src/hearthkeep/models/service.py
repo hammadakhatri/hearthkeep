@@ -9,6 +9,7 @@ models.toml or config.toml keeps the owner's other lines, and asks for a restart
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from collections.abc import Callable
@@ -360,3 +361,62 @@ async def _switch_external(
         except SecretStoreError:
             await asyncio.to_thread(_put_back, before)
             raise ApiError(503, "secrets_unreadable", message=SECRETS_UNREADABLE) from None
+
+
+# ---- a download that outlives setup ---------------------------------------------------------
+
+SETUP_RESUME_KEY = "setup_resume"
+_UNFINISHED_SKIP = ("done", "cancelled")
+
+
+def remember_unfinished_download(hk: Services) -> None:
+    """At setup's hand-over: setup's server stops once the first passkey exists, and its download
+    with it. Keep what hadn't arrived, so the server that starts next carries on. Items the owner
+    stopped are left stopped."""
+    installer = hk.installer
+    job = installer.current() if installer is not None else None
+    if job is None or job.state == "done":
+        return
+    ids = [i.id for i in job.items if i.state not in _UNFINISHED_SKIP]
+    if not ids:
+        return
+    hk.conn.execute(
+        "INSERT INTO app_state (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (SETUP_RESUME_KEY, json.dumps({"items": ids, "make_default": job.make_default})),
+    )
+
+
+def resume_setup_download(hk: Services) -> None:
+    """On a normal start: start once more the download setup left unfinished, if any. The record
+    goes first, whatever happens next, so it is never tried twice. A start that can't happen is
+    logged by type only and never stops Hearthkeep from starting."""
+    row = hk.conn.execute(
+        "SELECT value FROM app_state WHERE key = ?", (SETUP_RESUME_KEY,)
+    ).fetchone()
+    if row is None:
+        return
+    hk.conn.execute("DELETE FROM app_state WHERE key = ?", (SETUP_RESUME_KEY,))
+    try:
+        saved = json.loads(row[0])
+        ids = saved["items"]
+        make_default = saved["make_default"]
+        if not (
+            isinstance(ids, list)
+            and ids
+            and all(isinstance(i, str) for i in ids)
+            and isinstance(make_default, bool)
+        ):
+            raise ValueError("bad record")
+    except (ValueError, KeyError, TypeError) as exc:
+        _log.warning("could not resume the setup download: %s", type(exc).__name__)
+        return
+    if hk.installer is None:
+        _log.warning("could not resume the setup download: %s", "unavailable")
+        return
+    try:
+        hk.installer.start(ids, make_default=make_default)
+    except (NothingToDo, NotEnoughSpace, InstallBusy, KeyError) as exc:
+        _log.warning("could not resume the setup download: %s", type(exc).__name__)
+        return
+    record(hk, "setup", "models.install_resumed", {"items": ids})

@@ -29,6 +29,7 @@ from hearthkeep.auth.credentials import DEVICE_NAME_MAX, Credential, complete_en
 from hearthkeep.auth.sessions import Session
 from hearthkeep.auth.webauthn import VerificationError, b64url_decode
 from hearthkeep.lifecycle import EXIT_STOPPED
+from hearthkeep.models.service import remember_unfinished_download
 
 router = APIRouter(prefix="/api")
 
@@ -173,7 +174,9 @@ async def enroll_verify(body: EnrollVerifyBody, request: Request) -> JSONRespons
     response = _signed_in(hk, request, cred, status=201)
     if purpose == "first_device" and hk.setup is not None and hk.setup.active:
         # Setup is finished: the secret goes now, and once this answer is sent the setup
-        # server stops so `hearthkeep setup` can hand over to the launcher.
+        # server stops so `hearthkeep setup` can hand over to the launcher. A download still
+        # under way stops with it: what hadn't arrived is kept for the next start to resume.
+        remember_unfinished_download(hk)
         hk.setup.complete()
         if hk.control is not None:
             response.background = BackgroundTask(hk.control.request, EXIT_STOPPED)
