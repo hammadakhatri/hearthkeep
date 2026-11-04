@@ -166,6 +166,7 @@ class FakeRunServer:
         self.secrets: list[str] = []
         self.data_dirs: list[Path] = []
         self.created: list[bool] = []
+        self.existed: list[bool] = []
 
     def __call__(self, app, host, port, *, control=None, on_started=None, **kw) -> int:
         self.calls.append((host, port))
@@ -178,6 +179,7 @@ class FakeRunServer:
             self.secrets.append(self.secret)
             self.data_dirs.append(Path(hk.settings.data_dir))
             self.created.append(hk.setup.created_folder)
+            self.existed.append(hk.setup.folder_existed)
             if on_started is not None:
                 on_started()
             if self.moves:
@@ -856,6 +858,27 @@ def test_move_keeps_the_old_folder_when_something_else_is_in_it(tmp_path, capsys
     assert MOVING_DATA in capsys.readouterr().out
 
 
+def test_move_keeps_a_folder_that_was_there_before_setup(tmp_path, run_cmd_setup):
+    """An empty folder the owner chose: setup's own files leave it, the folder stays."""
+    old, new = tmp_path / "chosen", tmp_path / "elsewhere"
+    old.mkdir()
+    server = run_cmd_setup.run_server
+    server.moves = [new]
+    assert run_cmd_setup(old) == 0
+    assert server.created == [True, True] and server.existed == [True, False]
+    assert old.is_dir() and list(old.iterdir()) == []
+    assert (new / "hearthkeep.db").is_file()
+
+
+def test_move_removes_the_old_folders_secret_key(tmp_path, run_cmd_setup, memory_keyring):
+    old, new = tmp_path / "data", tmp_path / "elsewhere"
+    run_cmd_setup.run_server.moves = [new]
+    assert run_cmd_setup(old) == 0
+    old_user = SecretStore(old)._key_user
+    assert not old.exists()
+    assert all(user != old_user for _, user in memory_keyring.store)
+
+
 def test_move_keeps_a_live_record_of_another_folder(tmp_path, run_cmd_setup):
     """A record naming another, existing install is never repointed, even by a move."""
     host = run_cmd_setup.host
@@ -962,11 +985,37 @@ def _with_own_keys(folder: Path) -> None:
     store.put(LLAMA_API_KEY_SECRET, "made-by-hearthkeep")
 
 
-def test_old_folder_with_only_hearthkeeps_own_keys_is_removed(tmp_path):
+def test_old_folder_that_was_there_before_is_emptied_and_kept(tmp_path, memory_keyring):
+    folder = tmp_path / "old"
+    _setup_files(folder)
+    _with_own_keys(folder)
+    assert len(memory_keyring.store) == 1
+    assert cli._remove_setup_folder(folder, keep_folder=True) is True
+    assert folder.is_dir() and list(folder.iterdir()) == []
+    assert memory_keyring.store == {}  # its master key is forgotten too
+
+
+def test_old_folder_keyring_failure_keeps_the_folder(tmp_path, memory_keyring, monkeypatch):
+    from keyring.errors import KeyringLocked
+
+    folder = tmp_path / "old"
+    _setup_files(folder)
+    _with_own_keys(folder)
+
+    def broken(*args):
+        raise KeyringLocked("the keyring is locked")
+
+    monkeypatch.setattr(memory_keyring, "delete_password", broken)
+    assert cli._remove_setup_folder(folder) is False
+    assert (folder / DB_FILE).is_file()
+
+
+def test_old_folder_with_only_hearthkeeps_own_keys_is_removed(tmp_path, memory_keyring):
     folder = tmp_path / "old"
     _setup_files(folder)
     _with_own_keys(folder)
     assert cli._remove_setup_folder(folder) is True and not folder.exists()
+    assert memory_keyring.store == {}
 
 
 @pytest.mark.parametrize("change", ["owner_key", "git_settings", "unreadable_store"])

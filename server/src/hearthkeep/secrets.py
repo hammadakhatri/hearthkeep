@@ -11,7 +11,7 @@ from pathlib import Path
 
 import keyring
 from cryptography.fernet import Fernet, InvalidToken
-from keyring.errors import KeyringError
+from keyring.errors import KeyringError, PasswordDeleteError
 
 _NAME_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 
@@ -103,3 +103,14 @@ class SecretStore:
 
     def names(self) -> list[str]:
         return sorted(self._load())
+
+    def forget(self) -> None:
+        """Delete the store for good: its file, then its master key in the OS keyring (the
+        file first, so a keyring failure never leaves a store nothing can read)."""
+        self._path.unlink(missing_ok=True)
+        try:
+            keyring.delete_password(self._service, self._key_user)
+        except PasswordDeleteError:
+            pass  # no key was ever made: nothing to forget
+        except KeyringError as exc:
+            raise SecretStoreError("the OS keyring could not be used") from exc

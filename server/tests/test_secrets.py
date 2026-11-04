@@ -110,3 +110,35 @@ def test_keyring_backend_errors_become_secret_store_errors(tmp_path, memory_keyr
     with pytest.raises(SecretStoreError):
         SecretStore(tmp_path / "fresh").put("k", "v")  # no store yet: the key is created
     assert issubclass(KeyringLocked, KeyringError)
+
+
+def test_forget_deletes_the_store_and_its_master_key(tmp_path, memory_keyring):
+    gone, kept = SecretStore(tmp_path / "gone"), SecretStore(tmp_path / "kept")
+    gone.put("k", "v")
+    kept.put("k", "v")
+    assert len(memory_keyring.store) == 2
+    gone.forget()
+    assert not (tmp_path / "gone" / "secrets" / "store.bin").exists()
+    assert len(memory_keyring.store) == 1  # only that folder's key
+    assert SecretStore(tmp_path / "gone").names() == []
+    assert kept.get("k") == "v"
+
+
+def test_forget_without_a_store_or_key_is_fine(tmp_path, memory_keyring):
+    SecretStore(tmp_path).forget()
+    assert memory_keyring.store == {}
+
+
+def test_forget_keyring_errors_become_secret_store_errors(tmp_path, memory_keyring, monkeypatch):
+    from keyring.errors import KeyringLocked
+
+    store = SecretStore(tmp_path)
+    store.put("k", "v")
+
+    def broken(*args):
+        raise KeyringLocked("the keyring is locked")
+
+    monkeypatch.setattr(memory_keyring, "delete_password", broken)
+    with pytest.raises(SecretStoreError):
+        store.forget()
+    assert not (tmp_path / "secrets" / "store.bin").exists()  # the file goes first
