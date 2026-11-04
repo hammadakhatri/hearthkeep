@@ -533,7 +533,10 @@ async def test_cancel_then_retry(data):
         ("chat-qwen3.5-4b", "cancelled"),
     ]
     assert part_of(data, "chat-qwen3.5-4b").is_file()
-    assert control.restart_needed == set()
+    # Ruling Q13: the engine that finished is written to models.toml all the same.
+    assert load_runtime(data).llama_server_exe == (data / CPU_DIR / "llama-server.exe").resolve()
+    assert "default_chat_model" not in models_toml(data)
+    assert control.restart_needed == {"models"} and job.restart_needed is True
 
     del server.override[QWEN4B]
     again = inst.retry()
@@ -1010,11 +1013,41 @@ async def test_local_or_no_chat_is_not_pinned_by_a_download(data):
     assert job.state == "done" and "chat_server" not in models_toml(data)
 
 
-async def test_make_default_still_chooses_local_over_external(data):
+async def test_make_default_never_overrides_an_external_chat_at_the_end(data):
+    """Ruling Q14: the default is written only if chat is not external when the job ends."""
     inst, _, _ = make(data, chat_is_external=lambda: True)
     job = inst.start(["chat-qwen3.5-4b"], make_default=True)
     await inst.wait()
-    assert job.state == "done" and models_toml(data)["chat_server"] == "local"
+    toml = models_toml(data)
+    assert job.state == "done" and toml["chat_server"] == "external"
+    assert "default_chat_model" not in toml and "qwen3.5-4b" in toml["model_dirs"]
+
+
+async def test_make_default_reads_external_chat_when_the_job_ends(data):
+    """The owner points chat at their own server while the download runs (setup's chat step):
+    the finished download doesn't take chat back."""
+    external = {"now": False}
+    put_runtime(data)
+    inst, server, _ = make(data, chat_is_external=lambda: external["now"])
+    stall = Stall(head=8)
+    server.override[QWEN4B] = stall
+    job = inst.start(["chat-qwen3.5-4b"], make_default=True)
+    await asyncio.wait_for(stall.sent.wait(), 5)
+    external["now"] = True  # chosen while the download runs
+    stall.release.set()
+    await inst.wait()
+    toml = models_toml(data)
+    assert job.state == "done" and toml["chat_server"] == "external"
+    assert "default_chat_model" not in toml
+
+
+async def test_make_default_chooses_local_when_chat_is_not_external(data):
+    inst, _, _ = make(data, chat_is_external=lambda: False)
+    job = inst.start(["chat-qwen3.5-4b"], make_default=True)
+    await inst.wait()
+    toml = models_toml(data)
+    assert job.state == "done" and toml["chat_server"] == "local"
+    assert toml["default_chat_model"] == "qwen3.5-4b"
 
 
 async def test_a_resumed_setup_job_keeps_what_arrived_and_finishes_the_rest(data):
@@ -1035,7 +1068,8 @@ async def test_a_resumed_setup_job_keeps_what_arrived_and_finishes_the_rest(data
     saved = resume_record(job)
     assert saved == {"items": [i.id for i in job.items], "make_default": True}
     await first.shutdown()
-    assert not (data / "models.toml").exists() or "model_dirs" not in models_toml(data)
+    # Ruling Q13: the chat model that finished is in models.toml already.
+    assert "qwen3.5-4b" in models_toml(data)["model_dirs"]
 
     second, server2, control = make(data, popen=FakeTar())
     job2 = second.start(saved["items"], make_default=saved["make_default"])
@@ -1052,3 +1086,106 @@ async def test_a_resumed_setup_job_keeps_what_arrived_and_finishes_the_rest(data
     assert rt.llama_server_exe == (data / CPU_DIR / "llama-server.exe").resolve()
     assert rt.comfyui_main == (data / COMFY_MAIN).resolve()
     assert control.restart_needed == {"models"}
+
+
+# ---- a job that stops still configures what finished (ruling Q13) ----------------------------
+
+
+def _stall_image(server) -> Stall:
+    image_file = CATALOG["image-z-image-turbo"].files[-1].url.rsplit("/", 1)[-1]
+    stall = Stall(head=8)
+    server.override[image_file] = stall
+    return stall
+
+
+def _assert_chat_configured(data: Path) -> None:
+    rt = load_runtime(data)
+    assert rt.model_dirs == {"qwen3.5-4b": (data / "models" / "chat" / "qwen3.5-4b").resolve()}
+    assert rt.default_chat_model == "qwen3.5-4b" and rt.chat_server == "local"
+    assert rt.llama_server_exe == (data / CPU_DIR / "llama-server.exe").resolve()
+
+
+async def test_a_stopped_job_configures_the_chat_model_that_finished(data):
+    inst, server, control = make(data, popen=FakeTar(), chat_is_external=lambda: False)
+    stall = _stall_image(server)
+    job = inst.start(["chat-qwen3.5-4b", "image-z-image-turbo"], make_default=True)
+    await asyncio.wait_for(stall.sent.wait(), 5)
+    inst.cancel()
+    await inst.wait()
+    assert job.state == "cancelled"
+    states = {i.id: i.state for i in job.items}
+    assert states["chat-qwen3.5-4b"] == "done" and states["image-z-image-turbo"] == "cancelled"
+    _assert_chat_configured(data)
+    # Only what finished: the image that was stopped isn't the default image model.
+    assert "default_image_model" not in models_toml(data)
+    assert control.restart_needed == {"models"} and job.to_json()["restart_needed"] is True
+    assert inst.events[-1] == (
+        "models.install_finished",
+        {"items": [i.id for i in job.items], "state": "cancelled"},
+    )
+
+
+async def test_a_failed_job_configures_the_chat_model_that_finished(data):
+    inst, server, control = make(data, popen=FakeTar(), chat_is_external=lambda: False)
+    image_file = CATALOG["image-z-image-turbo"].files[-1].url.rsplit("/", 1)[-1]
+    size = CATALOG["image-z-image-turbo"].files[-1].size
+    server.override[image_file] = lambda request: httpx.Response(200, content=b"x" * size)
+    job = inst.start(["chat-qwen3.5-4b", "image-z-image-turbo"], make_default=True)
+    await inst.wait()
+    assert job.state == "failed"
+    image = next(i for i in job.items if i.id == "image-z-image-turbo")
+    assert (image.state, image.error) == ("failed", "checksum")
+    _assert_chat_configured(data)
+    assert control.restart_needed == {"models"} and job.restart_needed is True
+
+
+async def test_a_job_stopped_by_a_server_stop_configures_what_finished(data):
+    inst, server, control = make(data, popen=FakeTar(), chat_is_external=lambda: False)
+    stall = _stall_image(server)
+    job = inst.start(["chat-qwen3.5-4b", "image-z-image-turbo"], make_default=True)
+    await asyncio.wait_for(stall.sent.wait(), 5)
+    await inst.shutdown()
+    assert job.state == "cancelled"
+    _assert_chat_configured(data)
+
+
+async def test_a_stopped_job_keeps_an_external_chat(data):
+    inst, server, _ = make(data, popen=FakeTar(), chat_is_external=lambda: True)
+    stall = _stall_image(server)
+    job = inst.start(["chat-qwen3.5-4b", "image-z-image-turbo"], make_default=True)
+    await asyncio.wait_for(stall.sent.wait(), 5)
+    inst.cancel()
+    await inst.wait()
+    toml = models_toml(data)
+    assert job.state == "cancelled" and toml["chat_server"] == "external"
+    assert "default_chat_model" not in toml and "qwen3.5-4b" in toml["model_dirs"]
+
+
+async def test_a_stopped_job_that_cannot_edit_models_toml_says_so(data):
+    original = b"model_dirs = { \"gemma-4-12b\" = 'C:/elsewhere' }\n"
+    (data / "models.toml").write_bytes(original)
+    inst, server, control = make(data, popen=FakeTar())
+    stall = _stall_image(server)
+    job = inst.start(["chat-qwen3.5-4b", "image-z-image-turbo"], make_default=True)
+    await asyncio.wait_for(stall.sent.wait(), 5)
+    inst.cancel()
+    await inst.wait()
+    assert job.state == "cancelled"
+    assert (data / "models.toml").read_bytes() == original
+    # What finished isn't set up after all: a retry puts it in models.toml.
+    chat = next(i for i in job.items if i.id == "chat-qwen3.5-4b")
+    assert (chat.state, chat.error) == ("failed", "config_not_updated")
+    assert control.restart_needed == set() and job.restart_needed is False
+
+
+async def test_a_stopped_job_with_nothing_finished_writes_nothing(data):
+    put_runtime(data)
+    inst, server, control = make(data)
+    stall = Stall(head=8)
+    server.override[QWEN4B] = stall
+    job = inst.start(["chat-qwen3.5-4b"], make_default=True)
+    await asyncio.wait_for(stall.sent.wait(), 5)
+    inst.cancel()
+    await inst.wait()
+    assert job.state == "cancelled"
+    assert not (data / "models.toml").exists() and control.restart_needed == set()
