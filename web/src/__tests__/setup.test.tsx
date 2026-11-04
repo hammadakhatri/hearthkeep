@@ -547,7 +547,8 @@ describe('Setup wizard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Move here' }))
     const status = await screen.findByText('Moving the data folder…')
     expect(status).toHaveAttribute('role', 'status')
-    expect(status).toHaveFocus()
+    // Focus moves in an effect after the status line renders.
+    await waitFor(() => expect(status).toHaveFocus())
     expect(await screen.findByText(TARGET)).toBeInTheDocument()
     expect(screen.queryByText('Moving the data folder…')).toBeNull()
     expect(bodyOf(calls.find((c) => c.path === '/api/setup/data-folder')!)).toEqual({ secret: SECRET, path: TARGET })

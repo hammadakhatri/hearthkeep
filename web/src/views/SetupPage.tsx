@@ -330,7 +330,7 @@ export function SetupPage({ onLeave, retryMs = BUSY_RETRY_MS, pollMs = POLL_MS, 
     }
     // The server stops, sets up again in the new folder and comes back with the same secret.
     setMoving(true)
-    const back = await waitForMove(secret, path, moveWait)
+    const back = await waitForMove(secret, path, { ...moveWait, live: () => alive.current })
     if (!alive.current) return null
     if (!back) {
       setMoving(false)
