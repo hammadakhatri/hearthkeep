@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useState } from 'react'
 import { api, isApiError, post } from '../api/client'
+import { sessionModelsApi } from '../api/models'
 import { PASSKEY_NOT_CONFIRMED, passkeyErrorMessage, stepUp } from '../api/webauthn'
 import { AddonsPanel } from '../components/AddonsPanel'
 import { DevicesPanel } from '../components/DevicesPanel'
@@ -9,11 +10,11 @@ import { ModelsPanel } from '../components/ModelsPanel'
 import { NotificationToggle } from '../components/NotificationToggle'
 import { ServerProvider } from '../components/RestartNotice'
 import { ServerPanel } from '../components/ServerPanel'
-import { StartupSwitch, type StartupState } from '../components/StartupSwitch'
+import { STARTUP_FAILED, StartupSwitch, type StartupState } from '../components/StartupSwitch'
 import { useAddonsState, type SettingsAnchor } from '../shell/AddonsContext'
 import { AlertIcon } from '../shell/icons'
 
-const STARTUP_ERRORS = "Start at login couldn't be changed. Try again."
+const STARTUP_ERRORS = STARTUP_FAILED
 
 function startupError(error: unknown): string {
   if (isApiError(error, 'startup_failed')) {
@@ -107,7 +108,7 @@ export function Settings({ focus, onFocused }: Props = {}) {
     <ServerProvider>
       <div className="settings">
         <AddonsPanel onNavigate={inShell ? undefined : setOwn} onLoaded={onLoaded} />
-        <ModelsPanel />
+        <ModelsPanel api={sessionModelsApi} />
         <DevicesPanel />
         <FoldersPanel />
         <GitHubPanel />
