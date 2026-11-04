@@ -4,6 +4,7 @@
  * server. It is read once, taken out of the address bar and the history, and only ever sent in a
  * POST body: never a query string, storage or a log. */
 
+import type { StartupState } from '../components/StartupSwitch'
 import type { AddonsResponse, SandboxBuildApi, SandboxBuildState } from './addons'
 import { api, post } from './client'
 import type { Catalog, ChatSwitch, Job, ModelsApi, PcInfo } from './models'
@@ -49,8 +50,14 @@ export function setupAddons(secret: string, refresh = false): Promise<AddonsResp
   return api('/api/setup/addons', post(refresh ? { secret, refresh } : { secret }))
 }
 
+/** Start at login as setup will leave it: `enabled` is the choice, and `other_data_folder` a task
+ *  for another data folder that setup leaves alone. The shape of `GET /api/settings/startup`. */
+export function setupStartupStatus(secret: string): Promise<StartupState> {
+  return api('/api/setup/startup/status', post({ secret }))
+}
+
 /** Start at login is only chosen here; it is turned on once the passkey exists. */
-export function setupStartup(secret: string, enabled: boolean): Promise<{ enabled: boolean }> {
+export function setupStartup(secret: string, enabled: boolean): Promise<StartupState> {
   return api('/api/setup/startup', post({ secret, enabled }))
 }
 

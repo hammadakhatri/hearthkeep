@@ -10,6 +10,7 @@ import { forbiddenIn } from '../test/copyRules'
 import { addonList, bodyOf, healthy, mockFetch, signedIn, signedOut, type Handler, type Reply } from '../test/fetch'
 import { SetupPage } from '../views/SetupPage'
 import { SETUP_COPY } from '../views/setup/copy'
+import { STARTUP_FAILED } from '../components/StartupSwitch'
 
 vi.mock('@simplewebauthn/browser', () => ({
   startAuthentication: vi.fn(),
@@ -351,6 +352,9 @@ const FRESH_ADDONS = {
   startup: 'off',
 }
 
+/** `POST /api/setup/startup/status`: what setup will leave start at login as. */
+const STARTUP_ON = { supported: true, enabled: true, other_data_folder: false }
+
 function addonsReply(states: Partial<Record<string, string>> = {}): Reply {
   return { body: { addons: addonList({ ...FRESH_ADDONS, ...states }), checked_at: '2026-11-04T09:00:00+00:00' } }
 }
@@ -390,7 +394,10 @@ function wizardRoutes(extra: Record<string, Handler | Reply> = {}) {
     'POST /api/setup/catalog': { body: CATALOG },
     'POST /api/setup/addons': addonsReply(),
     'POST /api/setup/install/status': { body: { job: null } },
-    'POST /api/setup/startup': (init) => ({ body: { enabled: bodyOf({ path: '', init }).enabled } }),
+    'POST /api/setup/startup/status': { body: STARTUP_ON },
+    'POST /api/setup/startup': (init) => ({
+      body: { ...STARTUP_ON, enabled: bodyOf({ path: '', init }).enabled as boolean },
+    }),
     'POST /api/setup/sandbox/status': { body: { build: { state: 'idle', step: null, reason: null } } },
     ...extra,
   })
@@ -464,6 +471,7 @@ describe('Setup wizard', () => {
         "They'll carry on in a moment, when Hearthkeep starts on its own. You'll see their progress in Settings › Chat model.",
       ),
     ).toBeInTheDocument()
+    expect(listAfter("What's set up")).toContain('Start at login (turned on as setup finishes)')
     await openApp()
 
     const setupCalls = calls.filter((c) => c.path.startsWith('/api/setup/'))
@@ -472,6 +480,7 @@ describe('Setup wizard', () => {
         '/api/setup/status',
         '/api/setup/catalog',
         '/api/setup/addons',
+        '/api/setup/startup/status',
         '/api/setup/install/status',
         '/api/setup/pc',
         '/api/setup/sandbox/status',
@@ -651,6 +660,33 @@ describe('Setup wizard', () => {
     await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'false'))
     const posted = calls.filter((c) => c.path === '/api/setup/startup')
     expect(posted.map(bodyOf)).toEqual([{ secret: SECRET, enabled: false }])
+  })
+
+  it('start at login shows a task for another data folder, left alone until switched on', async () => {
+    window.sessionStorage.setItem('hk.setup.step', '3')
+    const elsewhere = { supported: true, enabled: true, other_data_folder: true }
+    const { calls } = wizardRoutes({
+      'POST /api/setup/startup/status': { body: elsewhere },
+      'POST /api/setup/startup': (init) =>
+        bodyOf({ path: '', init }).enabled ? { body: STARTUP_ON } : { body: elsewhere },
+    })
+    renderWizard()
+    const toggle = await screen.findByRole('switch', { name: 'Start Hearthkeep when I sign in to this PC' })
+    await screen.findByText('On, for another data folder')
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(toggle)
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'))
+    expect(screen.queryByText('On, for another data folder')).toBeNull()
+    const posted = calls.filter((c) => c.path === '/api/setup/startup')
+    expect(posted.map(bodyOf)).toEqual([{ secret: SECRET, enabled: true }])
+  })
+
+  it('a start-at-login choice that fails says so with the shared sentence', async () => {
+    window.sessionStorage.setItem('hk.setup.step', '3')
+    wizardRoutes({ 'POST /api/setup/startup': { status: 500, body: { reason: 'internal' } } })
+    renderWizard()
+    fireEvent.click(await screen.findByRole('switch', { name: 'Start Hearthkeep when I sign in to this PC' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(STARTUP_FAILED)
   })
 
   it('start at login is hidden on a PC that is not Windows', async () => {
@@ -834,6 +870,18 @@ describe('Setup wizard › Done', () => {
       ]),
     )
     expect(listAfter("What's set up")).toContain('Chat model: Gemma 4 12B')
+  })
+
+  it('start at login left off, or for another data folder, is not listed', async () => {
+    window.sessionStorage.setItem('hk.setup.step', '4')
+    wizardRoutes({
+      'POST /api/setup/startup/status': { body: { supported: true, enabled: true, other_data_folder: true } },
+    })
+    renderWizard()
+    await next()
+    fireEvent.click(await screen.findByRole('button', { name: 'Create passkey' }))
+    await heading('Hearthkeep is ready')
+    expect(screen.queryByText(/Start at login/)).toBeNull()
   })
 
   it('a chat model that did not finish is not listed as set up', async () => {

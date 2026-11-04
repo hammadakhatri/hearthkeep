@@ -10,20 +10,14 @@ import { ModelsPanel } from '../components/ModelsPanel'
 import { NotificationToggle } from '../components/NotificationToggle'
 import { ServerProvider } from '../components/RestartNotice'
 import { ServerPanel } from '../components/ServerPanel'
-import { STARTUP_FAILED, StartupSwitch, type StartupState } from '../components/StartupSwitch'
+import { StartupSwitch, startupFailedMessage, type StartupState } from '../components/StartupSwitch'
 import { useAddonsState, type SettingsAnchor } from '../shell/AddonsContext'
 import { AlertIcon } from '../shell/icons'
 
-const STARTUP_ERRORS = STARTUP_FAILED
-
 function startupError(error: unknown): string {
-  if (isApiError(error, 'startup_failed')) {
-    const message = (error.body as { message?: unknown } | null)?.message
-    return typeof message === 'string' && message ? message : STARTUP_ERRORS
-  }
   if (isApiError(error, 'step_up_required')) return PASSKEY_NOT_CONFIRMED
   if (isApiError(error, 'network')) return "Can't reach Hearthkeep. Try again in a moment."
-  if (isApiError(error)) return STARTUP_ERRORS
+  if (isApiError(error)) return startupFailedMessage(error)
   return passkeyErrorMessage(error, 'Turning on start at login')
 }
 

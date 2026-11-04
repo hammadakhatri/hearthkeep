@@ -12,13 +12,14 @@ import {
   setupPc,
   setupSandboxApi,
   setupStartup,
+  setupStartupStatus,
   setupStatus,
   waitForMove,
   type SetupPc,
 } from '../api/setup'
 import { enroll, passkeyErrorMessage } from '../api/webauthn'
 import { downloadPlanFor, makesDefault, modelsErrorMessage, useJobPolling } from '../components/ModelsPanel'
-import { STARTUP_FAILED } from '../components/StartupSwitch'
+import { startupFailedMessage, type StartupState } from '../components/StartupSwitch'
 import { Stepper } from '../components/Stepper'
 import { AddOns } from './setup/AddOns'
 import { ChatModel } from './setup/ChatModel'
@@ -50,8 +51,6 @@ const CHOICES_KEY = 'hk.setup.choices'
 type Choices = {
   /** Catalog item ids for the one download the Downloads step starts. */
   chosen: string[]
-  /** Start at login: on unless the owner turns it off (the server's default too). */
-  startup: boolean
 }
 
 function readStep(): number {
@@ -65,12 +64,12 @@ function readStep(): number {
 }
 
 function readChoices(): Choices {
-  const fallback: Choices = { chosen: [], startup: true }
+  const fallback: Choices = { chosen: [] }
   try {
     const raw = JSON.parse(window.sessionStorage.getItem(CHOICES_KEY) ?? 'null') as Partial<Choices> | null
     if (!raw || typeof raw !== 'object') return fallback
     const chosen = Array.isArray(raw.chosen) ? raw.chosen.filter((id): id is string => typeof id === 'string') : []
-    return { chosen: chosen.slice(0, 10), startup: raw.startup !== false }
+    return { chosen: chosen.slice(0, 10) }
   } catch {
     return fallback
   }
@@ -131,6 +130,8 @@ export function SetupPage({ onLeave, retryMs = BUSY_RETRY_MS, pollMs = POLL_MS, 
   const [chatBusy, setChatBusy] = useState(false)
   const [chatError, setChatError] = useState<string | null>(null)
   const [chatNotice, setChatNotice] = useState<string | null>(null)
+  // Start at login as setup will leave it, from the server (ruling Q15).
+  const [startup, setStartup] = useState<StartupState | null>(null)
   const [startupBusy, setStartupBusy] = useState(false)
   const [startupError, setStartupError] = useState<string | null>(null)
   const [passkeyMade, setPasskeyMade] = useState(false)
@@ -236,6 +237,16 @@ export function SetupPage({ onLeave, retryMs = BUSY_RETRY_MS, pollMs = POLL_MS, 
     [secret],
   )
 
+  const loadStartup = useCallback(() => {
+    if (!secret) return
+    patiently(() => setupStartupStatus(secret))
+      .then((s) => alive.current && setStartup(s))
+      .catch((e) => {
+        // Not known: show the server's default choice (on) rather than a switch that never loads.
+        if (!setupGone(e, { over: false })) setStartup((s) => s ?? { supported: true, enabled: true })
+      })
+  }, [secret])
+
   const loadPc = useCallback(async () => {
     if (!secret) return
     setPcFailed(false)
@@ -252,11 +263,12 @@ export function SetupPage({ onLeave, retryMs = BUSY_RETRY_MS, pollMs = POLL_MS, 
     if (!ready || !modelsApi) return
     loadCatalog()
     loadAddons()
+    loadStartup()
     // A download that is already running (the page was reloaded) is shown, never started again.
     patiently(() => modelsApi.getJob())
       .then((j) => alive.current && j && setJob(j))
       .catch((e) => setupGone(e, { over: false }))
-  }, [ready, modelsApi, loadCatalog, loadAddons])
+  }, [ready, modelsApi, loadCatalog, loadAddons, loadStartup])
 
   useEffect(() => {
     if (ready && step === PC_STEP && pc === null && !pcFailed) void loadPc()
@@ -365,10 +377,10 @@ export function SetupPage({ onLeave, retryMs = BUSY_RETRY_MS, pollMs = POLL_MS, 
     setStartupError(null)
     try {
       const result = await patiently(() => setupStartup(secret, enabled))
-      if (alive.current) setChoices((c) => ({ ...c, startup: result.enabled }))
+      if (alive.current) setStartup(result)
     } catch (e) {
       if (setupGone(e)) return
-      setStartupError(STARTUP_FAILED)
+      setStartupError(startupFailedMessage(e))
     }
     if (alive.current) setStartupBusy(false)
   }
@@ -472,8 +484,8 @@ export function SetupPage({ onLeave, retryMs = BUSY_RETRY_MS, pollMs = POLL_MS, 
       }
     }
     if (addons?.find((a) => a.id === 'analysis')?.ready) lines.push(SETUP_COPY.doneAnalysis)
-    const startupAddon = addons?.find((a) => a.id === 'startup')
-    if (choices.startup && startupAddon?.state !== 'unsupported') lines.push(SETUP_COPY.doneStartup)
+    // Turned on by the hand-over only when it is chosen for this folder.
+    if (startup?.supported && startup.enabled && !startup.other_data_folder) lines.push(SETUP_COPY.doneStartup)
     return lines
   }
 
@@ -545,7 +557,7 @@ export function SetupPage({ onLeave, retryMs = BUSY_RETRY_MS, pollMs = POLL_MS, 
             catalog={catalog}
             chosen={choices.chosen}
             onChoose={choose}
-            startup={choices.startup}
+            startup={startup}
             startupBusy={startupBusy}
             startupError={startupError}
             onStartup={(enabled) => void changeStartup(enabled)}

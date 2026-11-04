@@ -45,7 +45,7 @@ export const SETUP_COPY = {
   doneStopped: "These didn't finish. Download them again in Settings.",
   doneExternal: 'Chat: a model server you run',
   doneAnalysis: 'Analysis',
-  doneStartup: 'Start at login',
+  doneStartup: 'Start at login (turned on as setup finishes)',
 } as const
 
 /** "The recommended chat model and its engine need about 11.0 GB of free space." */

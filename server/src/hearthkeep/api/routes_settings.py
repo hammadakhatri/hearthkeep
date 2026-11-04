@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
@@ -10,7 +11,15 @@ from pydantic import BaseModel, Field
 
 from hearthkeep import db, startup
 from hearthkeep.addons import ABOUT
-from hearthkeep.api.common import ApiError, Services, actor, current_session, record, services
+from hearthkeep.api.common import (
+    ApiError,
+    Services,
+    actor,
+    current_session,
+    rate_limit,
+    record,
+    services,
+)
 from hearthkeep.auth.sessions import Session
 from hearthkeep.host import HostUnsupported, current_host
 from hearthkeep.permissions import (
@@ -115,6 +124,8 @@ async def set_tool_level(tool: str, body: LevelBody, session: SessionDep, reques
     return _item(hk, key, await hk.docker_available())
 
 
+log = logging.getLogger(__name__)
+
 STARTUP_FAILED = (
     "Start at login couldn't be changed. Try again; if it keeps failing, Windows may be "
     "blocking scheduled tasks for this account."
@@ -147,6 +158,7 @@ async def startup_settings(session: SessionDep, request: Request) -> dict:
 async def set_startup(body: StartupBody, session: SessionDep, request: Request) -> dict:
     """Turn start at login on (a passkey step-up, as it makes Hearthkeep run unasked) or off
     (the session is enough). A failure is a plain message; what Windows said stays out of it."""
+    rate_limit(request, "startup")
     hk = services(request)
     host = current_host()
     if not host.supported:
@@ -165,7 +177,9 @@ async def set_startup(body: StartupBody, session: SessionDep, request: Request) 
             removed = await asyncio.to_thread(host.disable_startup)
     except HostUnsupported:
         raise ApiError(400, "unsupported") from None
-    except (startup.StartupError, OSError):
+    except (startup.StartupError, OSError) as exc:
+        # The type only: what Windows said can name paths and accounts.
+        log.warning("start at login couldn't be changed: %s", type(exc).__name__)
         raise ApiError(502, "startup_failed", message=STARTUP_FAILED) from None
     view = await _startup_view(hk, fresh=True)
     if not body.enabled and not removed and view["enabled"]:

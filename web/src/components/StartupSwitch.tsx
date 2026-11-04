@@ -1,8 +1,16 @@
 import { useId } from 'react'
+import { isApiError } from '../api/client'
 import { AlertIcon } from '../shell/icons'
 
-/** When the choice couldn't be saved; Settings and setup say the same. */
+/** When the choice couldn't be saved and the server gave no sentence of its own; Settings and
+ *  setup say the same. */
 export const STARTUP_FAILED = "Start at login couldn't be changed. Try again."
+
+/** The sentence for a failed change: the server's `message` when it sent one, else `STARTUP_FAILED`. */
+export function startupFailedMessage(error: unknown): string {
+  const message = isApiError(error) ? (error.body as { message?: unknown } | null)?.message : undefined
+  return typeof message === 'string' && message ? message : STARTUP_FAILED
+}
 
 /** What the switch shows; the same shape `GET /api/settings/startup` answers. */
 export type StartupState = {

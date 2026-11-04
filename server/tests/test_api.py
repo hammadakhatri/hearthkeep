@@ -1461,3 +1461,32 @@ def test_startup_enable_oserror_is_a_plain_502(harness, startup_host):
     )
     assert r.status_code == 502 and r.json()["reason"] == "startup_failed"
     assert "disk full" not in r.text
+
+
+def test_startup_failure_logs_the_error_type_only(harness, startup_host, caplog):
+    from hearthkeep import startup
+
+    caplog.set_level(logging.WARNING)
+    client = signed_in(harness)
+    startup_host.enable_error = startup.StartupError("ERROR: Access is denied. C:/secret/path")
+    token = step_up(client, "settings")
+    r = client.post(
+        "/api/settings/startup", json={"enabled": True, "step_up_token": token}, headers=CSRF
+    )
+    assert r.status_code == 502
+    lines = [rec.getMessage() for rec in caplog.records if rec.name.startswith("hearthkeep")]
+    assert any("StartupError" in line for line in lines)
+    assert not any("Access is denied" in line or "secret/path" in line for line in lines)
+
+
+def test_changing_startup_is_rate_limited(harness, startup_host):
+    from hearthkeep.api.common import RateLimiter
+
+    client = signed_in(harness)
+    allowed = RateLimiter()._per_client  # the default per-group limit
+    assert "startup" not in RateLimiter()._limits
+    for _ in range(allowed):
+        off = client.post("/api/settings/startup", json={"enabled": False}, headers=CSRF)
+        assert off.status_code == 200, off.text
+    limited = client.post("/api/settings/startup", json={"enabled": False}, headers=CSRF)
+    assert (limited.status_code, limited.json()) == (429, {"reason": "rate_limited"})
