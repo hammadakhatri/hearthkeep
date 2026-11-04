@@ -54,6 +54,7 @@ ROUTES = [
     ("/api/setup/startup", {"enabled": False}),
     ("/api/setup/sandbox/build", {}),
     ("/api/setup/sandbox/status", {}),
+    ("/api/setup/addons", {}),
 ]
 # And the two 2a routes, now behind the same dependency.
 ALL_ROUTES = [("/api/setup/status", {}), ("/api/setup/enrollment-code", {}), *ROUTES]
@@ -235,6 +236,47 @@ def test_setup_catalog_matches_the_session_catalog(setup_app, tmp_path):
     assert from_session.status_code == 200
     assert from_setup.json() == from_session.json()
     assert post(client, "/api/setup/catalog").status_code == 404
+
+
+def test_setup_addons_matches_the_session_list(setup_app, tmp_path):
+    client = setup_app()
+    from_setup = post(client, "/api/setup/addons")
+    assert from_setup.status_code == 200, from_setup.text
+    assert [a["id"] for a in from_setup.json()["addons"]] == [
+        "chat",
+        "analysis",
+        "images",
+        "github",
+        "devices",
+        "startup",
+    ]
+    sign_in(client, tmp_path)  # the same app, now with a passkey and a session
+    from_session = client.get("/api/addons")
+    assert from_session.status_code == 200
+    assert from_setup.json() == from_session.json()
+    assert post(client, "/api/setup/addons").status_code == 404
+
+
+def test_setup_addons_can_look_again(setup_app, monkeypatch):
+    """The wizard's "Check again" (Docker installed or started meanwhile) looks afresh; a plain
+    read is served from the cache."""
+    from hearthkeep.addons import Addons
+
+    client = setup_app()
+    calls = []
+    real = Addons.refresh
+
+    async def spy(self, *ids, fresh=False):
+        calls.append(fresh)
+        return await real(self, *ids, fresh=fresh)
+
+    monkeypatch.setattr(Addons, "refresh", spy)
+    assert post(client, "/api/setup/addons").status_code == 200
+    assert calls == []
+    again = post(client, "/api/setup/addons", {"refresh": True})
+    assert again.status_code == 200
+    assert calls == [True]
+    assert [a["id"] for a in again.json()["addons"]][0] == "chat"
 
 
 # ---- downloads ------------------------------------------------------------------------------

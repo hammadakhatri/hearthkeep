@@ -33,7 +33,7 @@ from hearthkeep.api.common import (
     record,
     services,
 )
-from hearthkeep.api.routes_addons import get_builder, start_build
+from hearthkeep.api.routes_addons import addons_body, get_builder, start_build
 from hearthkeep.auth.enrollment import EnrollmentError, first_device_allowed
 from hearthkeep.hardware import free_bytes
 from hearthkeep.host import DATA_MARKERS, NOT_EMPTY, Host, current_host
@@ -296,6 +296,23 @@ async def setup_startup(_: SetupDep, body: SetupStartupBody, request: Request) -
         raise ApiError(400, "unsupported")
     services(request).setup.start_at_login = body.enabled
     return {"enabled": body.enabled}
+
+
+# ---- the add-ons ----------------------------------------------------------------------------
+
+
+class SetupAddonsBody(SetupBody):
+    refresh: bool = False
+
+
+@router.post("/addons")
+async def setup_addons(_: SetupDep, body: SetupAddonsBody, request: Request) -> dict:
+    """The add-on list, as `GET /api/addons`. `refresh` is the wizard's "Check again": the
+    server looks afresh (Docker installed or started meanwhile) before answering."""
+    hk = services(request)
+    if body.refresh and hk.addons is not None:
+        await hk.addons.refresh(fresh=True)
+    return addons_body(hk)
 
 
 # ---- the analysis sandbox -------------------------------------------------------------------

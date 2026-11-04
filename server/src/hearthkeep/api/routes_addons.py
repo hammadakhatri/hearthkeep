@@ -25,8 +25,9 @@ router = APIRouter(prefix="/api")
 SessionDep = Annotated[Session, Depends(current_session)]
 
 
-def _body(request: Request) -> dict:
-    addons = services(request).addons
+def addons_body(hk: Services) -> dict:
+    """The add-on list as `GET /api/addons` answers it (the setup route answers the same)."""
+    addons = hk.addons
     if addons is None:
         raise ApiError(503, "unavailable")
     checked_at = addons.checked_at
@@ -38,7 +39,7 @@ def _body(request: Request) -> dict:
 
 @router.get("/addons")
 async def list_addons(request: Request, session: SessionDep) -> dict:
-    return _body(request)
+    return addons_body(services(request))
 
 
 @router.post("/addons/refresh")
@@ -48,7 +49,7 @@ async def refresh_addons(request: Request, session: SessionDep) -> dict:
     if addons is None:
         raise ApiError(503, "unavailable")
     await addons.refresh(fresh=True)
-    return _body(request)
+    return addons_body(services(request))
 
 
 # ---- building the analysis sandbox ----------------------------------------------------------
