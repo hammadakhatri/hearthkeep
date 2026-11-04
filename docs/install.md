@@ -71,9 +71,19 @@ The quick way on Windows needs none of the commands below:
 
 1. Download the Hearthkeep zip from the latest release on GitHub.
 2. Unzip it to a short path, for example `C:\Hearthkeep\app`.
-3. Double-click `Setup.cmd`. It installs uv for your Windows account if needed (no admin rights), keeps your data in `C:\Hearthkeep\data`, starts Hearthkeep and opens the setup page in your browser, where you create your first passkey.
+3. Double-click `Setup.cmd`. It installs uv for your Windows account if needed (no admin rights), starts Hearthkeep and opens the setup page in your browser. The page walks you through seven steps:
 
-If you'll use Hearthkeep from your phone through Tailscale, read [step 7](#7-decide-on-remote-access-before-your-first-passkey) before you run Setup.cmd.
+   1. **Welcome.** What setup will do, and how long it takes: about 10 to 30 minutes, mostly downloading.
+   2. **Your PC.** What Hearthkeep found: your graphics card, memory and free disk space. It also shows the data folder, where your chats, passkey and downloads are kept: `C:\Hearthkeep\data` unless you change it. Select **Change…** to pick another folder, for example one on a bigger drive. You can move it only until the first download or the sandbox build starts; setup then restarts itself in the new folder and carries on.
+   3. **Chat model.** The model Hearthkeep recommends for this PC, with the alternatives that fit. Or choose **Use a model server I already run**. Nothing is downloaded yet.
+   4. **Add-ons.** Analysis (Python on your files; it needs Docker Desktop, and setup can build the sandbox for you, with **Get Docker Desktop** and **Check again** if it isn't there yet), Images, GitHub (you add the token in Settings › GitHub after setup), Phone (you can add your phone later, from Settings), and **Start at login**, which is on unless you turn it off.
+   5. **Downloads.** Select **Start downloads**. A list shows each file's progress. You can go on to the next step while it downloads.
+   6. **Passkey.** Create your passkey with Windows Hello, a PIN or a security key. It is the only way in, so keep it on a second device too (see [Have your passkey on a second device](#have-your-passkey-on-a-second-device-before-you-rely-on-it)).
+   7. **Done.** A summary of what is set up. Downloads that were still running carry on by themselves once Hearthkeep starts on its own, and you can watch them in Settings › Chat model or Image models. Anything you stopped, or that failed, is listed apart; download it again from Settings.
+
+   If you reload or close the page part-way, nothing already downloaded is lost: close the Setup window (the black console window that stays open during setup), double-click `Setup.cmd` again, and setup starts from the Welcome step with what it already has. Once you have a passkey, `Setup.cmd` only opens Hearthkeep.
+
+If you'll use Hearthkeep from your phone through Tailscale, read [step 7](#7-decide-on-remote-access-before-your-first-passkey) before you run Setup.cmd. The wizard will offer remote access itself in a later update; until then, step 7 is the way.
 
 The rest of this guide is the manual way: building from a clone, choosing your own data folder, and setting up the models, Docker, Tailscale and GitHub by hand.
 
@@ -108,7 +118,7 @@ The rest of this guide is the manual way: building from a clone, choosing your o
 
 ## 3. Create a data folder
 
-The data folder holds your chats, passkeys, audit log, encrypted secrets, images and logs. It must be **outside** the repository, so nothing personal can ever be committed.
+The data folder holds your chats, passkeys, audit log, encrypted secrets, images and logs. It must be **outside** the repository, so nothing personal can ever be committed. With `Setup.cmd` you don't make it yourself: setup creates it and the **Your PC** step lets you change it.
 
 1. Pick a short path. On Windows, for example `C:\Hearthkeep\data`, the folder `Setup.cmd` uses.
 2. Create it:
@@ -127,7 +137,7 @@ Choose the location once. The key that encrypts your secrets is stored in the OS
 
 ## 4. Chat model
 
-Hearthkeep downloads its own chat model from Settings. There is nothing to install by hand, and you do this after you have created your passkey ([step 8](#8-first-start-and-your-passkey)). Until then Hearthkeep runs, but chat says that no chat model is set up yet.
+Hearthkeep downloads its own chat model. There is nothing to install by hand. If you used `Setup.cmd`, you chose the model in the wizard's **Chat model** step and it downloaded in the **Downloads** step ([step 2](#2-clone-and-build)); this section is then for changing it later. The manual route is below: you do it from Settings after you have created your passkey ([step 8](#8-first-start-and-your-passkey)). Until then Hearthkeep runs, but chat says that no chat model is set up yet.
 
 1. Open **Settings › Chat model**. The top line names your graphics card and how much memory it has, and one model carries the badge **Recommended for this PC**.
 2. Choose a model and select **Download**. Hearthkeep lists everything it will fetch, with the sizes and a link to each licence. Select **Download with passkey** and confirm with your passkey.
@@ -272,7 +282,7 @@ tailscale serve --bg --https=443 http://127.0.0.1:8765 off
 
 ## 8. First start and your passkey
 
-If you used `Setup.cmd` (step 2), your first passkey is normally made on the setup page it opens (on your Tailscale address if you wrote `config.toml` first, as in step 7), and you can skip to [Have your passkey on a second device](#have-your-passkey-on-a-second-device-before-you-rely-on-it). The steps below are for a manual start.
+If you used `Setup.cmd` (step 2), your first passkey is made in the wizard's **Passkey** step, on the setup page it opened (on your Tailscale address if you wrote `config.toml` first, as in step 7). Hearthkeep then starts on its own, in the background, and opens. You can skip to [Have your passkey on a second device](#have-your-passkey-on-a-second-device-before-you-rely-on-it). The steps below are for a manual start.
 
 1. Start the server:
 
@@ -323,7 +333,9 @@ Your downloaded models stay where they are. To go back to one of them, select **
 
 ## 10. Run at login (Windows)
 
-Do this after your passkey works. Hearthkeep then starts by itself when you sign in to Windows, with no window.
+Hearthkeep can start by itself when you sign in to Windows, with no window.
+
+**From the app.** Open **Settings › Start at login** and use the switch. Turning it on asks for your passkey; turning it off doesn't. Setup's **Add-ons** step turns it on for you unless you switch it off there. The rest of this section is the command line way, and what to do if the switch can't make the task.
 
 The task runs as **your own Windows user**: the key that decrypts your secrets is in your user's keyring.
 
@@ -343,7 +355,7 @@ The task runs as **your own Windows user**: the key that decrypts your secrets i
    uv run hearthkeep startup disable --data <data>
    ```
 
-   Settings in the app shows the same state and the command to copy. The app only displays it; it never changes the task.
+   Settings › Start at login shows the same state, and its switch does the same as `enable` and `disable`.
 
 3. Sign out and back in (or restart) and open your address to test it.
 
@@ -353,7 +365,7 @@ The task runs as **your own Windows user**: the key that decrypts your secrets i
 
 `tailscale serve --bg` needs no task of its own: Tailscale keeps the setting.
 
-### If `startup enable` does not work: make the task by hand
+### If turning it on does not work: make the task by hand
 
 Create the task yourself in Task Scheduler:
 
@@ -392,7 +404,7 @@ Hearthkeep can read the files you attach to a chat and analyse them with Python.
    docker version
    ```
 
-2. Build the sandbox images. This is a **one-time download of about 1 GB** (Python and the analysis libraries, plus a second, smaller image for GitHub repos, step 12), so do it on a connection you are happy to use:
+2. Build the sandbox images. In the app, choose **Build the sandbox** on the Analysis card in **Settings › Add-ons** (it asks for your passkey) or in the wizard's **Add-ons** step; the build's output is kept in `<data>\logs\sandbox-build.log`. This is a **one-time download of about 1 GB** (Python and the analysis libraries, plus a second, smaller image for GitHub repos, step 12), so do it on a connection you are happy to use. From a terminal:
 
    ```
    cd <repo>\server
@@ -509,7 +521,7 @@ The first start after an update brings an existing install up to date, once:
 - on Windows, it makes the Start menu shortcut;
 - on any system, it removes saved tool levels for tools that never shipped (`wallet`, `news`, `demo`).
 
-Your config files, model cards, passkeys and your other tool levels are not touched. If a step fails (start at login or the shortcut), Hearthkeep still starts, and tries again the next time it starts, up to three starts; after that it stops trying and the note keeps saying what still needs you. For start at login, check it in Settings › Add-ons. For the shortcut, double-click `Setup.cmd` again: it makes the shortcut and opens Hearthkeep. When you next open the app, a one-time "Hearthkeep was updated" note lists anything that still needs you, such as a sandbox that needs rebuilding. Dismiss it once you've read it.
+Your config files, model cards, passkeys and your other tool levels are not touched. If a step fails (start at login or the shortcut), Hearthkeep still starts, and tries again the next time it starts, up to three starts; after that it stops trying and the note keeps saying what still needs you. For start at login, check it in Settings › Start at login. For the shortcut, double-click `Setup.cmd` again: it makes the shortcut and opens Hearthkeep. When you next open the app, a one-time "Hearthkeep was updated" note lists anything that still needs you, such as a sandbox that needs rebuilding. Dismiss it once you've read it.
 
 Compare `<repo>\config.example.toml` and `<repo>\models.example.toml` with your own copies for new settings.
 

@@ -311,11 +311,11 @@ On Windows 11:
 2. Unzip it to a short path, for example `C:\Hearthkeep\app`.
 3. Double-click `Setup.cmd`.
 
-If you'll use Hearthkeep from your phone through Tailscale, read [step 7 of the install guide](docs/install.md#7-decide-on-remote-access-before-your-first-passkey) before you run Setup.cmd.
+If you'll use Hearthkeep from your phone through Tailscale, read [step 7 of the install guide](docs/install.md#7-decide-on-remote-access-before-your-first-passkey) before you run Setup.cmd. The setup page will offer remote access itself in a later update.
 
-Setup installs what it needs for your Windows account (no admin rights), keeps your data in `C:\Hearthkeep\data`, starts Hearthkeep and opens it in your browser, where you create your passkey. Afterwards, open Hearthkeep from the Start menu.
+Setup installs what it needs for your Windows account (no admin rights), starts Hearthkeep and opens a setup page in your browser. The page looks at your PC, helps you choose a chat model and add-ons (Python analysis, images, start at login), downloads them while you carry on, and creates your passkey. It takes about 10 to 30 minutes, mostly downloading. By default your data stays in `C:\Hearthkeep\data`; the page lets you pick another folder. Afterwards, open Hearthkeep from the Start menu.
 
-Then open **Settings › Chat model**, choose the model marked **Recommended for this PC**, select **Download** and confirm with your passkey. Hearthkeep downloads it (3 to 10 GB, resuming if it is interrupted, every file checked) and asks you to restart. Images are in **Settings › Image models**.
+Anything you skip, or want more of later, is in **Settings**: **Chat model**, **Image models**, **Add-ons** and **Start at login**.
 
 The full guide, including the models, Docker, Tailscale and GitHub, is in **[docs/install.md](docs/install.md)**.
 
