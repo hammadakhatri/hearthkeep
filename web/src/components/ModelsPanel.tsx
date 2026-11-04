@@ -140,7 +140,7 @@ type RowProps = {
 function ModelRow({ item, badge, inUse, why, action, onUse }: RowProps) {
   const chosen = action.kind === 'choose' && action.chosen.includes(item.id)
   return (
-    <li className={`device model${chosen ? ' chosen' : ''}`}>
+    <li className="device model">
       <div className="device-main">
         <div className="device-text">
           <div className="device-name">
