@@ -1,0 +1,26 @@
+id = "qwen3.5-4b"
+name = "Qwen3.5 4B"
+kind = "chat"
+provider = "llama_server"
+capabilities = ["tools", "thinking"]
+vram_gb = 4.0
+context = 16384
+launch_args = [
+    "--model", "{model}",
+    "--alias", "qwen3.5-4b",
+    "--host", "127.0.0.1",
+    "--port", "{port}",
+    "--api-key-file", "{api_key_file}",
+    "-c", "16384",
+    "-ngl", "999",
+    "--jinja",
+]
+
+[files]
+model = "Qwen_Qwen3.5-4B-Q4_K_M.gguf"
+
+[sampling]
+temperature = 0.6
+top_k = 20
+top_p = 0.95
+min_p = 0.0

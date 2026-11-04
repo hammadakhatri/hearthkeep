@@ -37,7 +37,9 @@ def put_card(data: Path, name: str, body: str) -> None:
 def test_shipped_cards_load(tmp_path):
     cards, errors = load_cards(tmp_path)
     assert errors == []
-    assert set(cards) == {"gemma-4-12b", "z-image-turbo", "flux2-klein-4b"}
+    assert set(cards) == {
+        "gemma-4-12b", "z-image-turbo", "flux2-klein-4b", "qwen3.5-4b", "qwen3.5-9b"
+    }  # fmt: skip
     gemma, zimage, flux = cards["gemma-4-12b"], cards["z-image-turbo"], cards["flux2-klein-4b"]
     assert (gemma.kind, gemma.provider, gemma.vram_gb) == ("chat", "llama_server", 11.0)
     assert (zimage.kind, zimage.provider, zimage.vram_gb) == ("image", "comfyui", 10.5)
@@ -54,6 +56,28 @@ def test_shipped_cards_load(tmp_path):
     assert zimage.capabilities == ("text-in-image", "photoreal")
     assert zimage.prefer_when and zimage.guidance
     assert all(c.source == "shipped" for c in cards.values())
+
+
+def test_qwen_cards_load(tmp_path):
+    cards, errors = load_cards(tmp_path)
+    assert errors == []
+    for card_id, name, vram, file in (
+        ("qwen3.5-4b", "Qwen3.5 4B", 4.0, "Qwen_Qwen3.5-4B-Q4_K_M.gguf"),
+        ("qwen3.5-9b", "Qwen3.5 9B", 7.5, "Qwen_Qwen3.5-9B-Q4_K_M.gguf"),
+    ):
+        card = cards[card_id]
+        assert (card.name, card.kind, card.provider, card.vram_gb) == (
+            name, "chat", "llama_server", vram
+        )  # fmt: skip
+        assert card.context == 16384 and card.files == {"model": file}
+        assert card.capabilities == ("tools", "thinking")
+        assert card.sampling == {"temperature": 0.6, "top_k": 20, "top_p": 0.95, "min_p": 0.0}
+        args = list(card.launch_args)
+        assert args[args.index("--model") + 1] == "{model}"
+        assert args[args.index("--alias") + 1] == card_id
+        assert args[args.index("-c") + 1] == "16384"
+        assert args[args.index("-ngl") + 1] == "999" and "--jinja" in args
+        assert "--mmproj" not in args and "--api-key-file" in args
 
 
 def test_owner_card_overrides_shipped(tmp_path):
