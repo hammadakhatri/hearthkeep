@@ -9,6 +9,7 @@ import hashlib
 import io
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -203,13 +204,14 @@ def make(data, server=None, *, pc=NO_GPU, free=10**12, popen=None, **kw):
     server = server or Server()
     control = ServerControl(supervised=True)
     events: list[tuple[str, dict]] = []
+    kw.setdefault("disk", lambda path: SimpleNamespace(free=free))
+    kw.setdefault("sleep", lambda seconds: None)
     inst = Installer(
         data,
         control,
         catalog=CATALOG,
         client_factory=server.client,
         popen=popen or FakeTar(),
-        disk=lambda path: SimpleNamespace(free=free),
         record=lambda event, detail: events.append((event, detail)),
         pc=lambda: pc,
         **kw,
@@ -357,7 +359,8 @@ async def test_shared_image_file_downloads_once(data):
 
     [(argv, kw)] = tar.calls
     assert Path(argv[0]).name == "tar.exe" and Path(argv[0]).parent.name == "System32"
-    staging = data / "runtime" / "downloads" / "comfyui.unpack"
+    # Unpacked beside its folder, on the same drive, so the swap is a rename.
+    staging = data / "tools" / ".comfyui.new"
     assert argv[1:] == ["-xf", str(part_of(data, "comfyui")), "-C", str(staging)]
     assert kw["creationflags"] == NO_WINDOW and kw["stdin"] == subprocess.DEVNULL
     assert not staging.exists()
@@ -553,7 +556,8 @@ async def test_7z_with_a_link_is_refused(data):
     assert job.state == "failed"
     assert (job.items[0].state, job.items[0].error) == ("failed", "unpack")
     assert not (data / "tools").exists()
-    assert not (data / "runtime" / "downloads" / "comfyui.unpack").exists()
+    # Clearing the refused folder didn't follow the link into the data folder.
+    assert part_of(data, "comfyui").is_file()
     assert control.restart_needed == set()
 
 
@@ -637,7 +641,8 @@ async def test_shutdown_during_tar_kills_it_and_swaps_nothing(data):
     [proc] = tar.procs
     assert proc.killed
     assert job.state == "cancelled" and job.items[0].state == "cancelled"
-    assert not (data / "tools").exists()
+    # Nothing swapped in; the half-unpacked folder beside it is cleared by the next run.
+    assert not (data / "tools" / "comfyui").exists()
     assert part_of(data, "comfyui").is_file()  # kept for the next start
 
 
@@ -649,7 +654,7 @@ async def test_cancel_during_tar_kills_it(data):
     inst.cancel()
     await asyncio.wait_for(inst.wait(), 2)
     assert tar.procs[0].killed and job.state == "cancelled"
-    assert not (data / "tools").exists()
+    assert not (data / "tools" / "comfyui").exists()
 
 
 async def test_tar_over_its_time_limit_is_killed(data, monkeypatch):
@@ -732,8 +737,10 @@ def test_swap_in_puts_the_old_folder_back_when_the_second_rename_fails(tmp_path,
         return real_rename(self, other)
 
     monkeypatch.setattr(Path, "rename", rename)
+    slept: list[float] = []
     with pytest.raises(PermissionError):
-        installer._swap_in(new, target)
+        installer._swap_in(new, target, sleep=slept.append)
+    assert slept == [1.0, 1.0, 1.0]  # tried four times in all
     assert (target / "keep.txt").read_text() == "old"
     assert not target.with_name("comfyui.old").exists() and new.is_dir()
 
@@ -758,3 +765,253 @@ async def test_update_config_edits_under_the_config_lock(tmp_path, monkeypatch):
     inst.start(["chat-qwen3.5-4b"], make_default=True)
     job = await inst.wait()
     assert job.state == "done" and held == [True]
+
+
+# ---- other drives, busy files, odd disks ----------------------------------------------------
+
+
+def _other_drive(path) -> bool:
+    return "other drive" in str(path)
+
+
+def test_move_into_place_copies_across_drives(tmp_path, monkeypatch):
+    part = tmp_path / "downloads" / "abc.part"
+    part.parent.mkdir()
+    part.write_bytes(b"model bytes")
+    dest = tmp_path / "other drive" / "vae" / "ae.safetensors"
+    real_replace = os.replace
+    replaced: list[tuple[str, str]] = []
+
+    def replace(src, dst):
+        replaced.append((Path(src).name, Path(dst).name))
+        if Path(src).suffix == ".part":  # what Windows says across drives
+            raise OSError(errno.EXDEV, "The system cannot move the file to a different disk drive")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", replace)
+    installer._move_into_place(part, dest, sleep=lambda s: None)
+    assert dest.read_bytes() == b"model bytes"
+    assert not part.exists()
+    # Copied beside the destination, then renamed into place: never a half-written file.
+    assert replaced == [("abc.part", "ae.safetensors"), ("ae.safetensors.tmp", "ae.safetensors")]
+    assert list(dest.parent.iterdir()) == [dest]
+
+
+def test_move_into_place_across_drives_on_a_full_disk_leaves_nothing(tmp_path, monkeypatch):
+    part = tmp_path / "abc.part"
+    part.write_bytes(b"model bytes")
+    dest = tmp_path / "other drive" / "ae.safetensors"
+
+    def replace(src, dst):
+        raise OSError(errno.EXDEV, "cross-device link")
+
+    def copy(src, dst):
+        Path(dst).write_bytes(b"half")
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(os, "replace", replace)
+    monkeypatch.setattr(shutil, "copyfile", copy)
+    with pytest.raises(OSError) as caught:
+        installer._move_into_place(part, dest, sleep=lambda s: None)
+    assert installer._place_error(caught.value).reason == "no_space"
+    assert part.read_bytes() == b"model bytes"  # kept for the next try
+    assert list(dest.parent.iterdir()) == []
+
+
+async def test_image_files_reach_another_drive(data, tmp_path, monkeypatch):
+    put_comfyui(data)
+    root = tmp_path / "other drive" / "models"
+    (data / "models.toml").write_text(f"comfyui_model_root = '{root}'\n", encoding="utf-8")
+    real_replace = os.replace
+
+    def replace(src, dst):
+        if Path(src).suffix == ".part" and _other_drive(dst):
+            raise OSError(errno.EXDEV, "cross-device link")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", replace)
+    inst, _, _ = make(data, pc=NVIDIA)
+    job = inst.start(["image-flux2-klein-4b"], make_default=False)
+    await inst.wait()
+    assert job.state == "done", job.to_json()
+    assert (root / "diffusion_models" / "flux-2-klein-4b.safetensors").read_bytes() == body_for(
+        "flux-2-klein-4b.safetensors"
+    )
+    assert list((data / "runtime" / "downloads").iterdir()) == []
+
+
+def test_space_check_counts_every_drive(data, tmp_path):
+    put_comfyui(data)
+    root = tmp_path / "other drive" / "models"
+    root.mkdir(parents=True)
+    (data / "models.toml").write_text(f"comfyui_model_root = '{root}'\n", encoding="utf-8")
+    item = CATALOG["image-flux2-klein-4b"]
+    asked: list[str] = []
+
+    def disk(path):
+        asked.append("image" if _other_drive(path) else "data")
+        return SimpleNamespace(free=100 if _other_drive(path) else 10**12)
+
+    def volume(path):
+        return "image" if _other_drive(path) else "data"
+
+    inst, server, _ = make(data, pc=NVIDIA, disk=disk, volume=volume)
+    # Downloaded on the data folder's drive, then copied to the other one.
+    assert inst.needed_bytes([item]) == 2 * item.size_bytes
+    with pytest.raises(NotEnoughSpace) as caught:
+        inst.start(["image-flux2-klein-4b"], make_default=False)
+    assert caught.value.needed == item.size_bytes and caught.value.free == 100
+    assert sorted(set(asked)) == ["data", "image"]
+    assert server.requests == [] and inst.current() is None
+
+    # One drive: the file is only renamed there, so it counts once.
+    same, _, _ = make(data, pc=NVIDIA, volume=lambda path: "one")
+    assert same.needed_bytes([item]) == item.size_bytes
+
+
+def test_move_into_place_retries_a_busy_file(tmp_path, monkeypatch):
+    part = tmp_path / "abc.part"
+    part.write_bytes(b"model")
+    dest = tmp_path / "chat" / "model.gguf"
+    real_replace = os.replace
+    failures = [PermissionError(13, "in use"), PermissionError(13, "in use")]
+
+    def replace(src, dst):
+        if failures:
+            raise failures.pop()
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", replace)
+    slept: list[float] = []
+    installer._move_into_place(part, dest, sleep=slept.append)
+    assert dest.read_bytes() == b"model" and slept == [1.0, 1.0]
+
+
+def test_swap_in_retries_a_busy_folder(tmp_path, monkeypatch):
+    target = tmp_path / "tools" / "comfyui"
+    target.mkdir(parents=True)
+    (target / "keep.txt").write_text("old")
+    new = tmp_path / "tools" / ".comfyui.new"
+    new.mkdir()
+    (new / "main.py").write_text("new")
+    real_rename = Path.rename
+    busy = {"times": 2}
+
+    def rename(self, other):
+        if self == target and busy["times"]:
+            busy["times"] -= 1
+            raise PermissionError("an antivirus scan has it open")
+        return real_rename(self, other)
+
+    monkeypatch.setattr(Path, "rename", rename)
+    slept: list[float] = []
+    installer._swap_in(new, target, sleep=slept.append)
+    assert (target / "main.py").read_text() == "new" and slept == [1.0, 1.0]
+    assert not new.exists() and not target.with_name("comfyui.old").exists()
+
+
+@pytest.mark.parametrize(("error", "reason"), [(errno.ENOSPC, "no_space"), (errno.EIO, "unpack")])
+async def test_unzip_os_error_is_reported_by_reason(data, monkeypatch, error, reason):
+    def extract(*args, **kwargs):
+        raise OSError(error, "the disk said no")
+
+    monkeypatch.setattr(installer, "safe_extract_zip", extract)
+    inst, _, control = make(data)
+    job = inst.start(["llama-cpu"], make_default=False)
+    await inst.wait()
+    assert job.state == "failed"
+    assert (job.items[0].state, job.items[0].error) == ("failed", reason)
+    assert not (data / "tools" / "llama.cpp" / ".b12099-cpu.new").exists()
+    assert control.restart_needed == set()
+
+
+async def test_tar_os_error_is_reported_by_reason(data, monkeypatch):
+    real_mkdir = Path.mkdir
+
+    def mkdir(self, *args, **kwargs):
+        if self.name == ".comfyui.new":
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", mkdir)
+    inst, _, _ = make(data, pc=NVIDIA)
+    job = inst.start(["comfyui"], make_default=False)
+    await inst.wait()
+    assert (job.items[0].state, job.items[0].error) == ("failed", "no_space")
+
+
+def test_refuse_links_refuses_what_it_cannot_read(tmp_path):
+    with pytest.raises(fetching.FetchError) as caught:
+        installer._refuse_links(tmp_path / "gone")
+    assert caught.value.reason == "unpack"
+
+
+@pytest.mark.parametrize(
+    ("path", "long"),
+    [
+        (r"C:\data\tools\.comfyui.new", r"\\?\C:\data\tools\.comfyui.new"),
+        ("C:/data/tools/comfyui", r"\\?\C:\data\tools\comfyui"),
+        (r"\\nas\share\data\tools", r"\\?\UNC\nas\share\data\tools"),
+        (r"\\?\C:\data\tools", r"\\?\C:\data\tools"),
+    ],
+)
+def test_long_path_prefix_on_windows(path, long):
+    assert installer._long_path(path, windows=True) == long
+    assert installer._long_path("/data/tools", windows=False) == "/data/tools"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows path limits")
+def test_link_walk_and_removal_reach_past_260_characters(tmp_path):
+    root = tmp_path / ".comfyui.new"
+    deep = Path(installer._long_path(root))
+    while len(str(deep)) < 320:
+        deep = deep / ("folder-" + "x" * 40)
+    os.makedirs(deep)
+    (deep / "model.py").write_bytes(b"x")
+    installer._refuse_links(root)
+    make_link(deep / "sneaky", tmp_path)
+    with pytest.raises(fetching.FetchError):
+        installer._refuse_links(root)
+    installer._remove_tree(root)
+    assert not root.exists() and tmp_path.is_dir()
+
+
+async def test_external_chat_owner_keeps_external_after_a_download(data):
+    # A Phase 1 owner: chat_base_url in config.toml, no chat_server. Downloading Gemma (the
+    # default card) without making it the default must not move chat to the local engine.
+    from hearthkeep.cli import build_model_stack
+    from hearthkeep.config import load_settings
+    from hearthkeep.secrets import SecretStore
+
+    (data / "config.toml").write_text(
+        "chat_base_url = 'http://127.0.0.1:11434/v1'\n", encoding="utf-8"
+    )
+    inst, _, _ = make(data)
+    job = inst.start(["chat-gemma-4-12b"], make_default=False)
+    await inst.wait()
+    assert job.state == "done", job.to_json()
+    toml = models_toml(data)
+    assert toml["chat_server"] == "external" and "default_chat_model" not in toml
+    assert "gemma-4-12b" in toml["model_dirs"]
+
+    def no_llama(*args, **kwargs):
+        raise AssertionError("llama-server must not be set up")
+
+    stack, *_ = build_model_stack(
+        load_settings(data), SecretStore(data), make_llama=no_llama, detect_vram=lambda: None
+    )
+    assert stack.chat_mode == "external"
+
+
+async def test_local_or_no_chat_is_not_pinned_by_a_download(data):
+    inst, _, _ = make(data, chat_is_external=lambda: False)
+    job = inst.start(["chat-qwen3.5-4b"], make_default=False)
+    await inst.wait()
+    assert job.state == "done" and "chat_server" not in models_toml(data)
+
+
+async def test_make_default_still_chooses_local_over_external(data):
+    inst, _, _ = make(data, chat_is_external=lambda: True)
+    job = inst.start(["chat-qwen3.5-4b"], make_default=True)
+    await inst.wait()
+    assert job.state == "done" and models_toml(data)["chat_server"] == "local"
