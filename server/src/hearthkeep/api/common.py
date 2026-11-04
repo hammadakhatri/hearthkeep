@@ -51,6 +51,10 @@ SESSION_COOKIE = "hk_session"
 CSRF_HEADER = "x-hearthkeep"
 ENROLLMENT_CODE_TTL_MINUTES = 15
 HEALTH_CACHE_SECONDS = 5.0
+# Groups with their own (per client, global) limits per window; every other group uses the
+# limiter's defaults. Setup's wizard polls install progress every second, so polling has its
+# own, wider group; a 256-bit setup secret can't be guessed at 240 a minute.
+GROUP_LIMITS: dict[str, tuple[int, int]] = {"setup": (60, 240), "setup_poll": (120, 240)}
 
 
 class ApiError(Exception):
@@ -74,7 +78,8 @@ class RateLimiter:
     X-Forwarded-For is ignored). Behind `tailscale serve` every request arrives from 127.0.0.1,
     so there the global cap is what actually bounds guessing. Expired and empty windows are
     pruned on every access and rejected attempts are never stored, so the map cannot grow
-    without bound.
+    without bound. `limits` gives some groups their own (per client, global) limits
+    (`GROUP_LIMITS` by default); the others use `per_client` and `global_limit`.
     """
 
     def __init__(
@@ -83,9 +88,11 @@ class RateLimiter:
         global_limit: int = 30,
         window_seconds: float = 60.0,
         clock: Callable[[], float] = time.monotonic,
+        limits: dict[str, tuple[int, int]] | None = None,
     ) -> None:
         self._per_client = per_client
         self._global = global_limit
+        self._limits = dict(GROUP_LIMITS if limits is None else limits)
         self._window = window_seconds
         self._clock = clock
         self._hits: dict[tuple[str, str | None], deque[float]] = {}
@@ -103,11 +110,12 @@ class RateLimiter:
     def hit(self, group: str, client: str) -> bool:
         """Record an attempt; False (and not recorded) if it exceeds a limit."""
         now = self._clock()
+        per_client, global_limit = self._limits.get(group, (self._per_client, self._global))
         with self._lock:
             self._prune(now)
             mine = self._hits.get((group, client), ())
             everyone = self._hits.get((group, None), ())
-            if len(mine) >= self._per_client or len(everyone) >= self._global:
+            if len(mine) >= per_client or len(everyone) >= global_limit:
                 return False
             self._hits.setdefault((group, client), deque()).append(now)
             self._hits.setdefault((group, None), deque()).append(now)
