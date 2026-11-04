@@ -158,10 +158,14 @@ def folder_move_problem(host: Host, target: Path, current: Path) -> str | None:
     resolved, current = target.resolve(), current.resolve()
     if resolved == current or current in resolved.parents:
         return INSIDE_CURRENT
-    # Another install's folder, or a folder inside one.
-    for folder in (resolved, *resolved.parents):
-        if any((folder / name).exists() for name in DATA_MARKERS):
-            return NOT_EMPTY
+    # Another install's folder, or a folder inside one. A folder that can't be looked into is
+    # refused too: it can't be shown to be clear.
+    try:
+        for folder in (resolved, *resolved.parents):
+            if any((folder / name).exists() for name in DATA_MARKERS):
+                return NOT_EMPTY
+    except OSError:
+        return NOT_EMPTY
     return None
 
 
@@ -223,7 +227,10 @@ async def setup_catalog(_: SetupDep, body: SetupBody, request: Request) -> dict:
 async def setup_install(_: SetupDep, body: SetupInstallBody, request: Request) -> JSONResponse:
     hk = services(request)
     _not_moving(hk)
-    job = await service.start_install(hk, list(body.items), body.make_default, ACTOR)
+    # And again right before the job starts: a move may be accepted while this awaits.
+    job = await service.start_install(
+        hk, list(body.items), body.make_default, ACTOR, guard=lambda: _not_moving(hk)
+    )
     return JSONResponse({"job": job.to_json()}, status_code=202)
 
 

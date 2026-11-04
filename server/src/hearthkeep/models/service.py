@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated, Literal
@@ -138,9 +139,18 @@ def _job_error(exc: NotEnoughSpace | NothingToDo) -> ApiError:
     return ApiError(409, "nothing_to_do")
 
 
-async def start_install(hk: Services, items: list[str], make_default: bool, actor: str) -> Job:
+async def start_install(
+    hk: Services,
+    items: list[str],
+    make_default: bool,
+    actor: str,
+    *,
+    guard: Callable[[], None] | None = None,
+) -> Job:
     """Start a job for these catalog ids (already approved by the caller). Raises `ApiError`
-    `unknown_item`, `doesnt_fit`, `busy`, `no_space` or `nothing_to_do`."""
+    `unknown_item`, `doesnt_fit`, `busy`, `no_space` or `nothing_to_do`. `guard`, when given,
+    is called right before the job starts, with no await in between: it raises `ApiError` to
+    refuse (setup's "the data folder is moving")."""
     installer = installer_for(hk)
     catalog = installer.catalog
     if any(i not in catalog for i in items):
@@ -151,6 +161,8 @@ async def start_install(hk: Services, items: list[str], make_default: bool, acto
     for item_id in items:
         if not fits(catalog[item_id], pc, cards, catalog):
             raise ApiError(400, "doesnt_fit", item=item_id)
+    if guard is not None:
+        guard()
     try:
         job = installer.start(list(items), make_default=make_default)
     except InstallBusy as exc:

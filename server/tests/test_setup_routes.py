@@ -603,3 +603,37 @@ def test_move_refuses_a_folder_inside_another_data_folder(setup_app, tmp_path, f
     (other / "hearthkeep.db").write_bytes(b"")
     r = post(client, "/api/setup/data-folder", {"path": str(other / "inner" / "data")})
     assert (r.status_code, r.json()) == (400, {"reason": "bad_folder", "message": NOT_EMPTY})
+
+
+def test_a_move_accepted_while_an_install_reads_the_pc_stops_the_install(setup_app, tmp_path):
+    """The install checks "not moving" again right before the job starts, with no await in
+    between: a move accepted while it read this PC wins."""
+    client = setup_app()
+    hk = client.app.state.hk
+    real_get = hk.pc.get
+
+    async def get_while_moving():
+        client.mode.next_data_dir = moved(tmp_path)  # the move's 202, during this await
+        return await real_get()
+
+    hk.pc.get = get_while_moving
+    r = post(client, "/api/setup/install", {"items": ["chat-qwen3.5-4b"]})
+    assert (r.status_code, r.json()) == (409, {"reason": "moving"})
+    assert client.fake.calls == [] and client.fake.current() is None
+    assert not [e for e in events(tmp_path) if e["event"] == "models.install_approved"]
+
+
+def test_move_refuses_a_folder_it_cant_look_into(setup_app, tmp_path, folder_host, monkeypatch):
+    """A parent that can't be read (no access, a drive that went away) is refused, not a 500."""
+    client = mover(setup_app)
+    real_exists = Path.exists
+
+    def exists(self, *a, **k):
+        if self.name in host_module.DATA_MARKERS:
+            raise PermissionError("access is denied")
+        return real_exists(self, *a, **k)
+
+    monkeypatch.setattr(Path, "exists", exists)
+    r = post(client, "/api/setup/data-folder", {"path": str(moved(tmp_path))})
+    assert (r.status_code, r.json()) == (400, {"reason": "bad_folder", "message": NOT_EMPTY})
+    assert client.mode.next_data_dir is None and client.control.exit_code is None

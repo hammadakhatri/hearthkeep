@@ -610,19 +610,37 @@ def _setup_folder_contents(folder: Path) -> list[Path] | None:
     return files + dirs
 
 
+_DELETE = 0x00010000
+_OPEN_EXISTING = 3
+_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+
+
 def _removable(path: Path) -> bool:
-    """Whether the file `path` can be deleted now: it is renamed aside and straight back
-    (Windows refuses that, as it refuses the delete, while another program has it open)."""
-    probe = path.with_name(path.name + ".hk-probe")
-    try:
-        os.rename(path, probe)
-    except OSError:
+    """Whether the file `path` can be deleted now, without changing it. On Windows it is
+    opened for delete access with no sharing and closed at once: that open fails while
+    another program has the file open, as the delete would. Other OSes delete open files, so
+    there it is always deletable."""
+    if sys.platform != "win32":
+        return True
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel32.CreateFileW
+    create.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]  # fmt: skip
+    create.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = create(
+        str(path), _DELETE, 0, None, _OPEN_EXISTING,
+        _FILE_FLAG_OPEN_REPARSE_POINT | _FILE_FLAG_BACKUP_SEMANTICS, None,
+    )  # fmt: skip
+    if handle is None or handle == ctypes.c_void_p(-1).value:  # INVALID_HANDLE_VALUE
         return False
-    try:
-        os.rename(probe, path)
-    except OSError as exc:
-        log.warning("a file in the old data folder couldn't be put back: %s", type(exc).__name__)
-        return False
+    kernel32.CloseHandle(handle)
     return True
 
 
