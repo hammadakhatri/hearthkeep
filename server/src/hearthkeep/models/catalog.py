@@ -5,13 +5,13 @@ from __future__ import annotations
 import re
 import tomllib
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 from typing import Any, Literal
 
 import httpx
 
 from hearthkeep.fetching import MODEL_HOST_SUFFIXES, MODEL_HOSTS, allowed_url
-from hearthkeep.models.cards import PACKAGE_DIR, ModelCard, load_cards
+from hearthkeep.models.cards import PACKAGE_DIR, ModelCard, load_shipped_cards
 
 SHIPPED_CATALOG = PACKAGE_DIR / "catalog.toml"
 
@@ -26,8 +26,6 @@ _ITEM_KEYS = {
     "install_dir", "exe", "python", "main", "note",
 }  # fmt: skip
 _FILE_KEYS = {"url", "size", "sha256", "unpack", "save_as"}
-# A folder that does not exist, so `load_cards` returns the shipped cards only.
-_NO_OWNER_FOLDER = Path("no-owner-cards-here")
 
 
 class CatalogError(Exception):
@@ -198,7 +196,7 @@ def load_catalog(text: str | None = None) -> dict[str, CatalogItem]:
     if not isinstance(items, list) or not items:
         raise CatalogError("the catalog has no items")
 
-    cards, _ = load_cards(_NO_OWNER_FOLDER)
+    cards = load_shipped_cards()
     catalog: dict[str, CatalogItem] = {}
     for entry in items:
         item = _item(entry, cards)

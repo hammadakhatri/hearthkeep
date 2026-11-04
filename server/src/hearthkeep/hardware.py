@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from hearthkeep.config import ConfigError
-from hearthkeep.models.cards import ModelCard, load_cards
+from hearthkeep.models.cards import ModelCard, load_shipped_cards
 from hearthkeep.models.catalog import CatalogItem
 from hearthkeep.models.runtime import load_runtime
 from hearthkeep.runtime.gpu import nvidia_smi_query
@@ -99,7 +99,7 @@ def read_pc(
 
 @lru_cache(maxsize=1)
 def _shipped_cards() -> dict[str, ModelCard]:
-    return load_cards(Path("no-owner-cards-here"))[0]
+    return load_shipped_cards()
 
 
 def _smallest_chat(catalog: dict[str, CatalogItem]) -> CatalogItem | None:

@@ -5,7 +5,7 @@ import re
 import pytest
 from copy_rules import forbidden_in
 
-from hearthkeep.models.cards import load_cards
+from hearthkeep.models.cards import load_shipped_cards
 from hearthkeep.models.catalog import SHIPPED_CATALOG, CatalogError, load_catalog
 
 IDS = [
@@ -50,7 +50,7 @@ def test_owner_text_is_plain_words():
 
 
 def test_chat_items_save_as_card_file_names():
-    cards, _ = load_cards(__import__("pathlib").Path("no-such-owner-folder"))
+    cards = load_shipped_cards()
     for item in load_catalog().values():
         if item.kind in ("chat", "image"):
             card = cards[item.card]
@@ -59,7 +59,7 @@ def test_chat_items_save_as_card_file_names():
 
 
 def test_spec_sizes_are_covered():
-    cards, _ = load_cards(__import__("pathlib").Path("no-such-owner-folder"))
+    cards = load_shipped_cards()
     chat = [c for c in cards.values() if c.kind == "chat"]
     assert any(c.vram_gb <= 6 for c in chat)
     assert any(6 < c.vram_gb <= 9 for c in chat)

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from hearthkeep.config import ConfigError
-from hearthkeep.models.cards import CardError, load_cards, load_workflow
+from hearthkeep.models.cards import CardError, load_cards, load_shipped_cards, load_workflow
 from hearthkeep.models.runtime import RuntimeConfig, load_runtime
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -32,6 +32,16 @@ def put_card(data: Path, name: str, body: str) -> None:
     folder = data / "models" / "cards"
     folder.mkdir(parents=True, exist_ok=True)
     (folder / name).write_text(body, encoding="utf-8")
+
+
+def test_load_shipped_cards_ignores_owner_cards(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    put_card(tmp_path, "gemma.toml", GOOD_CHAT.format(id="gemma-4-12b"))
+    put_card(tmp_path, "own.toml", GOOD_CHAT.format(id="owner-chat"))
+    cards = load_shipped_cards()
+    assert set(cards) == set(load_cards(tmp_path / "elsewhere")[0])
+    assert "owner-chat" not in cards and cards["gemma-4-12b"].vram_gb == 11.0
+    assert all(c.source == "shipped" for c in cards.values())
 
 
 def test_shipped_cards_load(tmp_path):

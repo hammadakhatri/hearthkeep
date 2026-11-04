@@ -221,6 +221,13 @@ def load_cards(data_dir: Path) -> tuple[dict[str, ModelCard], list[CardError]]:
     return cards, errors
 
 
+def load_shipped_cards() -> dict[str, ModelCard]:
+    """The cards that ship with Hearthkeep, without any owner card."""
+    cards: dict[str, ModelCard] = {}
+    _load_dir(SHIPPED_CARDS_DIR, "shipped", cards, [])
+    return cards
+
+
 def load_workflow(card: ModelCard, edit: bool = False) -> dict:
     """A fresh copy of the card's ComfyUI API graph, with `{{placeholders}}` intact."""
     name = card.edit_workflow if edit else card.workflow
