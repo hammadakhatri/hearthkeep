@@ -22,6 +22,8 @@ type Props = {
 export function StartupSwitch({ state, onChange, busy = false, error = null }: Props) {
   const labelId = useId()
   const hintId = useId()
+  const badgeId = useId()
+  const elsewhereId = useId()
   const elsewhere = state !== null && state.supported && state.enabled && state.other_data_folder === true
   const checked = state !== null && state.supported && state.enabled && !elsewhere
   const badge =
@@ -42,7 +44,16 @@ export function StartupSwitch({ state, onChange, busy = false, error = null }: P
           <p className="perm-sub" id={hintId}>
             Hearthkeep starts on its own, with no window, when you sign in to the PC.
           </p>
-          {badge && <span className={`badge${checked ? ' green' : ''}`}>{badge}</span>}
+          {badge && (
+            <span id={badgeId} className={`badge${checked ? ' green' : ''}`}>
+              {badge}
+            </span>
+          )}
+          {elsewhere && (
+            <p className="perm-sub" id={elsewhereId}>
+              Switching this on makes it start this Hearthkeep instead.
+            </p>
+          )}
         </div>
         <button
           type="button"
@@ -50,9 +61,12 @@ export function StartupSwitch({ state, onChange, busy = false, error = null }: P
           className="switch"
           aria-checked={checked}
           aria-labelledby={labelId}
-          aria-describedby={hintId}
-          disabled={state === null || !state.supported || busy}
-          onClick={() => onChange(!checked)}
+          aria-describedby={[hintId, badge ? badgeId : '', elsewhere ? elsewhereId : ''].filter(Boolean).join(' ')}
+          aria-disabled={busy || undefined}
+          disabled={state === null || !state.supported}
+          onClick={() => {
+            if (!busy) onChange(!checked)
+          }}
         >
           <span className="switch-knob" aria-hidden="true" />
         </button>

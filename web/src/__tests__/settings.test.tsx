@@ -262,6 +262,29 @@ describe('Settings', () => {
       'aria-checked',
       'false',
     )
+    const line = screen.getByText('Switching this on makes it start this Hearthkeep instead.')
+    expect(forbiddenIn(line.textContent ?? '')).toEqual([])
+  })
+
+  it('the switch toggles from the keyboard and keeps focus while busy', async () => {
+    let release: (r: { body: unknown }) => void = () => {}
+    const { calls } = routes({
+      'POST /api/settings/startup': () => new Promise((resolve) => (release = resolve)),
+    })
+    render(<Settings />)
+    const toggle = await screen.findByRole('switch', { name: 'Start Hearthkeep when I sign in to this PC' })
+    await waitFor(() => expect(toggle).toBeEnabled())
+    // A native button: the browser turns Space and Enter into this click (jsdom does not).
+    expect(toggle.tagName).toBe('BUTTON')
+    toggle.focus()
+    fireEvent.click(toggle)
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-disabled', 'true'))
+    expect(toggle).toHaveFocus()
+    fireEvent.click(toggle) // ignored while busy
+    expect(calls.filter((c) => c.init.method === 'POST' && c.path === '/api/settings/startup')).toHaveLength(1)
+    release({ body: { supported: true, enabled: true, other_data_folder: false } })
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'))
+    expect(toggle).toHaveFocus()
   })
 
   it('start at login says only on Windows elsewhere', async () => {

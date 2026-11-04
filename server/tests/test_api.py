@@ -1434,3 +1434,25 @@ def test_startup_command_is_gone(harness, startup_host):
         "/api/settings/startup", json={"enabled": True, "step_up_token": token}, headers=CSRF
     )
     assert "command" not in on.json()
+
+
+def test_startup_off_that_leaves_the_task_on_is_a_502(harness, startup_host):
+    client = signed_in(harness)
+    token = step_up(client, "settings")
+    body = {"enabled": True, "step_up_token": token}
+    assert client.post("/api/settings/startup", json=body, headers=CSRF).status_code == 200
+    startup_host.disable_startup = lambda *, run=None: False  # reports nothing removed, task stays
+    off = client.post("/api/settings/startup", json={"enabled": False}, headers=CSRF)
+    assert off.status_code == 502 and off.json()["reason"] == "startup_failed"
+    assert not [e for e in harness.events() if e["event"] == "startup.disabled"]
+
+
+def test_startup_enable_oserror_is_a_plain_502(harness, startup_host):
+    client = signed_in(harness)
+    startup_host.enable_error = OSError("disk full")
+    token = step_up(client, "settings")
+    r = client.post(
+        "/api/settings/startup", json={"enabled": True, "step_up_token": token}, headers=CSRF
+    )
+    assert r.status_code == 502 and r.json()["reason"] == "startup_failed"
+    assert "disk full" not in r.text

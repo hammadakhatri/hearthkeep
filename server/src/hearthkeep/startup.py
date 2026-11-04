@@ -197,14 +197,18 @@ def enable(data_dir: Path, *, run: Run = subprocess.run, pythonw: Path | None = 
             "start without a window. Reinstall Python with its standard files."
         )
     xml = task_xml(pythonw=exe, data_dir=data, user=_current_user())
-    fd, name = tempfile.mkstemp(prefix="hearthkeep-task-", suffix=".xml")
+    name = None
     try:
+        fd, name = tempfile.mkstemp(prefix="hearthkeep-task-", suffix=".xml")
         with os.fdopen(fd, "w", encoding="utf-16") as f:
             f.write(xml)
         result = _call(run, "/Create", "/TN", TASK_NAME, "/XML", name, "/F")
+    except OSError:
+        raise StartupError("The start-at-login task file couldn't be written.") from None
     finally:
-        with contextlib.suppress(OSError):
-            os.unlink(name)
+        if name is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(name)
     clear_cache()
     if result.returncode != 0:
         raise StartupError(f"Windows refused to create the task: {_error_text(result)}")

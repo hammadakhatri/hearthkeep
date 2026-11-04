@@ -763,6 +763,23 @@ def test_setup_finishes_when_startup_fails(tmp_path, capsys, monkeypatch, run_cm
     assert len(run_cmd_setup.host.spawned) == 1  # the launcher still started
 
 
+def test_setup_finishes_when_startup_hits_an_oserror(tmp_path, capsys, monkeypatch, run_cmd_setup):
+    def broken(data, *, run=None):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(run_cmd_setup.host, "enable_startup", broken)
+    assert run_cmd_setup(tmp_path / "data") == 0
+    out = capsys.readouterr().out
+    assert STARTUP_NOT_TURNED_ON in out and FINISHED in out and "disk full" not in out
+
+
+def test_setup_relocate_enables_startup_once_for_the_new_folder(tmp_path, run_cmd_setup):
+    new = tmp_path / "elsewhere" / "data"
+    run_cmd_setup.run_server.moves = [new]
+    assert run_cmd_setup(tmp_path / "data") == 0
+    assert run_cmd_setup.host.enabled == [new.resolve()]
+
+
 def test_setup_waits_for_the_launcher_and_says_when_it_is_slow(tmp_path, capsys, run_cmd_setup):
     waited = []
 

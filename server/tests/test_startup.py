@@ -255,3 +255,18 @@ def test_strict_status_still_reads_a_missing_task_as_off(windows):
     assert startup.status(run=FakeSchtasks(), strict=True) == startup.StartupStatus(
         True, False, None
     )
+
+
+def test_enable_turns_a_temp_file_oserror_into_startup_error(monkeypatch, tmp_path):
+    exe = tmp_path / "pythonw.exe"
+    exe.write_bytes(b"")
+    monkeypatch.setattr(startup, "is_windows", lambda: True)
+
+    def broken(**kw):
+        raise OSError("disk full: secret")
+
+    monkeypatch.setattr(startup.tempfile, "mkstemp", broken)
+    ran = []
+    with pytest.raises(startup.StartupError) as exc:
+        startup.enable(tmp_path, run=lambda *a, **k: ran.append(a), pythonw=exe)
+    assert "secret" not in str(exc.value) and ran == []
