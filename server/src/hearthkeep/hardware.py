@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import ctypes
 import shutil
 import sys
+import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -95,6 +98,41 @@ def read_pc(
         ram_gb=memory(),
         free_disk_gb=free_gb,
     )
+
+
+PC_CACHE_SECONDS = 60.0
+# Before the first read: no GPU known, so the CPU build (never CUDA on a guess).
+_UNKNOWN_PC = PcInfo(gpu_name=None, vram_gb=None, nvidia=False, ram_gb=None, free_disk_gb=0.0)
+
+
+class PcCache:
+    """`read` (which runs nvidia-smi) off the event loop, its answer kept for `ttl` seconds.
+    `get()` refreshes when the answer is stale; `last()` never reads, so it can be called on
+    the loop (the installer's `pc`)."""
+
+    def __init__(
+        self,
+        read: Callable[[], PcInfo],
+        *,
+        ttl: float = PC_CACHE_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._read = read
+        self._ttl = ttl
+        self._clock = clock
+        self._value: PcInfo | None = None
+        self._at = 0.0
+        self._lock = asyncio.Lock()
+
+    async def get(self) -> PcInfo:
+        async with self._lock:
+            if self._value is None or self._clock() - self._at >= self._ttl:
+                self._value = await asyncio.to_thread(self._read)
+                self._at = self._clock()
+            return self._value
+
+    def last(self) -> PcInfo:
+        return self._value if self._value is not None else _UNKNOWN_PC
 
 
 @lru_cache(maxsize=1)

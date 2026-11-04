@@ -52,6 +52,7 @@ from hearthkeep.api.common import (
     RateLimiter,
     Services,
     error_response,
+    record,
     services,
 )
 from hearthkeep.approvals import ApprovalStore
@@ -68,7 +69,9 @@ from hearthkeep.github.deps import DepsCache, sweep_install_jobs
 from hearthkeep.github.git import GitRunner
 from hearthkeep.github.repos import RepoStore, sweep_repo_folders
 from hearthkeep.github.testrun import RepoTestRunner
+from hearthkeep.hardware import PcCache, PcInfo, read_pc
 from hearthkeep.images import ImageStore
+from hearthkeep.installer import Installer
 from hearthkeep.lifecycle import ServerControl
 from hearthkeep.numbercheck import NumberChecker
 from hearthkeep.push import PushSender, PushSubscriptions, VapidKeys
@@ -315,6 +318,8 @@ def create_app(
     addon_probes: Probes | None = None,
     control: ServerControl | None = None,
     setup: SetupMode | None = None,
+    installer_factory: Callable[..., Installer] = Installer,
+    pc_reader: Callable[[Path], PcInfo] = read_pc,
 ) -> FastAPI:
     """`sandbox`, when given (tests), is used as is; otherwise one is made when Docker is
     available. Without one the `python` tool is still offered and answers that Docker is
@@ -323,7 +328,9 @@ def create_app(
     `github_transport` does the same for the GitHub client, and `git` (a runner on a local
     bare repo) for host git. `addon_probes` (tests) replaces how the add-on checks are made.
     `setup`, given by `hearthkeep setup`, turns on setup mode (`/setup` and `/api/setup/*`);
-    the control then defaults to an unsupervised setup-mode one."""
+    the control then defaults to an unsupervised setup-mode one. `installer_factory` (called
+    like `Installer(data_dir, control, record=..., pc=...)`) and `pc_reader` (called with the
+    data folder, off the event loop) replace the model installer and the PC check in tests."""
     # The static files' types come from `mimetypes`, which on Windows reads the registry: a
     # .js mapped to text/plain there would stop the service worker from registering.
     mimetypes.add_type("text/javascript", ".js")
@@ -352,6 +359,7 @@ def create_app(
         push: PushSender | None = None
         sent: SentStore | None = None
         addons_task: asyncio.Task | None = None
+        installer: Installer | None = None
         try:
             recover_after_restart(conn)
             approvals = ApprovalStore(
@@ -449,6 +457,19 @@ def create_app(
             addons = Addons(settings, model_setup(stack, settings), probes, gpu)
             registry.addons = addons
             sessions = SessionStore(conn, settings.session_idle_days, clock=clock)
+            data_dir = Path(settings.data_dir)
+            pc = PcCache(lambda: pc_reader(data_dir))
+
+            def record_install(event: str, detail: dict) -> None:
+                # Ids, sizes and states only (the installer's own details).
+                record(app.state.hk, "system", event, detail)
+
+            try:
+                installer = installer_factory(
+                    data_dir, server_control, record=record_install, pc=pc.last
+                )
+            except Exception as exc:
+                _log.warning("could not set up model downloads: %s", type(exc).__name__)
             app.state.hk = Services(
                 settings=settings,
                 conn=conn,
@@ -490,6 +511,8 @@ def create_app(
                 repo_tests=repo_tests,
                 addons=addons,
                 chat_mode=stack.chat_mode,
+                installer=installer,
+                pc=pc,
             )
             # One full check before serving, so nobody sees the not-ready defaults; a failing
             # probe is caught inside, and the loop sleeps before its first. Anything else that
@@ -502,6 +525,12 @@ def create_app(
             yield
         finally:
             # Also runs when setup above fails part way: the connection is always closed.
+            try:
+                # First: the job's last audit row needs the connection. `.part` files stay.
+                if installer is not None:
+                    await installer.shutdown()
+            except Exception as exc:
+                _log.warning("could not stop the model download: %s", type(exc).__name__)
             try:
                 if addons_task is not None:
                     addons_task.cancel()

@@ -18,6 +18,7 @@ export type StepUpPurpose =
   | 'github_token'
   | 'add_repo'
   | 'server'
+  | 'download'
 
 export type Device = { id: string; device_name: string; created_at: string; current: boolean }
 

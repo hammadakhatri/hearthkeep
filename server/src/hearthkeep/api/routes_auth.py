@@ -42,6 +42,7 @@ StepUpPurpose = Literal[
     "add_repo",
     "delete",
     "server",
+    "download",
 ]
 # What a `delete` step-up is for: exactly one chat, one file or one repo.
 STEP_UP_TARGET = r"^(chat|file|repo):[A-Za-z0-9_-]{1,32}$"
