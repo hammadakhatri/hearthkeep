@@ -173,7 +173,7 @@ def _item(raw: object, cards: dict[str, ModelCard]) -> CatalogItem:
             raise CatalogError(
                 f"{where}: save_as must be exactly the card's files {sorted(card.files)}"
             )
-    for key in ("install_dir", "python", "main"):
+    for key in ("install_dir", "exe", "python", "main"):
         value = getattr(item, key)
         if value:
             _check_relative(value, key, where)

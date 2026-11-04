@@ -118,6 +118,8 @@ BREAKS = {
     ),
     "dotdot install_dir": _sub("tools/llama.cpp/b12099-vulkan", "tools/../b12099-vulkan"),
     "windows drive install_dir": _sub("tools/llama.cpp/b12099-vulkan", "C:/tools/b12099-vulkan"),
+    "dotdot exe": _sub('exe = "llama-server.exe"', 'exe = "../llama-server.exe"'),
+    "absolute exe": _sub('exe = "llama-server.exe"', 'exe = "/llama-server.exe"'),
     "bad unpack": _sub('unpack = "7z"', 'unpack = "rar"'),
     "not toml": lambda text: "this is = = not toml",
     "wrong schema": _sub("schema = 1", "schema = 2"),
