@@ -6,6 +6,7 @@ import logging
 import pytest
 from copy_rules import forbidden_in
 
+from hearthkeep import addons
 from hearthkeep.agent import loop
 from hearthkeep.github import deps
 from hearthkeep.models.cards import load_cards
@@ -74,6 +75,22 @@ def test_exact_copy():
         "The chat server rejected Hearthkeep's key. "
         "Open Settings › Add-ons to see the chat model's state."
     )
+
+
+@pytest.mark.parametrize(
+    ("key", "screen"),
+    [
+        (("chat", "not_set_up"), "Settings › Chat model"),
+        (("images", "not_set_up"), "Settings › Image models"),
+    ],
+)
+def test_addons_not_set_up_names_the_model_screens(key, screen):
+    message, action, short = addons._COPY[key]
+    assert screen in message and forbidden_in(message) == []
+    assert "docs" not in message.lower()
+    assert action == ("open_setup" if key[0] == "chat" else "install")
+    if key[0] == "chat":
+        assert short == "Needs a chat model"
 
 
 def test_unavailable_message_still_maps_by_identity():

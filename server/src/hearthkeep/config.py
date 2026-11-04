@@ -103,6 +103,22 @@ def load_settings(data_dir: Path) -> Settings:
     return settings
 
 
+def check_chat_base_url(url: str) -> None:
+    """Raise ConfigError unless `url` is http(s) on a loopback host: the rule for config.toml's
+    chat_base_url, also applied when the app points chat at another server."""
+    try:
+        chat = urlparse(url)
+        hostname = chat.hostname
+    except ValueError:
+        hostname = None
+        chat = None
+    if chat is None or chat.scheme not in ("http", "https") or hostname not in LOOPBACK_HOSTS:
+        raise ConfigError(
+            f"chat_base_url '{url}' must point at a loopback host "
+            "(127.0.0.1, ::1, localhost): Hearthkeep only talks to local models."
+        )
+
+
 def _validate(s: Settings) -> None:
     if s.host not in LOOPBACK_HOSTS:
         raise ConfigError(
@@ -115,12 +131,7 @@ def _validate(s: Settings) -> None:
         raise ConfigError(f"public_origin '{s.public_origin}' is not a valid http(s) URL")
     if origin.scheme == "http" and hostname not in LOOPBACK_HOSTS:
         raise ConfigError("public_origin must use https unless it is localhost")
-    chat = urlparse(s.chat_base_url)
-    if chat.scheme not in ("http", "https") or chat.hostname not in LOOPBACK_HOSTS:
-        raise ConfigError(
-            f"chat_base_url '{s.chat_base_url}' must point at a loopback host "
-            "(127.0.0.1, ::1, localhost): Hearthkeep only talks to local models."
-        )
+    check_chat_base_url(s.chat_base_url)
     for key, lo, hi in _RANGES:
         value = getattr(s, key)
         if value < lo or (hi is not None and value > hi):

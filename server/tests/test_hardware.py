@@ -1,11 +1,13 @@
+import asyncio
 import subprocess
+import threading
 from collections import namedtuple
 from dataclasses import replace
 
 import pytest
 
 from hearthkeep import hardware
-from hearthkeep.hardware import PcInfo, fits, read_pc, recommend, total_memory_gb
+from hearthkeep.hardware import PcCache, PcInfo, fits, read_pc, recommend, total_memory_gb
 from hearthkeep.models.cards import load_cards
 from hearthkeep.models.catalog import load_catalog
 from hearthkeep.runtime import gpu
@@ -183,3 +185,27 @@ def test_read_pc_survives_unreadable_models_toml_and_disk(tmp_path, monkeypatch)
     monkeypatch.setattr(hardware, "load_runtime", broken)
     info = read_pc(tmp_path, smi=lambda: ("GPU", 8.0), memory=lambda: None, disk=no_disk)
     assert info.vram_gb == 8.0 and info.free_disk_gb == 0.0
+
+
+def test_pc_cache_reads_off_the_loop_and_keeps_the_answer_a_minute():
+    now = [0.0]
+    reads: list[bool] = []
+    pc = PcInfo(gpu_name="GPU", vram_gb=8.0, nvidia=True, ram_gb=16.0, free_disk_gb=100.0)
+
+    def read():
+        reads.append(threading.current_thread() is threading.main_thread())
+        return pc
+
+    cache = PcCache(read, clock=lambda: now[0])
+    assert cache.last().nvidia is False  # before the first read: no GPU assumed, nothing read
+
+    async def run():
+        assert await cache.get() == pc
+        now[0] = 59.0
+        await cache.get()
+        assert len(reads) == 1
+        now[0] = 60.0
+        await cache.get()
+
+    asyncio.run(run())
+    assert reads == [False, False] and cache.last() == pc

@@ -101,7 +101,7 @@ _READY = "Ready."
 # (id, state) -> (message, action, short)
 _COPY: dict[tuple[AddonId, str], tuple[str, str | None, str | None]] = {
     ("chat", "not_set_up"): (
-        "Set up your chat model to start chatting.",
+        "Choose a chat model in Settings › Chat model to start chatting.",
         "open_setup",
         "Needs a chat model",
     ),
@@ -134,7 +134,7 @@ _COPY: dict[tuple[AddonId, str], tuple[str, str | None, str | None]] = {
     ),
     ("analysis", "ready"): (_READY, None, None),
     ("images", "not_set_up"): (
-        "ComfyUI and an image model aren't set up on this PC.",
+        "Image making isn't set up on this PC yet. Add it in Settings › Image models.",
         "install",
         "Needs Images",
     ),

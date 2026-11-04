@@ -246,6 +246,10 @@ class Installer:
         # Only a download or the tar run may be interrupted by cancelling the task.
         self._interruptible = False
 
+    @property
+    def catalog(self) -> dict[str, CatalogItem]:
+        return self._catalog
+
     # ---- paths ----------------------------------------
 
     @property
