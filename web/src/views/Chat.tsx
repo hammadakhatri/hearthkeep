@@ -12,7 +12,7 @@ import { Headline, TurnFindings } from '../components/FindingsCard'
 import { AttachedFiles, FileChips, chipFromInfo, useChatFiles, type FileChipItem } from '../components/FileChips'
 import { attachedPhotoLine, PhotoChip, uploadUrl, usePhoto } from '../components/Photo'
 import { WorkedSteps } from '../components/WorkedSteps'
-import { useAddon, useAddonsState, useOpenSettings } from '../shell/AddonsContext'
+import { actionTarget, useAddon, useAddonsState, useOpenSettings } from '../shell/AddonsContext'
 import { Composer } from '../shell/Composer'
 import { AlertIcon, ChatsIcon, NewChatIcon, TrashIcon } from '../shell/icons'
 import {
@@ -141,7 +141,7 @@ export function Chat({
   const openSettings = useOpenSettings()
   // Unknown add-ons never block: the composer behaves as it did before add-ons.
   const blocked =
-    chat && chatBlocks(chat) ? { message: chat.message, onSetUp: () => openSettings('addon-chat') } : null
+    chat && chatBlocks(chat) ? { message: chat.message, onSetUp: () => openSettings(actionTarget(chat)) } : null
   const loadingModel = chat !== null && (chat.state === 'starting' || chat.details.loaded === false)
 
   const learnFiles = useCallback(async (chatId: string) => {

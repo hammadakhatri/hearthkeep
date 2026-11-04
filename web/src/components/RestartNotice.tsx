@@ -30,7 +30,7 @@ function useServerInfo(): { info: ServerInfo | null; failed: boolean } {
 }
 
 /** Where a restart was asked for, so only that place shows its progress and errors. */
-export type RestartPlace = 'addons' | 'general'
+export type RestartPlace = 'addons' | 'general' | 'models'
 
 export type Restart = {
   restarting: boolean
@@ -86,22 +86,31 @@ export type ServerState = {
   /** Stopped from this page; stays so for the page's life. */
   stopped: boolean
   markStopped(): void
+  /** Something on this page changed what needs a restart (a model download or switch). */
+  noteRestartNeeded(): void
 }
 
 const ServerContext = createContext<ServerState | null>(null)
 
 /** One ask of the server and one restart for everything in Settings that shows them. */
 export function ServerProvider({ wait, children }: { wait?: WaitOptions; children: ReactNode }) {
-  const { info, failed } = useServerInfo()
-  const restart = useRestart(info, wait)
+  const { info: asked, failed } = useServerInfo()
+  const restart = useRestart(asked, wait)
+  const [noted, setNoted] = useState(false)
+  const noteRestartNeeded = useCallback(() => setNoted(true), [])
+  // The server was asked once; a change made since then needs a restart too.
+  const info = useMemo(
+    () => (asked && noted && !asked.restart_needed ? { ...asked, restart_needed: true } : asked),
+    [asked, noted],
+  )
   const [stopped, setStopped] = useState(serverSession.stopped)
   const markStopped = useCallback(() => {
     serverSession.stopped = true
     setStopped(true)
   }, [])
   const value = useMemo(
-    () => ({ info, failed, restart, stopped, markStopped }),
-    [info, failed, restart, stopped, markStopped],
+    () => ({ info, failed, restart, stopped, markStopped, noteRestartNeeded }),
+    [info, failed, restart, stopped, markStopped, noteRestartNeeded],
   )
   return <ServerContext.Provider value={value}>{children}</ServerContext.Provider>
 }
@@ -135,7 +144,7 @@ export function RestartNotice({ place }: { place: RestartPlace }) {
           Restart now
         </button>
       </div>
-      {place === 'addons' && <RestartStatus restart={restart} place={place} />}
+      {place !== 'general' && <RestartStatus restart={restart} place={place} />}
     </div>
   )
 }

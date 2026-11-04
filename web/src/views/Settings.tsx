@@ -4,6 +4,7 @@ import { AddonsPanel } from '../components/AddonsPanel'
 import { DevicesPanel } from '../components/DevicesPanel'
 import { FoldersPanel } from '../components/FoldersPanel'
 import { GitHubPanel } from '../components/GitHubPanel'
+import { ModelsPanel } from '../components/ModelsPanel'
 import { NotificationToggle } from '../components/NotificationToggle'
 import { ServerProvider } from '../components/RestartNotice'
 import { ServerPanel } from '../components/ServerPanel'
@@ -121,10 +122,11 @@ export function Settings({ focus, onFocused }: Props = {}) {
   }, [target, addonsLoaded, onFocused])
 
   return (
-    // One ask of the server for the restart notice in Add-ons and the General section.
+    // One ask of the server for the restart notice in Add-ons, the models and the General section.
     <ServerProvider>
       <div className="settings">
         <AddonsPanel onNavigate={inShell ? undefined : setOwn} onLoaded={onLoaded} />
+        <ModelsPanel />
         <DevicesPanel />
         <FoldersPanel />
         <GitHubPanel />

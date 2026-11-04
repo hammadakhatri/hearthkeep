@@ -117,6 +117,12 @@ export const InfoIcon = (p: IconProps) => (
   </Icon>
 )
 
+export const CheckIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M5 12.5l4.5 4.5L19 7.5" />
+  </Icon>
+)
+
 export const BackIcon = (p: IconProps) => (
   <Icon {...p}>
     <path d="M15 5l-7 7 7 7" />

@@ -7,7 +7,7 @@ import { AddonsProvider, actionTarget, useAddon, useOpenSettings } from '../shel
 import { AppShell } from '../shell/AppShell'
 import { Settings } from '../views/Settings'
 import { forbiddenIn } from '../test/copyRules'
-import { addonList, addonsReady, addonsWith, headerOf, healthy, mockFetch, serverInfo } from '../test/fetch'
+import { addonList, addonsReady, addonsWith, headerOf, healthy, mockFetch, modelsIdle, serverInfo } from '../test/fetch'
 
 const renders = vi.hoisted(() => ({ count: 0 }))
 
@@ -39,6 +39,7 @@ const settingsRoutes = {
   'GET /api/github': { body: { git: true, connected: false, login: null } },
   'GET /api/settings/startup': { body: { supported: true, enabled: false, command: null } },
   'GET /api/server': serverInfo(),
+  ...modelsIdle,
 }
 
 function card(id: string): HTMLElement {

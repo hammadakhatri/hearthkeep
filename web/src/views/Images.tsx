@@ -67,7 +67,7 @@ const IMAGES_NOT_SET_UP: Addon = {
   requires: 'ComfyUI and at least one image model.',
   state: 'not_set_up',
   ready: false,
-  message: "ComfyUI and an image model aren't set up on this PC.",
+  message: "Image making isn't set up on this PC yet. Add it in Settings › Image models.",
   action: 'install',
   short: 'Needs Images',
   details: {},

@@ -66,5 +66,12 @@ export function serverInfo(over: Record<string, unknown> = {}): Reply {
 }
 export const noUpdateNote = { body: { note: null } }
 
+/** Settings › Chat model and Image models with nothing to show, for Settings tests about other
+ *  sections: downloads unavailable and no job. */
+export const modelsIdle: Record<string, Reply> = {
+  'GET /api/models/catalog': { status: 503, body: { reason: 'unavailable' } },
+  'GET /api/models/install': { body: { job: null } },
+}
+
 // Add-ons fixtures live in addonFixtures.ts; re-exported here with the other replies.
 export { addonList, addonsReady, addonsWith } from './addonFixtures'

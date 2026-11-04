@@ -31,6 +31,8 @@ function badgeFor(addon: Addon): Badge {
 
 /** The one button an add-on's card gets, when its fix leads to a screen that acts. */
 function actionLabel(addon: Addon): string | null {
+  if (addon.id === 'chat' && addon.action === 'open_setup') return 'Choose a chat model'
+  if (addon.id === 'images' && addon.action === 'install') return 'Add image models'
   if (addon.action === 'add_token') return 'Add a GitHub token'
   if (addon.action === 'turn_on') return 'Start at login settings'
   return null

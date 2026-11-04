@@ -5,6 +5,8 @@ import type { Addon, AddonId, AddonsState } from '../api/addons'
 export type SettingsAnchor =
   | 'settings-addons'
   | `addon-${AddonId}`
+  | 'settings-chat'
+  | 'settings-images'
   | 'settings-github'
   | 'settings-folders'
   | 'settings-startup'
@@ -35,9 +37,12 @@ export function useOpenSettings(): (anchor: SettingsAnchor) => void {
 
 function noop() {}
 
-/** The screen that can act on an add-on's fix. Only two actions lead somewhere that acts
- *  yet; every other one leads to the add-on's own card. */
+/** The screen that can act on an add-on's fix. Setting up chat and installing images lead to
+ *  Settings › Chat model and Image models; every action without such a screen leads to the
+ *  add-on's own card. */
 export function actionTarget(addon: Addon): SettingsAnchor {
+  if (addon.id === 'chat' && addon.action === 'open_setup') return 'settings-chat'
+  if (addon.id === 'images' && addon.action === 'install') return 'settings-images'
   if (addon.action === 'add_token') return 'settings-github'
   if (addon.action === 'turn_on') return 'settings-startup'
   return `addon-${addon.id}`
