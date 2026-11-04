@@ -5,6 +5,7 @@ import { QrCode } from '../components/QrCode'
 import { Settings } from '../views/Settings'
 import { forbiddenIn } from '../test/copyRules'
 import { bodyOf, mockFetch, modelsIdle, serverInfo, type Handler, type Reply } from '../test/fetch'
+import { STARTUP_FAILED } from '../components/StartupSwitch'
 
 vi.mock('../api/webauthn', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../api/webauthn')>()),
@@ -251,6 +252,28 @@ describe('Settings', () => {
     expect(forbiddenIn(alert.textContent ?? '')).toEqual([])
     expect(toggle).toHaveAttribute('aria-checked', 'false')
     expect(toggle).toBeEnabled()
+  })
+
+  it("a server sentence on any other error isn't shown: the plain one is", async () => {
+    routes({
+      'POST /api/settings/startup': { status: 409, body: { reason: 'busy', message: 'Something internal happened.' } },
+    })
+    render(<Settings />)
+    const toggle = await screen.findByRole('switch', { name: 'Start Hearthkeep when I sign in to this PC' })
+    await waitFor(() => expect(toggle).toBeEnabled())
+    fireEvent.click(toggle)
+    const alert = await within(startupSection()).findByRole('alert')
+    expect(alert).toHaveTextContent(STARTUP_FAILED)
+    expect(alert).not.toHaveTextContent('Something internal happened.')
+  })
+
+  it('a startup_failed answer with no sentence uses the shared one', async () => {
+    routes({ 'POST /api/settings/startup': { status: 502, body: { reason: 'startup_failed' } } })
+    render(<Settings />)
+    const toggle = await screen.findByRole('switch', { name: 'Start Hearthkeep when I sign in to this PC' })
+    await waitFor(() => expect(toggle).toBeEnabled())
+    fireEvent.click(toggle)
+    expect(await within(startupSection()).findByRole('alert')).toHaveTextContent(STARTUP_FAILED)
   })
 
   it('start at login says when it is on for another data folder', async () => {

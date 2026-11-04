@@ -132,6 +132,7 @@ export function SetupPage({ onLeave, retryMs = BUSY_RETRY_MS, pollMs = POLL_MS, 
   const [chatNotice, setChatNotice] = useState<string | null>(null)
   // Start at login as setup will leave it, from the server (ruling Q15).
   const [startup, setStartup] = useState<StartupState | null>(null)
+  const [startupUnknown, setStartupUnknown] = useState(false)
   const [startupBusy, setStartupBusy] = useState(false)
   const [startupError, setStartupError] = useState<string | null>(null)
   const [passkeyMade, setPasskeyMade] = useState(false)
@@ -255,10 +256,14 @@ export function SetupPage({ onLeave, retryMs = BUSY_RETRY_MS, pollMs = POLL_MS, 
   const loadStartup = useCallback(() => {
     if (!secret) return
     patiently(() => setupStartupStatus(secret))
-      .then((s) => alive.current && setStartup(s))
+      .then((s) => {
+        if (!alive.current) return
+        setStartup(s)
+        setStartupUnknown(false)
+      })
       .catch((e) => {
-        // Not known: show the server's default choice (on) rather than a switch that never loads.
-        if (!setupGone(e, { over: false })) setStartup((s) => s ?? { supported: true, enabled: true })
+        // Not known: the switch says so and can't be used, and Done claims nothing (ruling Q15a).
+        if (!setupGone(e, { over: false })) setStartupUnknown(true)
       })
   }, [secret])
 
@@ -580,6 +585,7 @@ export function SetupPage({ onLeave, retryMs = BUSY_RETRY_MS, pollMs = POLL_MS, 
             chosen={choices.chosen}
             onChoose={choose}
             startup={startup}
+            startupUnknown={startupUnknown && startup === null}
             startupBusy={startupBusy}
             startupError={startupError}
             onStartup={(enabled) => void changeStartup(enabled)}
