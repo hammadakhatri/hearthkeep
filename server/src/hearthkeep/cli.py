@@ -609,23 +609,29 @@ def _setup_folder_contents(folder: Path) -> list[Path] | None:
     return files + dirs
 
 
-def _remove_setup_folder(folder: Path) -> bool:
-    """Remove a data folder this setup run made and is moving away from, only when it holds
-    nothing but setup's own files (an owner's file anywhere in it keeps all of it). Whether it
-    is gone; a failure part way leaves the rest, and is logged by type only."""
+def _remove_setup_folder(folder: Path, *, keep_folder: bool = False) -> bool:
+    """Take setup's own files out of a data folder this run is moving away from, only when it
+    holds nothing else (an owner's file anywhere in it keeps all of it), and then the folder
+    itself unless `keep_folder` (it was there before this run). The secret store goes with its
+    master key in the OS keyring. Whether it was all done; a failure part way leaves the rest,
+    and is logged by type only."""
     if folder.is_symlink() or not folder.is_dir():
         return False
     contents = _setup_folder_contents(folder)
     if contents is None:
         return False
+    store = folder / "secrets" / "store.bin"
     try:
+        if store in contents:
+            SecretStore(folder).forget()  # the file, then its key
         for path in contents:
             if path.is_dir():
                 path.rmdir()  # never a folder with anything still in it
             else:
-                path.unlink()
-        folder.rmdir()
-    except OSError as exc:
+                path.unlink(missing_ok=True)
+        if not keep_folder:
+            folder.rmdir()
+    except (OSError, SecretStoreError) as exc:
         log.warning("the old data folder couldn't be removed: %s", type(exc).__name__)
         return False
     return True
@@ -751,6 +757,7 @@ def cmd_setup(
     moved = False
     while True:
         setup.created_folder = new_folder
+        setup.folder_existed = data.exists()
         # Protected before Hearthkeep writes anything in it. A folder that already has its
         # database is an install in use and is kept as it is (C2); one with only a config.toml
         # the owner made first (for Tailscale) holds nothing of theirs yet, so it is protected.
@@ -835,7 +842,9 @@ def cmd_setup(
                 return 1
             print(MOVING_DATA)
             if setup.created_folder:
-                _remove_setup_folder(data)  # only when nothing but setup's own files is there
+                # Only when nothing but setup's own files is there; a folder that was there
+                # before this run is emptied of them and kept.
+                _remove_setup_folder(data, keep_folder=setup.folder_existed)
             data, new_folder, moved = target.resolve(), True, True
             write_record = record_follows_moves
             continue

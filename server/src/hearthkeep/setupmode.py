@@ -23,6 +23,9 @@ class SetupMode:
         # Whether this run made the data folder (so it may still move it, before any download).
         # `cmd_setup` sets it for each folder it sets up.
         self.created_folder = False
+        # Whether that folder was there before this run (empty, or new to Hearthkeep): a move
+        # then takes only setup's own files out of it and keeps the folder itself.
+        self.folder_existed = False
         # The folder the setup page chose to move the data to; `cmd_setup` moves it there.
         self.next_data_dir: Path | None = None
         # Whether to start Hearthkeep at login once setup is finished (chosen in the wizard).
