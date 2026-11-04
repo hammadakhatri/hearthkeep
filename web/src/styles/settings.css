@@ -60,6 +60,13 @@
   background: var(--s1);
 }
 
+/* A model row is a .device first: the older .model row rule (tools.css) must not shrink and
+   centre its grid. */
+.device.model {
+  flex-wrap: nowrap;
+  align-items: stretch;
+}
+
 .device + .device {
   border-top: 1px solid var(--line);
 }

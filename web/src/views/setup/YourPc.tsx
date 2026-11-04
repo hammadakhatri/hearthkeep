@@ -1,4 +1,4 @@
-import { useId, useState, type FormEvent } from 'react'
+import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import type { SetupPc } from '../../api/setup'
 import { AlertIcon } from '../../shell/icons'
 import { SETUP_COPY } from './copy'
@@ -32,6 +32,16 @@ export function YourPc({ info, failed, onReload, canMoveHere, moving, onMove, fo
   const [path, setPath] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const changeRef = useRef<HTMLButtonElement>(null)
+  const wasChanging = useRef(false)
+
+  // The form opens with the cursor in its field; closing it gives focus back to "Change…".
+  useEffect(() => {
+    if (changing) inputRef.current?.focus()
+    else if (wasChanging.current) changeRef.current?.focus()
+    wasChanging.current = changing
+  }, [changing])
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -77,11 +87,11 @@ export function YourPc({ info, failed, onReload, canMoveHere, moving, onMove, fo
             <dt>Free space</dt>
             <dd>{`${Math.round(info.pc.free_disk_gb)} GB`}</dd>
           </div>
-          <div>
+          <div className="wide">
             <dt>Data folder</dt>
             <dd>
               <span className="folder-path">{info.data_dir}</span>
-              {info.data_dir_default && <span className="perm-sub"> {SETUP_COPY.defaultFolder}</span>}
+              {info.data_dir_default && <span className="perm-sub">{SETUP_COPY.defaultFolder}</span>}
             </dd>
           </div>
         </dl>
@@ -92,6 +102,7 @@ export function YourPc({ info, failed, onReload, canMoveHere, moving, onMove, fo
       {info && info.can_move_data && canMoveHere && !moving && !changing && (
         <div className="settings-actions">
           <button
+            ref={changeRef}
             type="button"
             className="btn ghost"
             onClick={() => {
@@ -109,6 +120,7 @@ export function YourPc({ info, failed, onReload, canMoveHere, moving, onMove, fo
           <label className="field">
             <span>New data folder</span>
             <input
+              ref={inputRef}
               className="input"
               type="text"
               value={path}

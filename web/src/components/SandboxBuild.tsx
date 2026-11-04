@@ -149,7 +149,10 @@ export function SandboxBuild({ api, docker = 'ready', onCheckAgain, onFinished, 
     if (build.state !== 'failed' && !onCheckAgain) return null
     return (
       <div className="sandbox-build">
-        <p className="perm-sub">Start Docker Desktop, then Check again.</p>
+        {/* The wizard's card already says it; a build that found it out says it here. */}
+        {(build.state === 'failed' || !onCheckAgain) && (
+          <p className="perm-sub">Start Docker Desktop, then Check again.</p>
+        )}
         <div className="settings-actions">
           <button type="button" className="btn ghost" onClick={tryAgain}>
             {onCheckAgain ? 'Check again' : 'Try again'}

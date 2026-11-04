@@ -627,7 +627,13 @@ export function SetupPage({ onLeave, retryMs = BUSY_RETRY_MS, pollMs = POLL_MS, 
         <span className={`mark signin-mark${stage === 'away' ? ' away' : ''}`} aria-hidden="true" />
         <h1 className="signin-title compact">Set up Hearthkeep</h1>
         {stage === 'no-secret' && (
-          <p className="signin-lede">Open setup from this PC: double-click Setup.cmd in the Hearthkeep folder.</p>
+          <>
+            <p className="signin-lede">Open setup from this PC: double-click Setup.cmd in the Hearthkeep folder.</p>
+            <p className="signin-lede">
+              Setup already open and you reloaded this page? Close the Setup window first, then double-click Setup.cmd
+              again. Anything already downloaded is kept.
+            </p>
+          </>
         )}
         {stage === 'ended' && <p className="signin-lede">{ENDED}</p>}
         {stage === 'away' && (

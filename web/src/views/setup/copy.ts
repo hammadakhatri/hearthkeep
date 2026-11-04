@@ -41,7 +41,7 @@ export const SETUP_COPY = {
   doneNothing: 'Nothing else yet. Add more from Settings whenever you like.',
   doneStillDownloading: 'Still downloading',
   doneNotDownloaded: 'Not downloaded',
-  doneStopped: 'Stopped. Download them again in Settings.',
+  doneStopped: "These didn't finish. Download them again in Settings.",
   doneExternal: 'Chat: a model server you run',
   doneAnalysis: 'Analysis',
   doneStartup: 'Start at login',
