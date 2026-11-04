@@ -118,11 +118,11 @@ python = "ComfyUI_windows_portable/python_embeded/python.exe"
 main = "ComfyUI_windows_portable/ComfyUI/main.py"
 needs_nvidia = true
 licence = "GPL-3.0"
-licence_url = "https://github.com/comfyanonymous/ComfyUI/blob/v0.44.0/LICENSE"
+licence_url = "https://github.com/Comfy-Org/ComfyUI/blob/v0.44.0/LICENSE"
 note = "The program that draws the pictures. Needs an NVIDIA graphics card."
 
 [[item.file]]
-url = "https://github.com/comfyanonymous/ComfyUI/releases/download/v0.44.0/ComfyUI_windows_portable_nvidia_cu126.7z"
+url = "https://github.com/Comfy-Org/ComfyUI/releases/download/v0.44.0/ComfyUI_windows_portable_nvidia_cu126.7z"
 size = 1945636677
 sha256 = "a26cf84f043b3d9fbf0d53296f57d7190482c339caf1b3b5cfda5149d454be9f"
 unpack = "7z"
