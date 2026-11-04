@@ -1,8 +1,9 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { useAddons, type Addon, type AddonsState } from '../api/addons'
+import { sessionSandboxApi, useAddons, type Addon, type AddonsState } from '../api/addons'
 import { actionTarget, useAddonsState, useOpenSettings, type SettingsAnchor } from '../shell/AddonsContext'
 import { AlertIcon } from '../shell/icons'
 import { RestartNotice } from './RestartNotice'
+import { SandboxBuild } from './SandboxBuild'
 
 type Badge = { label: string; green?: boolean }
 
@@ -36,6 +37,15 @@ function actionLabel(addon: Addon): string | null {
   if (addon.id === 'images' && addon.action === 'open_setup') return 'Check image models'
   if (addon.action === 'add_token') return 'Add a GitHub token'
   if (addon.action === 'turn_on') return 'Start at login settings'
+  return null
+}
+
+/** What the add-on check knows about Docker, for the sandbox build on the Analysis card. */
+function dockerHint(addon: Addon): 'missing' | 'stopped' | 'ready' | null {
+  if (addon.id !== 'analysis' || addon.ready) return null
+  if (addon.action === 'install') return 'missing'
+  if (addon.action === 'start_docker') return 'stopped'
+  if (addon.action === 'build_image') return 'ready'
   return null
 }
 
@@ -116,6 +126,7 @@ function AddonsView({ state, onNavigate, onLoaded }: Props & { state: AddonsStat
             const label = actionLabel(addon)
             // Only once Analysis works: the folders it reads don't fix anything else.
             const folders = addon.id === 'analysis' && addon.ready
+            const docker = dockerHint(addon)
             return (
               <article key={addon.id} id={`addon-${addon.id}`} className="tile addon" tabIndex={-1}>
                 <div className="addon-top">
@@ -125,6 +136,7 @@ function AddonsView({ state, onNavigate, onLoaded }: Props & { state: AddonsStat
                 <p className="addon-about">{addon.about}</p>
                 <p className="addon-needs">Needs: {addon.requires}</p>
                 {!addon.ready && <p className="addon-message">{addon.message}</p>}
+                {docker && <SandboxBuild api={sessionSandboxApi} docker={docker} onFinished={state.reload} />}
                 {(label || folders) && (
                   <div className="settings-actions">
                     {label && (

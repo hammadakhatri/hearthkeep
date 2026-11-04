@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './client'
+import { stepUp } from './webauthn'
 
 export type AddonId = 'chat' | 'analysis' | 'images' | 'github' | 'devices' | 'startup'
 export type AddonAction = 'install' | 'start_docker' | 'build_image' | 'add_token' | 'open_setup' | 'turn_on'
@@ -97,4 +98,31 @@ export function useAddons(): AddonsState {
     () => ({ addons, failed, refreshing, reload, refresh }),
     [addons, failed, refreshing, reload, refresh],
   )
+}
+
+export type SandboxBuildState = {
+  state: 'idle' | 'building' | 'done' | 'failed'
+  step: 'sandbox' | 'repo' | null
+  reason: 'docker_missing' | 'docker_stopped' | 'build_failed' | null
+}
+
+/** What `SandboxBuild` needs: Settings passes the session one (below), the setup wizard its own. */
+export type SandboxBuildApi = {
+  getBuild(): Promise<SandboxBuildState>
+  startBuild(): Promise<SandboxBuildState>
+}
+
+/** The session adapter: building downloads about 1 GB, so starting asks for the passkey (`settings`). */
+export const sessionSandboxApi: SandboxBuildApi = {
+  async getBuild() {
+    return (await api<{ build: SandboxBuildState }>('/api/addons/analysis/build')).build
+  },
+  async startBuild() {
+    const token = await stepUp('settings')
+    const result = await api<{ build: SandboxBuildState }>('/api/addons/analysis/build', {
+      method: 'POST',
+      body: JSON.stringify({ step_up_token: token }),
+    })
+    return result.build
+  },
 }

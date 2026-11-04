@@ -4,9 +4,10 @@ dependencies are installed and repo tests run in (`hearthkeep-repo`)."""
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 IMAGE_DIR = Path(__file__).resolve().parent / "image"
@@ -76,14 +77,58 @@ def image_present(tag: str, docker: Sequence[str] = DOCKER) -> bool:
     return _quiet([*docker, "image", "inspect", tag], DOCKER_INSPECT_TIMEOUT_S)
 
 
-def build_image(tag: str, docker: Sequence[str] = DOCKER, image_dir: Path = IMAGE_DIR) -> int:
-    """`docker build -t <tag> <image_dir>` with its output shown as it runs."""
+def build_targets() -> list[tuple[str, str, Path]]:
+    """(label, tag, folder) for each image a build makes, in order: the sandbox, then the
+    image repo dependencies are installed and tested in."""
+    return [
+        ("Sandbox image", image_tag(), IMAGE_DIR),
+        ("Repo image", repo_image_tag(), REPO_IMAGE_DIR),
+    ]
+
+
+def build_image(
+    tag: str,
+    docker: Sequence[str] = DOCKER,
+    image_dir: Path = IMAGE_DIR,
+    *,
+    on_line: Callable[[str], None] | None = None,
+    on_proc: Callable[[subprocess.Popen], None] | None = None,
+) -> int:
+    """`docker build -t <tag> <image_dir>`. Without `on_line` its output goes to the console as
+    it runs. With it, output is piped and each line (no line ending) is passed to `on_line`;
+    `on_proc` is handed the child process first, so a caller can kill it."""
+    command = [*docker, "build", "-t", tag, str(image_dir)]
+    if on_line is None:
+        try:
+            return subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL,
+                check=False,
+                creationflags=_NO_WINDOW,
+            ).returncode
+        except OSError:
+            return 127
     try:
-        return subprocess.run(
-            [*docker, "build", "-t", tag, str(image_dir)],
+        proc = subprocess.Popen(
+            command,
             stdin=subprocess.DEVNULL,
-            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
             creationflags=_NO_WINDOW,
-        ).returncode
+        )
     except OSError:
         return 127
+    try:
+        if on_proc is not None:
+            on_proc(proc)
+        for line in proc.stdout or ():
+            on_line(line.rstrip("\r\n"))
+        return proc.wait()
+    finally:
+        if proc.poll() is None:  # on_line or on_proc raised: don't leave the build running
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                proc.kill()
+                proc.wait(timeout=5)

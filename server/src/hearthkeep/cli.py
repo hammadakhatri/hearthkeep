@@ -1035,10 +1035,12 @@ SANDBOX_BUILD_INTRO = (
 
 def _sandbox_images() -> list[tuple[str, str, Path]]:
     """(label, tag, folder) for each image `sandbox build` builds, in order."""
-    return [
-        ("Sandbox image", sandbox_image.image_tag(), sandbox_image.IMAGE_DIR),
-        ("Repo image", sandbox_image.repo_image_tag(), sandbox_image.REPO_IMAGE_DIR),
-    ]
+    return sandbox_image.build_targets()
+
+
+def _echo_build_line(line: str) -> None:
+    """One line of `docker build` output on the console, which stays ASCII."""
+    print(line.encode("ascii", "replace").decode("ascii"), flush=True)
 
 
 def cmd_sandbox_build(args: argparse.Namespace) -> int:
@@ -1051,7 +1053,9 @@ def cmd_sandbox_build(args: argparse.Namespace) -> int:
         )
         return 1
     for label, tag, folder in _sandbox_images():
-        code = sandbox_image.build_image(tag, sandbox_image.DOCKER, folder)
+        code = sandbox_image.build_image(
+            tag, sandbox_image.DOCKER, folder, on_line=_echo_build_line
+        )
         if code != 0:
             print(
                 f"error: the {label.lower()} build failed (docker exit code {code}).",

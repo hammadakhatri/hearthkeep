@@ -33,6 +33,7 @@ from hearthkeep.api.common import (
     record,
     services,
 )
+from hearthkeep.api.routes_addons import get_builder, start_build
 from hearthkeep.auth.enrollment import EnrollmentError, first_device_allowed
 from hearthkeep.hardware import free_bytes
 from hearthkeep.host import DATA_MARKERS, NOT_EMPTY, Host, current_host
@@ -286,3 +287,19 @@ async def setup_startup(_: SetupDep, body: SetupStartupBody, request: Request) -
         raise ApiError(400, "unsupported")
     services(request).setup.start_at_login = body.enabled
     return {"enabled": body.enabled}
+
+
+# ---- the analysis sandbox -------------------------------------------------------------------
+
+
+@router.post("/sandbox/build", status_code=202)
+async def setup_sandbox_build(_: SetupDep, body: SetupBody, request: Request) -> JSONResponse:
+    """Build the sandbox images: the same job as Settings, with the secret for step-up."""
+    hk = services(request)
+    _not_moving(hk)
+    return JSONResponse({"build": await start_build(hk, ACTOR)}, status_code=202)
+
+
+@router.post("/sandbox/status")
+async def setup_sandbox_status(_: SetupPollDep, body: SetupBody, request: Request) -> dict:
+    return {"build": get_builder(services(request)).state()}
