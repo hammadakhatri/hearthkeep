@@ -13,7 +13,7 @@ export const SETUP_COPY = {
   notKnown: 'Not known',
   pcFailed: "Couldn't check this PC. Try again.",
   defaultFolder: 'The default folder.',
-  moveHint: 'Setup moves what it has made so far to the new folder and carries on there.',
+  moveHint: 'Setup starts again in the new folder and removes what it made in this one.',
   moving: 'Moving the data folder…',
   tooLate:
     "The data folder can't move now: a download has started, the sandbox is building, or you chose the chat model or your model server.",
