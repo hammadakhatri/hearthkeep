@@ -46,6 +46,7 @@ from hearthkeep.providers.chat import NoChatModelClient, OpenAIChatClient
 from hearthkeep.runtime.gpu import detect_vram_gb
 from hearthkeep.runtime.supervisor import (
     API_KEY_FILE,
+    LLAMA_API_KEY_SECRET,
     LOOPBACK,
     ProcessError,
     build_comfyui_process,
@@ -309,7 +310,7 @@ def build_model_stack(
 
     chat_model_id = None
     if owned:
-        name = settings.chat_api_key_secret
+        name = LLAMA_API_KEY_SECRET  # never the external server's key
         key = ensure_chat_api_key(secrets, name)
         process = make_llama(
             chat_card,

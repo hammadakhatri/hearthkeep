@@ -736,3 +736,25 @@ def test_swap_in_puts_the_old_folder_back_when_the_second_rename_fails(tmp_path,
         installer._swap_in(new, target)
     assert (target / "keep.txt").read_text() == "old"
     assert not target.with_name("comfyui.old").exists() and new.is_dir()
+
+
+async def test_update_config_edits_under_the_config_lock(tmp_path, monkeypatch):
+    server = Server()
+    inst = Installer(
+        tmp_path,
+        ServerControl(supervised=True),
+        catalog=CATALOG,
+        client_factory=server.client,
+        pc=lambda: NO_GPU,
+    )
+    held = []
+    real_edit = installer.edit_toml
+
+    def edit(path, **kwargs):
+        held.append(inst.config_lock.locked())
+        real_edit(path, **kwargs)
+
+    monkeypatch.setattr(installer, "edit_toml", edit)
+    inst.start(["chat-qwen3.5-4b"], make_default=True)
+    job = await inst.wait()
+    assert job.state == "done" and held == [True]

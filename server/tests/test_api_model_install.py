@@ -4,6 +4,7 @@ tests run the real one on a mock transport. Nothing touches the network or nvidi
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -32,7 +33,7 @@ from hearthkeep.installer import (
 )
 from hearthkeep.lifecycle import ServerControl
 from hearthkeep.models.runtime import load_runtime
-from hearthkeep.secrets import SecretStore
+from hearthkeep.secrets import SecretStore, SecretStoreError
 from hearthkeep.tomledit import TomlEditError
 
 SECRET = "external-chat-key-marker-7f3a"
@@ -48,6 +49,7 @@ class FakeInstaller:
 
     def __init__(self, catalog=CATALOG) -> None:
         self.catalog = catalog
+        self.config_lock = asyncio.Lock()
         self.installed_ids: set[str] = set()
         self.job: Job | None = None
         self.running = False
@@ -305,9 +307,12 @@ def test_second_install_while_running_is_busy(app_with):
     client = app_with(fake)
     first = install(client, ["chat-qwen3.5-4b"], step_up(client, "download"))
     assert first.status_code == 202
-    second = install(client, ["llama-cpu"], step_up(client, "download"))
+    token = step_up(client, "download")
+    second = install(client, ["llama-cpu"], token)
     assert second.status_code == 409
     assert second.json() == {"reason": "busy", "job": first.json()["job"]}
+    reused = install(client, ["llama-cpu"], token)  # a refused request still spends its token
+    assert reused.status_code == 403 and reused.json() == {"reason": "step_up_required"}
     assert fake.job.items[0].id == "chat-qwen3.5-4b"  # the running job is untouched
 
 
@@ -594,3 +599,127 @@ def test_external_body_limits(app_with):
     long_key = "k" * 513
     r = _external(client, "http://127.0.0.1/v1", step_up(client, "settings"), long_key)
     assert r.status_code == 422 and long_key not in r.text
+
+
+# ---- the external switch is all or nothing (P14) -------------------------------------------
+
+
+def _snapshot(data: Path, secrets: SecretStore) -> dict:
+    files = {}
+    for name in ("models.toml", "config.toml", "models.toml.before-hearthkeep"):
+        path = data / name
+        files[name] = path.read_bytes() if path.exists() else None
+    return {"files": files, "secret": secrets.get("chat_api_key")}
+
+
+@pytest.mark.parametrize("failing", ["models.toml", "config.toml", "secret"])
+def test_external_switch_leaves_everything_as_it_was_when_a_step_fails(
+    app_with, tmp_path, monkeypatch, failing
+):
+    install_local_chat(tmp_path)
+    (tmp_path / "config.toml").write_text("# my config\nport = 8765\n", encoding="utf-8")
+    control = ServerControl(supervised=True)
+    client = app_with(FakeInstaller(), control=control)
+    secrets = SecretStore(tmp_path)
+    secrets.put("chat_api_key", "old-key")
+    before = _snapshot(tmp_path, secrets)
+    real_edit = routes_models.edit_toml
+
+    def edit(path, **kwargs):
+        if Path(path).name == failing:
+            raise TomlEditError("refused")
+        real_edit(path, **kwargs)
+
+    monkeypatch.setattr(routes_models, "edit_toml", edit)
+    if failing == "secret":
+        store = client.app.state.hk.secrets
+
+        def refuse(*args):
+            raise SecretStoreError("locked")
+
+        monkeypatch.setattr(store, "put", refuse)
+    r = _external(client, "http://127.0.0.1:9000/v1", step_up(client, "settings"))
+    assert r.status_code in (409, 503) and SECRET not in r.text
+    expected = "secrets_unreadable" if failing == "secret" else "config_not_updated"
+    assert r.json()["reason"] == expected
+    assert _snapshot(tmp_path, secrets) == before
+    assert control.restart_needed == set()
+    assert not [e for e in events(tmp_path) if e["event"] == "models.chat_external_set"]
+
+
+def test_external_switch_checks_the_secret_store_before_editing(app_with, tmp_path, monkeypatch):
+    install_local_chat(tmp_path)
+    client = app_with(FakeInstaller())
+    secrets = SecretStore(tmp_path)
+    before = _snapshot(tmp_path, secrets)
+    store = client.app.state.hk.secrets
+
+    def unreadable(*args):
+        raise SecretStoreError("locked")
+
+    monkeypatch.setattr(store, "names", unreadable)
+    edits = []
+    monkeypatch.setattr(routes_models, "edit_toml", lambda path, **kw: edits.append(path))
+    r = _external(client, "http://127.0.0.1:9000/v1", step_up(client, "settings"))
+    assert r.status_code == 503 and r.json()["reason"] == "secrets_unreadable"
+    assert edits == [] and _snapshot(tmp_path, secrets) == before
+
+
+def test_external_url_with_userinfo_query_or_fragment_is_bad(app_with, tmp_path):
+    client = app_with(FakeInstaller())
+    for url in (
+        "http://user:pw@127.0.0.1:9000/v1",
+        "http://user@localhost/v1",
+        "http://127.0.0.1:9000/v1?key=x",
+        "http://127.0.0.1:9000/v1?",
+        "http://127.0.0.1:9000/v1#frag",
+    ):
+        r = _external(client, url, step_up(client, "settings"))
+        assert r.status_code == 400 and r.json() == {"reason": "bad_url"}, url
+    assert not (tmp_path / "config.toml").exists()
+
+
+# ---- one lock for every config edit ---------------------------------------------------------
+
+
+def test_chat_switches_edit_under_the_installers_config_lock(app_with, tmp_path, monkeypatch):
+    install_local_chat(tmp_path)
+    fake = FakeInstaller()
+    client = app_with(fake)
+    held = []
+    real_edit = routes_models.edit_toml
+
+    def edit(path, **kwargs):
+        held.append((Path(path).name, fake.config_lock.locked()))
+        real_edit(path, **kwargs)
+
+    monkeypatch.setattr(routes_models, "edit_toml", edit)
+    local = {"source": "local", "card": "qwen3.5-4b"}
+    assert client.post("/api/models/chat", json=local, headers=CSRF).status_code == 200
+    assert (
+        _external(client, "http://127.0.0.1:9000/v1", step_up(client, "settings")).status_code
+        == 200
+    )
+    assert held == [("models.toml", True), ("models.toml", True), ("config.toml", True)]
+
+
+def test_a_switch_waits_for_an_edit_in_progress(app_with, tmp_path):
+    install_local_chat(tmp_path)
+    fake = FakeInstaller()
+    client = app_with(fake)
+    lock = fake.config_lock
+    local = {"source": "local", "card": "qwen3.5-4b"}
+
+    async def held_switch():
+        async with lock:  # another edit (the installer's) is in progress
+            task = asyncio.ensure_future(
+                asyncio.to_thread(client.post, "/api/models/chat", json=local, headers=CSRF)
+            )
+            await asyncio.sleep(0.3)
+            assert not task.done()
+            assert "chat_server" not in (tmp_path / "models.toml").read_text(encoding="utf-8")
+        return await task
+
+    response = client.portal.call(held_switch)
+    assert response.status_code == 200
+    assert load_runtime(tmp_path).chat_server == "local"

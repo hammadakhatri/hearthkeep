@@ -13,6 +13,7 @@ from hearthkeep.providers.chat import OpenAIChatClient
 from hearthkeep.providers.comfyui import ComfyUIClient
 from hearthkeep.providers.scheduled_chat import ScheduledChatClient
 from hearthkeep.runtime.gpu import ComfyBackend, LlamaBackend
+from hearthkeep.runtime.supervisor import write_api_key_file
 from hearthkeep.secrets import SecretStore
 
 ORIGIN = "http://localhost:8765"
@@ -155,8 +156,9 @@ def test_serve_owned_chat_model(serve, tmp_path, capsys):
     inner = client._inner
     assert inner._url == "http://127.0.0.1:8091/v1/chat/completions"
     assert inner._model == "gemma-4-12b"
-    key = SecretStore(serve.data).get("chat_api_key")
+    key = SecretStore(serve.data).get("llama_api_key")
     assert key and inner._api_key == key  # generated and stored on first run
+    assert SecretStore(serve.data).get("chat_api_key") is None  # the external key's name
     [(card, rt, data_dir, key_file, api_key)] = serve.llama_calls
     assert card.id == "gemma-4-12b" and rt.llama_port == 8091
     assert key_file == serve.data / "runtime" / "llama-api-key"
@@ -666,3 +668,37 @@ def test_sandbox_build_stops_when_the_first_image_fails(tmp_path, monkeypatch, c
     assert cli.main(["sandbox", "build", "--data", str(tmp_path / "data")]) == 1
     assert built == [image.image_tag()]
     assert "sandbox image build failed" in capsys.readouterr().err
+
+
+def test_owned_llama_key_is_its_own_secret(serve, tmp_path):
+    """The external server's key (settings.chat_api_key_secret) never reaches llama-server:
+    setting or deleting it changes nothing llama-server gets, and switching back to local
+    never writes it to the key file."""
+    store = SecretStore(serve.data)
+    store.put("chat_api_key", "external-key")
+    write(serve.data, "models.toml", owned_models_toml(tmp_path))
+    assert serve() == 0
+    [(card, rt, data_dir, key_file, api_key)] = serve.llama_calls
+    llama_key = store.get("llama_api_key")
+    assert llama_key and llama_key != "external-key"
+    assert serve.hk.runner._loop._client._inner._api_key == llama_key
+    assert api_key() == llama_key
+    store.put("chat_api_key", "another-external-key")
+    assert api_key() == llama_key
+    store.delete("chat_api_key")
+    assert api_key() == llama_key
+    write_api_key_file(serve.data, api_key())  # what prepare() does before every start
+    assert key_file.read_text(encoding="utf-8") == llama_key
+
+
+def test_external_mode_without_a_key_never_sends_the_llama_key(serve, tmp_path):
+    store = SecretStore(serve.data)
+    store.put("llama_api_key", "llama-generated-key")
+    toml = owned_models_toml(tmp_path).replace(
+        "llama_port = 8091", "llama_port = 8091\nchat_server = 'external'"
+    )
+    write(serve.data, "models.toml", toml)
+    assert serve() == 0
+    client = serve.hk.runner._loop._client
+    assert type(client) is OpenAIChatClient and client._api_key == ""
+    assert serve.llama_calls == []
