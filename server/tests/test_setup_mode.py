@@ -1258,7 +1258,7 @@ def test_security_doc_describes_setup_mode():
     assert "keeps out other users and services" not in doc  # the old, wider claim
     for event in ("server.stop", "server.restart", "_denied", "setup.denied", "upgrade.ran"):
         assert f"`{event}" in doc or f"`*{event}" in doc, event
-    assert "`update_note.dismissed`" in doc and "`delete` and `server`" in doc
+    assert "`update_note.dismissed`" in doc and "`delete`, `server` and `download`" in doc
 
 
 def test_health_never_carries_the_secret(harness):
