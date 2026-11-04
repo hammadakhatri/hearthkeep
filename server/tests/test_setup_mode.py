@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import socket
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -751,7 +752,11 @@ def test_setup_uses_a_tailscale_config_made_before_it_runs(tmp_path, run_cmd_set
     secret = run_cmd_setup.run_server.secret
     assert run_cmd_setup.opened == [f"https://homepc.example.ts.net/setup#{secret}"]
     assert host.protected == [host.default.resolve()]
-    assert "homepc.example.ts.net" in (host.default / "config.toml").read_text("utf-8")
+    kept = tomllib.loads((host.default / "config.toml").read_text("utf-8"))
+    assert kept == {
+        "public_origin": "https://homepc.example.ts.net",
+        "rp_id": "homepc.example.ts.net",
+    }
 
 
 def test_setup_protects_the_program_folder_of_a_release_only(tmp_path, run_cmd_setup):
