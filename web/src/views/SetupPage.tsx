@@ -22,7 +22,7 @@ import { STARTUP_FAILED } from '../components/StartupSwitch'
 import { Stepper } from '../components/Stepper'
 import { AddOns } from './setup/AddOns'
 import { ChatModel } from './setup/ChatModel'
-import { notEnoughSpace, SETUP_COPY } from './setup/copy'
+import { carryOnLine, notEnoughSpace, SETUP_COPY } from './setup/copy'
 import { Done } from './setup/Done'
 import { Downloads } from './setup/Downloads'
 import { BUSY, Passkey } from './setup/Passkey'
@@ -288,6 +288,7 @@ export function SetupPage({ onLeave, retryMs = BUSY_RETRY_MS, pollMs = POLL_MS, 
         return typeof body?.message === 'string' && body.message ? body.message : SETUP_COPY.moveFailed
       }
       if (isApiError(e, 'not_enough_space')) return notEnoughSpace(body?.needed_gb ?? 5, body?.free_gb ?? 0)
+      if (isApiError(e, 'moving')) return SETUP_COPY.dataMoving
       if (isApiError(e, 'too_late')) {
         void loadPc()
         return SETUP_COPY.tooLate
@@ -474,10 +475,22 @@ export function SetupPage({ onLeave, retryMs = BUSY_RETRY_MS, pollMs = POLL_MS, 
     return lines
   }
 
+  // The server's rule (`resume_record`): only a running job carries on after the hand-over,
+  // with every item that wasn't stopped; the finished ones need nothing more shown here.
+  const carryOn =
+    job?.state === 'running' ? job.items.filter((i) => i.state !== 'cancelled' && i.state !== 'done') : []
+  const stopped = job ? job.items.filter((i) => i.state === 'cancelled' || i.state === 'failed') : []
+
+  function isImageKind(id: string) {
+    const kind = kindOf(id)
+    return kind === 'image' || kind === 'comfyui'
+  }
+
   // ---- the page -------------------------------------------------------------------------------
 
   const focus = stepChanged.current
-  const windowsHost = addons?.find((a) => a.id === 'startup')?.state !== 'unsupported'
+  // Not known until the add-ons are read: folder moves are offered only on Windows.
+  const windowsHost = addons !== null && addons.find((a) => a.id === 'startup')?.state !== 'unsupported'
 
   function stepView() {
     switch (step) {
@@ -574,7 +587,12 @@ export function SetupPage({ onLeave, retryMs = BUSY_RETRY_MS, pollMs = POLL_MS, 
           <Done
             key="done"
             setUp={setUpLines()}
-            unfinished={job ? job.items.filter((i) => i.state !== 'done').map((i) => i.name) : []}
+            carryOn={carryOn.map((i) => i.name)}
+            carryOnLine={carryOnLine(
+              carryOn.some((i) => !isImageKind(i.id)),
+              carryOn.some((i) => isImageKind(i.id)),
+            )}
+            stopped={stopped.map((i) => i.name)}
             onOpen={() => page.replace('/')}
             focus={focus}
           />

@@ -828,7 +828,43 @@ def test_handover_remembers_an_unfinished_download(setup_app, tmp_path):
     assert post(client, "/api/setup/install", {"items": ids}).status_code == 202
     client.fake.job.items[0].state = "done"
     finish_setup(client)
-    assert resume_state(tmp_path) == {"items": ["chat-qwen3.5-4b"], "make_default": True}
+    # Every item that wasn't stopped, the finished ones too: the resumed job writes
+    # models.toml for all of them (the files already in place aren't fetched again).
+    assert resume_state(tmp_path) == {"items": ids, "make_default": True}
+
+
+def test_handover_leaves_out_stopped_items_of_a_running_job(setup_app, tmp_path):
+    client = setup_app()
+    ids = ["llama-cpu", "chat-qwen3.5-4b"]
+    assert (
+        post(client, "/api/setup/install", {"items": ids, "make_default": False}).status_code == 202
+    )
+    client.fake.job.items[0].state = "cancelled"
+    finish_setup(client)
+    assert resume_state(tmp_path) == {"items": ["chat-qwen3.5-4b"], "make_default": False}
+
+
+def test_handover_after_a_failed_download_remembers_nothing(setup_app, tmp_path):
+    client = setup_app()
+    assert post(client, "/api/setup/install", {"items": ["chat-qwen3.5-4b"]}).status_code == 202
+    client.fake.job.state = "failed"
+    client.fake.job.items[0].state = "failed"
+    finish_setup(client)
+    assert resume_state(tmp_path) is None
+
+
+def test_a_failure_to_remember_never_fails_the_first_passkey(setup_app, tmp_path, monkeypatch):
+    from hearthkeep.api import routes_auth
+
+    def broken(hk):
+        raise RuntimeError("disk")
+
+    monkeypatch.setattr(routes_auth, "remember_unfinished_download", broken)
+    client = setup_app()
+    assert post(client, "/api/setup/install", {"items": ["chat-qwen3.5-4b"]}).status_code == 202
+    finish_setup(client)  # enroll asserts 201
+    assert client.mode.completed
+    assert resume_state(tmp_path) is None
 
 
 def test_handover_without_an_unfinished_download_remembers_nothing(setup_app, tmp_path):

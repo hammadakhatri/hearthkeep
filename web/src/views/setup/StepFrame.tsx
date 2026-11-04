@@ -9,7 +9,7 @@ type Props = {
   /** "Next", or "Skip for now" when nothing on the step was chosen. */
   nextLabel?: string
   onNext?: () => void
-  /** Back is held while something on the step is under way. */
+  /** Back and Next are held while something on the step is under way (a folder move). */
   busy?: boolean
 }
 
@@ -37,7 +37,7 @@ export function StepFrame({ title, focus, children, onBack, nextLabel, onNext, b
             </button>
           )}
           {onNext && nextLabel && (
-            <button type="button" className="btn primary" onClick={onNext}>
+            <button type="button" className="btn primary" disabled={busy} onClick={onNext}>
               {nextLabel}
             </button>
           )}

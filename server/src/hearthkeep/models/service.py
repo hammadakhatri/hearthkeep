@@ -366,24 +366,31 @@ async def _switch_external(
 # ---- a download that outlives setup ---------------------------------------------------------
 
 SETUP_RESUME_KEY = "setup_resume"
-_UNFINISHED_SKIP = ("done", "cancelled")
+
+
+def resume_record(job: Job | None) -> dict | None:
+    """What to keep of a job setup's hand-over stops: only a running one, and every item the
+    owner didn't stop, the finished ones too. Started again, the job skips the files already in
+    place and writes models.toml for all of them (a job writes it only at its end)."""
+    if job is None or job.state != "running":
+        return None
+    ids = [i.id for i in job.items if i.state != "cancelled"]
+    if not ids:
+        return None
+    return {"items": ids, "make_default": job.make_default}
 
 
 def remember_unfinished_download(hk: Services) -> None:
     """At setup's hand-over: setup's server stops once the first passkey exists, and its download
-    with it. Keep what hadn't arrived, so the server that starts next carries on. Items the owner
-    stopped are left stopped."""
+    with it. Keep it, so the server that starts next carries on."""
     installer = hk.installer
-    job = installer.current() if installer is not None else None
-    if job is None or job.state == "done":
-        return
-    ids = [i.id for i in job.items if i.state not in _UNFINISHED_SKIP]
-    if not ids:
+    saved = resume_record(installer.current() if installer is not None else None)
+    if saved is None:
         return
     hk.conn.execute(
         "INSERT INTO app_state (key, value) VALUES (?, ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        (SETUP_RESUME_KEY, json.dumps({"items": ids, "make_default": job.make_default})),
+        (SETUP_RESUME_KEY, json.dumps(saved)),
     )
 
 

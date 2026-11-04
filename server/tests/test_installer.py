@@ -1015,3 +1015,40 @@ async def test_make_default_still_chooses_local_over_external(data):
     job = inst.start(["chat-qwen3.5-4b"], make_default=True)
     await inst.wait()
     assert job.state == "done" and models_toml(data)["chat_server"] == "local"
+
+
+async def test_a_resumed_setup_job_keeps_what_arrived_and_finishes_the_rest(data):
+    """Ruling Q10: setup's hand-over stops a job with chat done and an image file half
+    fetched. The next start runs the remembered items again: chat's file isn't fetched again
+    but models.toml gets it, and the image file carries on from its `.part`."""
+    from hearthkeep.models.service import resume_record
+
+    first, server, _ = make(data, popen=FakeTar())
+    image_file = CATALOG["image-z-image-turbo"].files[-1].url.rsplit("/", 1)[-1]
+    stall = Stall(head=8)
+    server.override[image_file] = stall
+    job = first.start(["chat-qwen3.5-4b", "image-z-image-turbo"], make_default=True)
+    await asyncio.wait_for(stall.sent.wait(), 5)
+    states = {i.id: i.state for i in job.items}
+    assert states["chat-qwen3.5-4b"] == "done"
+    assert states["image-z-image-turbo"] in ("downloading", "verifying")
+    saved = resume_record(job)
+    assert saved == {"items": [i.id for i in job.items], "make_default": True}
+    await first.shutdown()
+    assert not (data / "models.toml").exists() or "model_dirs" not in models_toml(data)
+
+    second, server2, control = make(data, popen=FakeTar())
+    job2 = second.start(saved["items"], make_default=saved["make_default"])
+    await second.wait()
+    assert job2.state == "done", job2.to_json()
+    names = server2.names()
+    assert QWEN4B not in names
+    assert not any(n.startswith("llama-") for n in names)
+    [resumed] = [r for r in server2.requests if r.url.path.endswith(image_file)]
+    assert resumed.headers["range"] == "bytes=8-"
+    rt = load_runtime(data)
+    assert rt.model_dirs == {"qwen3.5-4b": (data / "models" / "chat" / "qwen3.5-4b").resolve()}
+    assert rt.default_chat_model == "qwen3.5-4b" and rt.chat_server == "local"
+    assert rt.llama_server_exe == (data / CPU_DIR / "llama-server.exe").resolve()
+    assert rt.comfyui_main == (data / COMFY_MAIN).resolve()
+    assert control.restart_needed == {"models"}
