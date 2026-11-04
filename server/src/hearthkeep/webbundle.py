@@ -12,21 +12,24 @@ The release repository is read from `origin` at run time and is never written in
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import json
 import re
 import shutil
-import stat
 import subprocess
-import zipfile
-import zlib
 from collections.abc import Callable
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Literal
 
 import httpx
 
 import hearthkeep
+from hearthkeep.fetching import (
+    MAX_REDIRECTS,
+    FetchError,
+    allowed_url,
+    safe_extract_zip,
+    sha256_file,
+)
 from hearthkeep.host import REPO_ROOT
 from hearthkeep.procutil import NO_WINDOW, find_executable
 
@@ -37,7 +40,6 @@ MANIFEST = ".bundle.json"
 MAX_BUNDLE_BYTES = 50_000_000
 MAX_BUNDLE_FILES = 2000
 MAX_CHECKSUM_BYTES = 4096
-MAX_REDIRECTS = 5
 GIT_TIMEOUT_SECONDS = 10
 NPM_TIMEOUT_SECONDS = 1800
 HTTP_TIMEOUT_SECONDS = 30.0
@@ -92,7 +94,7 @@ _ORIGIN_FORMS = (
     re.compile(rf"^git@github\.com:({_NAME})/({_NAME}?)(?:\.git)?$"),
 )
 _SHA256 = re.compile(r"^([0-9a-f]{64}) [ *](.+)$")
-_CHUNK = 64 * 1024
+_CHUNK = 64 * 1024  # read size for streamed downloads
 
 
 class BundleError(Exception):
@@ -134,14 +136,6 @@ def parse_checksum(text: str, name: str) -> str | None:
     return None
 
 
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(_CHUNK), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 # ---- the manifest ----------------------------------------
 
 
@@ -154,7 +148,7 @@ def _bundle_files(dist: Path) -> list[Path]:
 def build_manifest(dist: Path, version: str) -> dict:
     """`{"version": v, "files": {posix path: sha256}}` for every file in `dist` but the
     manifest itself, sorted by path."""
-    files = {p.relative_to(dist).as_posix(): _sha256_file(p) for p in _bundle_files(dist)}
+    files = {p.relative_to(dist).as_posix(): sha256_file(p) for p in _bundle_files(dist)}
     return {"version": version, "files": dict(sorted(files.items()))}
 
 
@@ -176,7 +170,7 @@ def verify_dist(dist: Path, version: str) -> bool:
         actual = {p.relative_to(dist).as_posix(): p for p in _bundle_files(dist)}
         if set(listed) != set(actual):
             return False
-        return all(_sha256_file(actual[name]) == listed[name] for name in sorted(actual))
+        return all(sha256_file(actual[name]) == listed[name] for name in sorted(actual))
     except (OSError, ValueError):
         return False
 
@@ -221,15 +215,6 @@ def github_repo(
 # ---- download ----------------------------------------
 
 
-def _allowed_url(url: httpx.URL) -> bool:
-    return (
-        url.scheme == "https"
-        and url.port in (None, 443)
-        and not url.userinfo
-        and url.host in ALLOWED_HOSTS
-    )
-
-
 def download(url: str, dest: Path, *, client: httpx.Client, limit: int = MAX_BUNDLE_BYTES) -> None:
     """Fetch `url` into `dest`: HTTPS from GitHub (or its asset hosts) only, redirects followed
     one at a time and each checked the same way, streamed, and stopped past `limit` bytes.
@@ -237,7 +222,7 @@ def download(url: str, dest: Path, *, client: httpx.Client, limit: int = MAX_BUN
     current = httpx.URL(url)
     part = dest.with_name(dest.name + ".part")
     for _ in range(MAX_REDIRECTS + 1):
-        if not _allowed_url(current):
+        if not allowed_url(current, exact=ALLOWED_HOSTS, suffixes=()):
             raise BundleError("refused a URL outside GitHub's HTTPS hosts")
         try:
             with client.stream("GET", current, follow_redirects=False) as response:
@@ -273,58 +258,13 @@ def download(url: str, dest: Path, *, client: httpx.Client, limit: int = MAX_BUN
 # ---- safe extraction ----------------------------------------
 
 
-def _check_entry(info: zipfile.ZipInfo) -> None:
-    name = info.filename
-    raw = info.orig_filename  # before zipfile turns a Windows os.sep into "/"
-    if not name or "\\" in raw or ":" in raw or name.startswith("/"):
-        raise BundleError(f"refused entry name {name!r}")
-    parts = PurePosixPath(name).parts
-    if any(part in ("..", "") for part in parts):
-        raise BundleError(f"refused entry name {name!r}")
-    if stat.S_ISLNK(info.external_attr >> 16):
-        raise BundleError(f"refused symlink entry {name!r}")
-
-
 def safe_extract(zip_path: Path, dest: Path) -> None:
-    """Unpack `zip_path` into `dest`, refusing absolute names, drive letters, `..`, backslashes,
-    symlinks, more than `MAX_BUNDLE_FILES` entries or more than `MAX_BUNDLE_BYTES` unpacked.
-    Every name is checked before anything is written; sizes are counted as they are written."""
+    """Unpack `zip_path` into `dest` under the bundle's file and size caps (see
+    `fetching.safe_extract_zip`)."""
     try:
-        with zipfile.ZipFile(zip_path) as zf:
-            infos = zf.infolist()
-            if len(infos) > MAX_BUNDLE_FILES:
-                raise BundleError("too many files in the bundle")
-            if sum(info.file_size for info in infos) > MAX_BUNDLE_BYTES:
-                raise BundleError("the bundle is too large")
-            for info in infos:
-                _check_entry(info)
-            dest.mkdir(parents=True, exist_ok=True)
-            root = dest.resolve()
-            written = 0
-            for info in infos:
-                target = (root / info.filename).resolve()
-                if target != root and not target.is_relative_to(root):
-                    raise BundleError(f"refused entry name {info.filename!r}")
-                if info.is_dir():
-                    target.mkdir(parents=True, exist_ok=True)
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with zf.open(info) as src, target.open("wb") as out:
-                    for chunk in iter(lambda: src.read(_CHUNK), b""):
-                        written += len(chunk)
-                        if written > MAX_BUNDLE_BYTES:
-                            raise BundleError("the bundle is too large")
-                        out.write(chunk)
-    except (
-        zipfile.BadZipFile,
-        zipfile.LargeZipFile,
-        EOFError,
-        zlib.error,  # corrupt compressed data
-        RuntimeError,  # an encrypted entry
-        NotImplementedError,  # a compression method zipfile can't read
-        ValueError,  # anything else zipfile finds wrong with an entry
-    ) as exc:
-        raise BundleError("the bundle is not a readable zip") from exc
+        safe_extract_zip(zip_path, dest, max_files=MAX_BUNDLE_FILES, max_bytes=MAX_BUNDLE_BYTES)
+    except FetchError as exc:
+        raise BundleError(exc.detail) from exc
 
 
 # ---- putting the bundle in place ----------------------------------------
@@ -402,7 +342,7 @@ def _ensure_release(
         except BundleError:
             say(BUNDLE_DOWNLOAD_FAILED)
             return "failed"
-        if expected is None or _sha256_file(zip_path) != expected:
+        if expected is None or sha256_file(zip_path) != expected:
             say(BUNDLE_BAD_CHECKSUM)
             return "failed"
         try:
