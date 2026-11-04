@@ -8,8 +8,8 @@ port = 8765
 public_origin = "http://localhost:8765"
 rp_id = "localhost"
 
-# Set this to use a chat server you already run on this PC. Leave it out to let
-# Hearthkeep run its own chat model.
+# Set this to use a chat server you already run on this PC (or use Settings › Chat model, which
+# sets it for you). Leave it out to let Hearthkeep run a model it downloaded in Settings.
 # chat_base_url = "http://127.0.0.1:8080/v1"
 chat_model = "gemma-4-12b"
 chat_api_key_secret = "chat_api_key"

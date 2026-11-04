@@ -2,8 +2,8 @@
 
 | Document | What it covers |
 |---|---|
-| [install.md](install.md) | Installing Hearthkeep step by step: prerequisites, models, Tailscale, first passkey, running at login, the Python sandbox (Docker), GitHub, phone notifications, updating, backups, troubleshooting, uninstalling. Start here. |
-| [models.md](models.md) | Model cards, `models.toml`, GPU switching, vision for scanned pages, photo uploads and model troubleshooting. |
+| [install.md](install.md) | Installing Hearthkeep step by step: prerequisites, downloading models from Settings, Tailscale, first passkey, running at login, the Python sandbox (Docker), GitHub, phone notifications, updating, backups, troubleshooting, uninstalling. Start here. |
+| [models.md](models.md) | The model catalog and downloads, model cards, `models.toml`, doing it by hand, GPU switching, vision for scanned pages, photo uploads and model troubleshooting. |
 | [security.md](security.md) | What the code does today to keep you safe: network, passkeys, permissions, approvals, chat files, the Python sandbox, GitHub, allowed folders, push notifications, secrets, audit log, data folder layout. |
 | [design.md](design.md) | The design: intent, goals, architecture and the plan for every tool. |
 | [superpowers/plans/](superpowers/plans/) | The implementation plans each phase was built from, one file per phase. |
