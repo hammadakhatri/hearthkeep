@@ -125,6 +125,9 @@ LOCATION_NOT_SAVED = (
     "Hearthkeep couldn't note where its data folder is on this PC. Setup carries on without it."
 )
 STARTUP_NOT_TURNED_ON = "Start at login couldn't be turned on. You can turn it on in Settings."
+STARTUP_LEFT_ALONE = (
+    "Start at login stays with your other Hearthkeep data folder. You can change it in Settings."
+)
 MOVING_DATA = "Moving Hearthkeep's data to the folder you chose."
 OLD_FOLDER_KEPT = "The old data folder was left in place. You can delete it yourself."
 FOLDER_NOT_PROTECTED = (
@@ -733,6 +736,17 @@ def _install_shortcut(host: Host, data: Path) -> None:
         print(SHORTCUT_FAILED)
 
 
+def _startup_elsewhere(host: Host, data: Path) -> bool:
+    """Whether the start-at-login task is on for another data folder. A task that can't be read
+    counts as none: setup then turns start at login on, as it always has."""
+    try:
+        state = host.startup_status(run=startup_run)
+    except (startup.StartupError, HostUnsupported, OSError) as exc:
+        log.warning("start at login couldn't be checked: %s", type(exc).__name__)
+        return False
+    return startup.on_for_another_folder(state, data)
+
+
 def _task_data_folder(host: Host) -> Path | None:
     """The data folder the start-at-login task runs, when it is a Hearthkeep data folder; None
     when there is no task or it can't be read (the non-strict check: nothing here changes)."""
@@ -932,7 +946,11 @@ def cmd_setup(
         return 1
 
     _install_shortcut(host, data)
-    if setup.start_at_login:  # the wizard's choice, applied now that the passkey exists
+    if setup.start_at_login and not setup.startup_chosen and _startup_elsewhere(host, data):
+        # Ruling Q15a: another install's task is left alone unless the owner switched it on.
+        print(STARTUP_LEFT_ALONE)
+        _audit(settings, "startup.left_alone", {"reason": "other_data_folder"})
+    elif setup.start_at_login:  # the wizard's choice, applied now that the passkey exists
         try:
             host.enable_startup(data)
         except (startup.StartupError, HostUnsupported, OSError) as exc:

@@ -10,7 +10,7 @@ import { forbiddenIn } from '../test/copyRules'
 import { addonList, bodyOf, healthy, mockFetch, signedIn, signedOut, type Handler, type Reply } from '../test/fetch'
 import { SetupPage } from '../views/SetupPage'
 import { SETUP_COPY } from '../views/setup/copy'
-import { STARTUP_FAILED } from '../components/StartupSwitch'
+import { STARTUP_FAILED, STARTUP_UNKNOWN } from '../components/StartupSwitch'
 
 vi.mock('@simplewebauthn/browser', () => ({
   startAuthentication: vi.fn(),
@@ -679,6 +679,24 @@ describe('Setup wizard', () => {
     expect(screen.queryByText('On, for another data folder')).toBeNull()
     const posted = calls.filter((c) => c.path === '/api/setup/startup')
     expect(posted.map(bodyOf)).toEqual([{ secret: SECRET, enabled: true }])
+  })
+
+  it('start at login that could not be read shows as not known, and Done does not claim it', async () => {
+    window.sessionStorage.setItem('hk.setup.step', '3')
+    wizardRoutes({ 'POST /api/setup/startup/status': { status: 500, body: { reason: 'internal' } } })
+    renderWizard()
+    const toggle = await screen.findByRole('switch', { name: 'Start Hearthkeep when I sign in to this PC' })
+    expect(await screen.findByText(STARTUP_UNKNOWN)).toBeInTheDocument()
+    expect(screen.getByText('Not known')).toBeInTheDocument()
+    expect(toggle).toBeDisabled()
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    expect(forbiddenIn(STARTUP_UNKNOWN)).toEqual([])
+    await next()
+    await heading('Downloads')
+    await next()
+    fireEvent.click(await screen.findByRole('button', { name: 'Create passkey' }))
+    await heading('Hearthkeep is ready')
+    expect(screen.queryByText(/Start at login/)).toBeNull()
   })
 
   it('a start-at-login choice that fails says so with the shared sentence', async () => {

@@ -306,22 +306,21 @@ class SetupStartupBody(SetupBody):
 
 
 async def _startup_view(hk: Services) -> dict:
-    """Start at login as the wizard's switch shows it (ruling Q15), in the shape of
+    """Start at login as the wizard's switch shows it (rulings Q15, Q15a), in the shape of
     `GET /api/settings/startup`: `enabled` is what setup will leave it as, and
     `other_data_folder` that a task starting another data folder stays as it is. Until the
-    owner chooses, such a task is left alone; otherwise setup turns it on for this folder."""
+    owner chooses, the hand-over leaves such a task alone (`cmd_setup` checks it itself);
+    reading this changes nothing."""
     state = await asyncio.to_thread(addons_module.startup_status)
     if not state.supported:
         return {"supported": False, "enabled": False, "other_data_folder": False}
     setup = hk.setup
     other = startup.on_for_another_folder(state, hk.settings.data_dir)
-    if other and not setup.startup_chosen:
-        setup.start_at_login = False
-    chosen = setup.start_at_login
+    turns_on = setup.start_at_login and (setup.startup_chosen or not other)
     return {
         "supported": True,
-        "enabled": chosen or other,
-        "other_data_folder": other and not chosen,
+        "enabled": turns_on or other,
+        "other_data_folder": other and not turns_on,
     }
 
 

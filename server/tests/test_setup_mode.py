@@ -817,6 +817,52 @@ def test_setup_audits_nothing_when_startup_was_turned_off(tmp_path, run_cmd_setu
     assert _startup_rows(data) == []
 
 
+def _task_for_another_folder(env, tmp_path: Path) -> Path:
+    other = tmp_path / "another-install"
+    other.mkdir()
+    env.host.task = startup.task_xml(
+        pythonw=Path(r"C:\py\pythonw.exe"), data_dir=other, user=r"HOMEPC\owner"
+    )
+    return other
+
+
+def test_setup_leaves_another_folders_task_alone_when_the_switch_was_never_touched(
+    tmp_path, capsys, run_cmd_setup
+):
+    """Ruling Q15a: the hand-over itself leaves a task that starts another data folder alone,
+    and says so in the audit log (`startup.left_alone`)."""
+    _task_for_another_folder(run_cmd_setup, tmp_path)
+    task = run_cmd_setup.host.task
+    data = tmp_path / "data"
+    assert run_cmd_setup(data) == 0
+    assert run_cmd_setup.host.enabled == [] and run_cmd_setup.host.task == task
+    assert _startup_rows(data) == [
+        ("setup", "startup.left_alone", json.dumps({"reason": "other_data_folder"}))
+    ]
+    out = capsys.readouterr().out
+    assert cli.STARTUP_LEFT_ALONE in out and FINISHED in out
+    assert cli.STARTUP_LEFT_ALONE.isascii() and forbidden_in(cli.STARTUP_LEFT_ALONE) == []
+    assert len(run_cmd_setup.host.spawned) == 1
+
+
+def test_setup_repoints_another_folders_task_when_the_owner_switched_it_on(tmp_path, run_cmd_setup):
+    _task_for_another_folder(run_cmd_setup, tmp_path)
+    run_cmd_setup.run_server.startup_choice = True
+    data = tmp_path / "data"
+    assert run_cmd_setup(data) == 0
+    assert run_cmd_setup.host.enabled == [data.resolve()]
+    assert _startup_rows(data) == [("setup", "startup.enabled", "{}")]
+
+
+def test_setup_turns_on_a_task_for_this_folder_without_a_choice(tmp_path, run_cmd_setup):
+    data = tmp_path / "data"
+    run_cmd_setup.host.task = startup.task_xml(
+        pythonw=Path(r"C:\py\pythonw.exe"), data_dir=data.resolve(), user=r"HOMEPC\owner"
+    )
+    assert run_cmd_setup(data) == 0
+    assert run_cmd_setup.host.enabled == [data.resolve()]
+
+
 def test_setup_relocate_enables_startup_once_for_the_new_folder(tmp_path, run_cmd_setup):
     new = tmp_path / "elsewhere" / "data"
     run_cmd_setup.run_server.moves = [new]

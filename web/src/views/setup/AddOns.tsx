@@ -3,7 +3,7 @@ import type { Catalog, CatalogItem } from '../../api/models'
 import { ADDONS_FAILED, dockerHint } from '../../components/AddonsPanel'
 import { ImageModelPicker } from '../../components/ModelsPanel'
 import { SandboxBuild } from '../../components/SandboxBuild'
-import { StartupSwitch, type StartupState } from '../../components/StartupSwitch'
+import { STARTUP_UNKNOWN, StartupSwitch, type StartupState } from '../../components/StartupSwitch'
 import { AlertIcon } from '../../shell/icons'
 import { SETUP_COPY } from './copy'
 import { StepFrame } from './StepFrame'
@@ -19,6 +19,8 @@ type Props = {
   onChoose(item: CatalogItem): void
   /** Start at login as setup will leave it; `null` while it is read. */
   startup: StartupState | null
+  /** It couldn't be read: the switch says "Not known" with a plain line. */
+  startupUnknown?: boolean
   startupBusy: boolean
   startupError: string | null
   onStartup(enabled: boolean): void
@@ -63,7 +65,8 @@ export function AddOns(props: Props) {
             state={props.startup}
             onChange={props.onStartup}
             busy={props.startupBusy}
-            error={props.startupError}
+            unknown={props.startupUnknown}
+            error={props.startupError ?? (props.startupUnknown ? STARTUP_UNKNOWN : null)}
           />
         )
       default:

@@ -774,7 +774,8 @@ def test_setup_startup_status_shows_a_task_for_another_data_folder(
     client = setup_app()
     elsewhere = {"supported": True, "enabled": True, "other_data_folder": True}
     assert post(client, "/api/setup/startup/status").json() == elsewhere
-    assert client.mode.start_at_login is False and client.mode.startup_chosen is False
+    # Ruling Q15a: looking changes nothing; the hand-over itself leaves the task alone.
+    assert client.mode.start_at_login is True and client.mode.startup_chosen is False
     on = post(client, "/api/setup/startup", {"enabled": True})
     assert on.json() == {**elsewhere, "other_data_folder": False}
     assert client.mode.start_at_login is True
@@ -789,7 +790,7 @@ def test_setup_startup_status_for_this_folder_is_on(setup_app, tmp_path, monkeyp
     client = setup_app()
     view = post(client, "/api/setup/startup/status").json()
     assert view == {"supported": True, "enabled": True, "other_data_folder": False}
-    assert client.mode.start_at_login is True
+    assert client.mode.start_at_login is True and client.mode.startup_chosen is False
 
 
 def test_setup_startup_status_off_windows(setup_app):
