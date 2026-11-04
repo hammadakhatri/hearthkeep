@@ -19,6 +19,8 @@ class SetupMode:
     def __init__(self, secret: str | None = None) -> None:
         self._secret: str | None = secret if secret is not None else secrets.token_urlsafe(32)
         self.completed = False
+        # Whether this run made the data folder (so it may still move it, before any download).
+        self.created_folder = False
 
     def __repr__(self) -> str:  # never the secret, in a traceback or a debug print
         return f"SetupMode(active={self.active}, completed={self.completed})"

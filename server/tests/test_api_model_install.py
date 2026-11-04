@@ -17,7 +17,6 @@ from test_api import CSRF, ORIGIN, enroll, login, registry_with, step_up
 from test_installer import CATALOG, NO_GPU, NVIDIA, QWEN4B, Server, Stall
 
 from hearthkeep import audit
-from hearthkeep.api import routes_models
 from hearthkeep.api.app import DB_FILE, create_app
 from hearthkeep.api.common import RateLimiter
 from hearthkeep.auth.enrollment import EnrollmentCodes
@@ -32,6 +31,7 @@ from hearthkeep.installer import (
     NothingToDo,
 )
 from hearthkeep.lifecycle import ServerControl
+from hearthkeep.models import service
 from hearthkeep.models.runtime import load_runtime
 from hearthkeep.secrets import SecretStore, SecretStoreError
 from hearthkeep.tomledit import TomlEditError
@@ -548,7 +548,7 @@ def test_switch_when_models_toml_cant_be_edited(app_with, tmp_path, monkeypatch,
     def refuse(*args, **kwargs):
         raise error
 
-    monkeypatch.setattr(routes_models, "edit_toml", refuse)
+    monkeypatch.setattr(service, "edit_toml", refuse)
     r = client.post(
         "/api/models/chat", json={"source": "local", "card": "qwen3.5-4b"}, headers=CSRF
     )
@@ -738,14 +738,14 @@ def test_external_switch_leaves_everything_as_it_was_when_a_step_fails(
     secrets = SecretStore(tmp_path)
     secrets.put("chat_api_key", "old-key")
     before = _snapshot(tmp_path, secrets)
-    real_edit = routes_models.edit_toml
+    real_edit = service.edit_toml
 
     def edit(path, **kwargs):
         if Path(path).name == failing:
             raise TomlEditError("refused")
         real_edit(path, **kwargs)
 
-    monkeypatch.setattr(routes_models, "edit_toml", edit)
+    monkeypatch.setattr(service, "edit_toml", edit)
     if failing == "secret":
         store = client.app.state.hk.secrets
 
@@ -774,7 +774,7 @@ def test_external_switch_checks_the_secret_store_before_editing(app_with, tmp_pa
 
     monkeypatch.setattr(store, "names", unreadable)
     edits = []
-    monkeypatch.setattr(routes_models, "edit_toml", lambda path, **kw: edits.append(path))
+    monkeypatch.setattr(service, "edit_toml", lambda path, **kw: edits.append(path))
     r = _external(client, "http://127.0.0.1:9000/v1", step_up(client, "settings"))
     assert r.status_code == 503 and r.json()["reason"] == "secrets_unreadable"
     assert edits == [] and _snapshot(tmp_path, secrets) == before
@@ -802,13 +802,13 @@ def test_chat_switches_edit_under_the_installers_config_lock(app_with, tmp_path,
     fake = FakeInstaller()
     client = app_with(fake)
     held = []
-    real_edit = routes_models.edit_toml
+    real_edit = service.edit_toml
 
     def edit(path, **kwargs):
         held.append((Path(path).name, fake.config_lock.locked()))
         real_edit(path, **kwargs)
 
-    monkeypatch.setattr(routes_models, "edit_toml", edit)
+    monkeypatch.setattr(service, "edit_toml", edit)
     local = {"source": "local", "card": "qwen3.5-4b"}
     assert client.post("/api/models/chat", json=local, headers=CSRF).status_code == 200
     assert (

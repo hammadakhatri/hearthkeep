@@ -279,7 +279,7 @@ def test_setup_code_needs_the_secret_and_loopback(harness):
     assert ok.json()["expires_in_minutes"] == 15 and len(ok.json()["code"]) == 8
     code = ok.json()["code"]
 
-    for _ in range(12):
+    for _ in range(60):  # the setup group allows 60 a minute per client
         last = client.post("/api/setup/status", json={"secret": "guess"}, headers=CSRF)
     assert (last.status_code, last.json()["reason"]) == (429, "rate_limited")
 
