@@ -34,6 +34,9 @@ if _IS_WINDOWS:
 
 LOOPBACK = "127.0.0.1"
 API_KEY_FILE = Path("runtime") / "llama-api-key"
+# The key llama-server is started with: its own secret, never the external chat server's
+# key (settings.chat_api_key_secret), so switching between them never mixes the two.
+LLAMA_API_KEY_SECRET = "llama_api_key"
 COMFYUI_PATHS_FILE = Path("runtime") / "comfyui-paths.yaml"
 COMFYUI_SUBFOLDERS = ("diffusion_models", "text_encoders", "vae", "loras")
 _POLL_INTERVAL = 0.2
@@ -400,8 +403,8 @@ def write_api_key_file(data_dir: Path, value: str) -> Path:
     return path
 
 
-def ensure_chat_api_key(store: SecretStore, name: str = "chat_api_key") -> str:
-    """The stored chat API key; a random one is generated and stored if there is none."""
+def ensure_chat_api_key(store: SecretStore, name: str = LLAMA_API_KEY_SECRET) -> str:
+    """The stored llama-server API key; a random one is generated and stored if there is none."""
     value = store.get(name)
     if not value:
         value = secrets.token_urlsafe(32)

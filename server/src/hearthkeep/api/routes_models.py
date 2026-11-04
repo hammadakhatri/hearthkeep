@@ -9,6 +9,8 @@ change to models.toml or config.toml keeps the owner's other lines, and asks for
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated, Literal
@@ -49,6 +51,7 @@ router = APIRouter(prefix="/api")
 SessionDep = Annotated[Session, Depends(current_session)]
 ItemId = Annotated[str, StringConstraints(max_length=64)]
 RATE_GROUP = "models"
+_log = logging.getLogger(__name__)
 SECRETS_UNREADABLE = "Hearthkeep couldn't read its stored secrets. Check the server."
 
 
@@ -246,7 +249,6 @@ async def retry_install(session: SessionDep, request: Request) -> JSONResponse:
     installer = _installer(hk)
     if installer.current() is None:
         raise ApiError(404, "no_job")
-    await hk.pc.get()
     try:
         job = installer.retry()
     except InstallBusy as exc:
@@ -296,6 +298,35 @@ async def _edit(path: Path, values: dict[str, str], backup: Path | None = None) 
         raise ApiError(409, CONFIG_NOT_UPDATED) from None
 
 
+def _read_bytes(path: Path) -> bytes | None:
+    return path.read_bytes() if path.exists() else None
+
+
+def _put_back(files: dict[Path, bytes | None]) -> None:
+    """Put each file back as it was read (None: it didn't exist). Best effort: a failure here
+    is logged by type, and the next start reads whatever is on disk."""
+    for path, data in files.items():
+        try:
+            if data is None:
+                path.unlink(missing_ok=True)
+                continue
+            tmp = path.with_name(path.name + ".restore")
+            tmp.write_bytes(data)
+            os.replace(tmp, path)
+        except OSError as exc:
+            _log.warning("could not put %s back: %s", path.name, type(exc).__name__)
+
+
+def _url_parts_ok(url: str) -> bool:
+    """No userinfo, query or fragment: a chat server is named by scheme, host, port and path."""
+    try:
+        parts = urlparse(url)
+        parts.port  # noqa: B018 (raises ValueError on a bad port)
+    except ValueError:
+        return False
+    return "@" not in parts.netloc and "?" not in url and "#" not in url
+
+
 async def _switched(hk: Services) -> dict:
     if hk.control is not None:
         hk.control.mark_restart_needed("models")
@@ -308,33 +339,63 @@ async def choose_chat(body: ChatBody, session: SessionDep, request: Request) -> 
     rate_limit(request, RATE_GROUP)
     data = Path(hk.settings.data_dir)
     if isinstance(body, LocalChat):
+        lock = _installer(hk).config_lock
         if not await asyncio.to_thread(_local_installed, data, body.card):
             raise ApiError(400, "not_installed")
         values = {"default_chat_model": body.card, "chat_server": "local"}
-        await _edit(data / "models.toml", values, data / BACKUP_NAME)
+        async with lock:
+            await _edit(data / "models.toml", values, data / BACKUP_NAME)
         record(hk, actor(session), "models.chat_switched", {"card": body.card})
         return await _switched(hk)
 
     if not hk.step_up.check(body.step_up_token or "", session.id, None, "settings"):
         record(hk, actor(session), "models.chat_external_denied", {"reason": "step_up_required"})
         raise ApiError(403, "step_up_required")
+    lock = _installer(hk).config_lock
+    await _switch_external(hk, data, body, lock)
+    host = urlparse(body.base_url).hostname
+    record(hk, actor(session), "models.chat_external_set", {"host": host})
+    return await _switched(hk)
+
+
+async def _switch_external(
+    hk: Services, data: Path, body: ExternalChat, lock: asyncio.Lock
+) -> None:
+    """All or nothing: every check first, then models.toml, config.toml and the key last. A
+    step that fails puts back what the earlier steps changed."""
     try:
         check_chat_base_url(body.base_url)
     except ConfigError:
         raise ApiError(400, "bad_url") from None
+    if not _url_parts_ok(body.base_url):
+        raise ApiError(400, "bad_url")
+    secrets = hk.secrets
     if body.api_key is not None:
-        if hk.secrets is None:
-            raise ApiError(503, "secrets_unreadable", message=SECRETS_UNREADABLE)
+        try:
+            if secrets is None:
+                raise SecretStoreError("no secret store")
+            await asyncio.to_thread(secrets.names)  # readable now, before anything changes
+        except SecretStoreError:
+            raise ApiError(503, "secrets_unreadable", message=SECRETS_UNREADABLE) from None
+    models, config, backup = data / "models.toml", data / "config.toml", data / BACKUP_NAME
+    async with lock:
+        before = {
+            path: await asyncio.to_thread(_read_bytes, path) for path in (models, backup, config)
+        }
+        await _edit(models, {"chat_server": "external"}, backup)
+        try:
+            await _edit(config, {"chat_base_url": body.base_url})
+        except ApiError:
+            await asyncio.to_thread(_put_back, {models: before[models], backup: before[backup]})
+            raise
+        if body.api_key is None or secrets is None:
+            return
         name = hk.settings.chat_api_key_secret
         try:
             if body.api_key:
-                await asyncio.to_thread(hk.secrets.put, name, body.api_key)
+                await asyncio.to_thread(secrets.put, name, body.api_key)
             else:
-                await asyncio.to_thread(hk.secrets.delete, name)
+                await asyncio.to_thread(secrets.delete, name)
         except SecretStoreError:
+            await asyncio.to_thread(_put_back, before)
             raise ApiError(503, "secrets_unreadable", message=SECRETS_UNREADABLE) from None
-    await _edit(data / "config.toml", {"chat_base_url": body.base_url})
-    await _edit(data / "models.toml", {"chat_server": "external"}, data / BACKUP_NAME)
-    host = urlparse(body.base_url).hostname
-    record(hk, actor(session), "models.chat_external_set", {"host": host})
-    return await _switched(hk)

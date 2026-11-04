@@ -16,6 +16,7 @@ from hearthkeep.models.cards import ModelCard, load_cards
 from hearthkeep.models.runtime import RuntimeConfig
 from hearthkeep.runtime import supervisor
 from hearthkeep.runtime.supervisor import (
+    LLAMA_API_KEY_SECRET,
     ManagedProcess,
     ProcessError,
     build_comfyui_process,
@@ -578,17 +579,19 @@ def test_windows_key_file_acl_is_owner_only(tmp_path):
 
 def test_ensure_chat_api_key_generates_and_stores(tmp_path):
     store = SecretStore(tmp_path)
-    assert store.get("chat_api_key") is None
+    assert LLAMA_API_KEY_SECRET == "llama_api_key"
+    assert store.get(LLAMA_API_KEY_SECRET) is None
     key = ensure_chat_api_key(store)
-    assert len(key) >= 32 and store.get("chat_api_key") == key
+    assert len(key) >= 32 and store.get(LLAMA_API_KEY_SECRET) == key
+    assert store.get("chat_api_key") is None  # the external server's key is left alone
     assert ensure_chat_api_key(store) == key  # stable once stored
-    store.put("chat_api_key", "owner-chosen")
+    store.put(LLAMA_API_KEY_SECRET, "owner-chosen")
     assert ensure_chat_api_key(store) == "owner-chosen"
 
 
 async def test_llama_start_with_empty_store_generates_key_file_and_never_logs_key(tmp_path):
     store = SecretStore(tmp_path)
-    assert store.get("chat_api_key") is None
+    assert store.get(LLAMA_API_KEY_SECRET) is None
     port = free_port()
     card = bare_card(str(FAKE), "--model", "{model}")
     rt = RuntimeConfig(
@@ -605,7 +608,7 @@ async def test_llama_start_with_empty_store_generates_key_file_and_never_logs_ke
         await proc.start()
     finally:
         await proc.stop(timeout=1)
-    key = store.get("chat_api_key")
+    key = store.get(LLAMA_API_KEY_SECRET)
     assert key and key_file.read_text(encoding="utf-8") == key
     assert key not in " ".join(proc.argv) and str(key_file) in proc.argv
     log = log_text(tmp_path, "llama-server.log")

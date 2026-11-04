@@ -245,6 +245,9 @@ class Installer:
         self._cancel = False
         # Only a download or the tar run may be interrupted by cancelling the task.
         self._interruptible = False
+        # Held around every edit of models.toml and config.toml, here and by the API's chat
+        # switches, so two edits never read and write the files at the same time.
+        self.config_lock = asyncio.Lock()
 
     @property
     def catalog(self) -> dict[str, CatalogItem]:
@@ -700,14 +703,15 @@ class Installer:
 
     async def _update_config(self, job: Job) -> None:
         try:
-            set_top, set_table = self._config_changes(job)
-            await asyncio.to_thread(
-                edit_toml,
-                self.data / "models.toml",
-                set_top=set_top,
-                set_table=set_table,
-                backup=self.data / BACKUP_NAME,
-            )
+            async with self.config_lock:
+                set_top, set_table = self._config_changes(job)
+                await asyncio.to_thread(
+                    edit_toml,
+                    self.data / "models.toml",
+                    set_top=set_top,
+                    set_table=set_table,
+                    backup=self.data / BACKUP_NAME,
+                )
         except (TomlEditError, ConfigError, OSError):
             last = job.items[-1]
             last.state, last.error = "failed", CONFIG_NOT_UPDATED
