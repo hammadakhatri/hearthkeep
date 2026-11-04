@@ -31,24 +31,26 @@ export function stopServer(token: string): Promise<{ ok: true }> {
   return api('/api/server/stop', post({ step_up_token: token }))
 }
 
-export type WaitOptions = { timeoutMs?: number; intervalMs?: number }
+/** `live`: keep waiting only while this says yes (the page that waits is still there). */
+export type WaitOptions = { timeoutMs?: number; intervalMs?: number; live?: () => boolean }
 
 /** Ask `check` until it says yes or the time is up. A failed ask (the server is between
  *  processes) is a no, never the end, and each ask has its own time limit, so one that hangs
  *  can't keep the wait going forever. */
 export async function waitUntil(
   check: (signal: AbortSignal) => Promise<boolean>,
-  { timeoutMs = 60_000, intervalMs = 1000 }: WaitOptions,
+  { timeoutMs = 60_000, intervalMs = 1000, live = () => true }: WaitOptions,
 ) {
   const deadline = Date.now() + timeoutMs
   for (;;) {
+    if (!live()) return false
     try {
       if (await check(AbortSignal.timeout(intervalMs * 3))) return true
     } catch {
       // Down for a moment while it restarts or hands over: ask again.
     }
-    if (Date.now() + intervalMs > deadline) return false
-    await new Promise((resolve) => window.setTimeout(resolve, intervalMs))
+    if (!live() || Date.now() + intervalMs > deadline) return false
+    await new Promise((resolve) => setTimeout(resolve, intervalMs))
   }
 }
 

@@ -127,6 +127,10 @@ def sign_in(client, data: Path) -> None:
 # ---- the gate -------------------------------------------------------------------------------
 
 
+# Past the gate, these act on Windows only and answer `unsupported` elsewhere (CI runs Linux).
+WINDOWS_ONLY = {"/api/setup/data-folder", "/api/setup/startup"}
+
+
 @pytest.mark.parametrize(("path", "body"), ALL_ROUTES)
 def test_every_setup_route_uses_the_gate(setup_app, tmp_path, caplog, path, body):
     caplog.set_level(logging.DEBUG)
@@ -161,7 +165,11 @@ def test_every_setup_route_uses_the_gate(setup_app, tmp_path, caplog, path, body
     seen.append(far)
 
     ok = post(client, path, body)
-    assert ok.status_code in (200, 202, 404, 409), ok.text  # 404/409: no job to retry
+    if path in WINDOWS_ONLY and not routes_setup.current_host().supported:
+        # Past the gate, these two need Windows; elsewhere they answer `unsupported`.
+        assert (ok.status_code, ok.json()) == (400, {"reason": "unsupported"})
+    else:
+        assert ok.status_code in (200, 202, 404, 409), ok.text  # 404/409: no job to retry
     seen.append(ok)
 
     add_passkey(tmp_path)
