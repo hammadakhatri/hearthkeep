@@ -46,6 +46,7 @@ export const SETUP_COPY = {
   doneExternal: 'Chat: a model server you run',
   doneAnalysis: 'Analysis',
   doneStartup: 'Start at login (turned on as setup finishes)',
+  doneBuildStopped: 'The sandbox build stopped when setup finished. Build it from Settings › Add-ons.',
 } as const
 
 /** "The recommended chat model and its engine need about 11.0 GB of free space." */

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Addon } from '../api/addons'
+import type { Addon, SandboxBuildApi } from '../api/addons'
 import { isApiError } from '../api/client'
 import type { Catalog, CatalogItem, Job } from '../api/models'
 import { page, waitForSetupDone, type WaitOptions } from '../api/server'
@@ -137,7 +137,20 @@ export function SetupPage({ onLeave, retryMs = BUSY_RETRY_MS, pollMs = POLL_MS, 
   const [passkeyMade, setPasskeyMade] = useState(false)
 
   const modelsApi = useMemo(() => (secret ? setupModelsApi(secret) : null), [secret])
-  const sandboxApi = useMemo(() => (secret ? setupSandboxApi(secret) : null), [secret])
+  // A build that was running when the passkey was made: setup's server stopped it (ruling M4).
+  const [buildStopped, setBuildStopped] = useState(false)
+  const sandboxApi = useMemo<SandboxBuildApi | null>(() => {
+    if (!secret) return null
+    const raw = setupSandboxApi(secret)
+    // 403 and 404 go where every other setup call sends them: polling is a read (a 404 is not
+    // taken as setup being over), starting is an action.
+    const gone = <T,>(call: () => Promise<T>, over: boolean) =>
+      call().catch((e: unknown) => {
+        setupGoneRef.current(e, { over })
+        throw e
+      })
+    return { getBuild: () => gone(raw.getBuild, false), startBuild: () => gone(raw.startBuild, true) }
+  }, [secret])
 
   useEffect(() => {
     alive.current = true
@@ -196,6 +209,8 @@ export function SetupPage({ onLeave, retryMs = BUSY_RETRY_MS, pollMs = POLL_MS, 
     }
     return false
   }
+  const setupGoneRef = useRef(setupGone)
+  setupGoneRef.current = setupGone
 
   useEffect(() => {
     if (!secret) return
@@ -440,6 +455,12 @@ export function SetupPage({ onLeave, retryMs = BUSY_RETRY_MS, pollMs = POLL_MS, 
       else setError(passkeyErrorMessage(e, 'Setup'))
       return
     }
+    // Asked before the passkey: once it exists the setup routes are gone, and the hand-over
+    // stops a build still running. Not knowing counts as no build.
+    const building = await setupSandboxApi(secret)
+      .getBuild()
+      .then((b) => b.state === 'building')
+      .catch(() => false)
     try {
       await enroll(code, guessDeviceName())
     } catch (e) {
@@ -450,6 +471,7 @@ export function SetupPage({ onLeave, retryMs = BUSY_RETRY_MS, pollMs = POLL_MS, 
     }
     if (!alive.current) return
     // Setup's server stops now: no more setup calls, and nothing of this run to come back to.
+    setBuildStopped(building)
     setPasskeyMade(true)
     remember(STEP_KEY, null)
     remember(CHOICES_KEY, null)
@@ -607,6 +629,7 @@ export function SetupPage({ onLeave, retryMs = BUSY_RETRY_MS, pollMs = POLL_MS, 
               carryOn.some((i) => isImageKind(i.id)),
             )}
             stopped={stopped.map((i) => i.name)}
+            buildStopped={buildStopped}
             onOpen={() => page.replace('/')}
             focus={focus}
           />
