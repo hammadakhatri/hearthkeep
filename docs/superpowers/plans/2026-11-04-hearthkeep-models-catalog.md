@@ -418,3 +418,4 @@ Catalog rules `load_catalog` enforces (each with a test):
 - [ ] Install `chat-gemma-4-12b` on an NVIDIA PC with 12 GB or more, and `chat-qwen3.5-9b` on an 8 GB card; chat with each after the restart.
 - [ ] Install ComfyUI and both image models; confirm `tar.exe` unpacks the `.7z`, the `python`/`main` paths match, and an image is made with each card.
 - [ ] Run `python scripts/pin_catalog.py --check` the day the release is cut.
+- [ ] Unpack the real ComfyUI `.7z` with `tar.exe` into a data folder whose path is near the limit (about 100 characters) on a PC with Windows long paths turned off; confirm the unpack, the link check and ComfyUI's start all succeed, or document the limit.

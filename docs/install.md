@@ -119,7 +119,7 @@ The data folder holds your chats, passkeys, audit log, encrypted secrets, images
 
 3. Use that path wherever this guide says `<data>`.
 
-Keep the path short. llama-server on Windows cannot open a file whose full path is 260 characters or longer. Hearthkeep writes the chat model's key file to `<data>\runtime\llama-api-key` and checks this path (and the model file paths) before it starts llama-server. If any is too long it refuses with "Hearthkeep's data folder path is too long for llama-server on Windows". ComfyUI is not affected.
+Keep the path short. llama-server on Windows cannot open a file whose full path is 260 characters or longer. Hearthkeep writes the chat model's key file to `<data>\runtime\llama-api-key` and checks this path (and the model file paths) before it starts llama-server. If any is too long it refuses with "Hearthkeep's data folder path is too long for llama-server on Windows". ComfyUI is affected too: its own files sit many folders deep inside `<data>\tools\comfyui`, and unless long paths are turned on in Windows, a long data folder path can stop ComfyUI from being unpacked or from starting. The default `C:\Hearthkeep\data` is short enough.
 
 The programs and models you download from Settings (steps 4 and 5) also live inside this folder, so it needs room: from about 4 GB for the smallest chat model to roughly 50 GB with every model and ComfyUI. Hearthkeep checks the free space before it downloads anything.
 
@@ -130,7 +130,7 @@ Choose the location once. The key that encrypts your secrets is stored in the OS
 Hearthkeep downloads its own chat model from Settings. There is nothing to install by hand, and you do this after you have created your passkey ([step 8](#8-first-start-and-your-passkey)). Until then Hearthkeep runs, but chat says that no chat model is set up yet.
 
 1. Open **Settings › Chat model**. The top line names your graphics card and how much memory it has, and one model carries the badge **Recommended for this PC**.
-2. Choose a model and select **Download**. Hearthkeep lists everything it will fetch, with the sizes and a link to each licence. Confirm with your passkey.
+2. Choose a model and select **Download**. Hearthkeep lists everything it will fetch, with the sizes and a link to each licence. Select **Download with passkey** and confirm with your passkey.
 3. Watch the progress list. You can leave the page; the download carries on, and the list is there when you come back.
 4. When it finishes, Hearthkeep asks you to restart. Select **Restart now**. If you started Hearthkeep from a terminal rather than from the Start menu, the page says "Restart Hearthkeep to use it." instead; stop it and start it again by hand.
 5. Send a message in Chat. The first reply takes a little longer while the model loads.
@@ -149,9 +149,9 @@ A model that needs more graphics memory than your PC has is greyed out with the 
 
 **How long it takes.** The time depends on your connection. At 10 MB a second, the 4B model takes about five minutes and the 12B model about 17. Keep the PC awake and online while it runs.
 
-**If it stops.** A broken connection, a restart of Hearthkeep or the PC, or **Cancel** never loses what has arrived. Select **Download** again (or **Retry** in the list) and it carries on from where it stopped. A file that failed on the network is also tried again by itself a few times first. Every file is checked against a checksum before it is used, and a file that doesn't match is thrown away and reported, never used. Hearthkeep fetches only from GitHub and Hugging Face, and only the files in its own list.
+**If it stops.** A broken connection, a restart of Hearthkeep or the PC, or **Stop downloading** never loses what has arrived. Select **Retry** in the list and it carries on from where it stopped. After a restart the list is gone: select **Download** again on the same model, and it carries on from where it stopped too. A file that failed on the network is also tried again by itself a few times first. Every file is checked against a checksum before it is used, and a file that doesn't match is thrown away and reported, never used. Hearthkeep fetches only from GitHub and Hugging Face, and only the files in its own list.
 
-**Disk space.** Downloads land inside Hearthkeep's data folder ([step 3](#3-create-a-data-folder)). Hearthkeep checks there is room before it starts and says if there isn't.
+**Disk space.** Downloads land inside Hearthkeep's data folder ([step 3](#3-create-a-data-folder)). Hearthkeep checks there is room before it starts, on every drive it will write to, and says if there isn't.
 
 **Switching.** Models you have downloaded stay on the PC. Select **Use this** on one of them to switch, then restart when asked. Nothing is deleted.
 
@@ -170,7 +170,7 @@ A model that needs more graphics memory than your PC has is greyed out with the 
 Skip this step if you only want chat. Image models need an NVIDIA graphics card; without one, Settings says so and the downloads can't be chosen.
 
 1. Open **Settings › Image models**.
-2. Choose a model and select **Download**, then confirm with your passkey. Hearthkeep lists what it will fetch, with the sizes and a link to each licence.
+2. Choose a model and select **Download**. Hearthkeep lists what it will fetch, with the sizes and a link to each licence. Select **Download with passkey** and confirm with your passkey.
 
    | Model | Download | Good at |
    |---|---|---|
@@ -178,7 +178,7 @@ Skip this step if you only want chat. Image models need an NVIDIA graphics card;
    | FLUX.2 klein 4B | 16.1 GB | Photos and edits to a photo you attach |
 
    Both need about 10 to 10.5 GB of graphics memory while a picture is made. If you pick both, the text file they share is downloaded once.
-3. The first image model also fetches the picture maker, **ComfyUI** (1.9 GB), the program that draws the pictures. It is released under GPL-3.0: [licence](https://github.com/Comfy-Org/ComfyUI/blob/v0.44.0/LICENSE). The image models are released under Apache 2.0: [Z-Image Turbo](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo).
+3. The first image model also fetches the picture maker, **ComfyUI** (1.9 GB), the program that draws the pictures. It is released under GPL-3.0: [licence](https://github.com/Comfy-Org/ComfyUI/blob/v0.44.0/LICENSE). The image models are released under Apache 2.0: [Z-Image Turbo](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo) and [FLUX.2 klein 4B](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B).
 4. When it finishes, restart as asked, as in step 4.
 
 Downloads resume after an interruption and are checked against checksums, as for chat models. Hearthkeep unpacks ComfyUI itself, using the archive tool that comes with Windows.
@@ -314,9 +314,10 @@ Then open your Tailscale address on the second device and check that you can sig
 Only for when you already run a chat server on this PC and want Hearthkeep to talk to it instead of downloading a model. It can be llama.cpp, Ollama, LM Studio or anything else that speaks the same OpenAI-style chat protocol.
 
 1. Open **Settings › Chat model** and scroll to **Use a model server I already run**.
-2. Type the server's address in **Server address**. It must be a server on this PC, so the address starts with `http://localhost` or `http://127.0.0.1`; Hearthkeep refuses any other address.
-3. If the server needs a key, type it in **Key (optional)**. Hearthkeep keeps it in its encrypted secret store, never in a settings file. Leave it empty to keep the key saved before.
-4. Select **Use this server** and confirm with your passkey, then restart when asked.
+2. Type the server's address in **Server address**. It must be a server on this PC, so the address starts with `http://localhost` or `http://127.0.0.1`; Hearthkeep refuses any other address. It usually ends in `/v1`, for example `http://127.0.0.1:11434/v1` for Ollama or `http://127.0.0.1:1234/v1` for LM Studio.
+3. If the server needs a key, type it in **Key (optional)**. Hearthkeep keeps it in its encrypted secret store, never in a settings file. Leave it empty to keep the key saved for the server you already use; when you switch from a downloaded model, an old key is removed so it is never sent to the new server.
+4. If the server asks which model to use (Ollama and LM Studio do), type the model's name as the server lists it in **Model name (optional)**, for example `qwen2.5:7b`. Leave it empty to keep the name saved before.
+5. Select **Use this server** and confirm with your passkey, then restart when asked.
 
 Your downloaded models stay where they are. To go back to one of them, select **Use this** on it in the same screen and restart.
 
@@ -561,7 +562,7 @@ Also check that you open exactly the address in `public_origin` (`localhost`, no
 
 **Sign-in or every action fails with a 403.** The page was opened on a different address than `public_origin`. Open exactly that address.
 
-**A download stops or fails.** Settings › Chat model (or Image models) shows the reason next to the item. A network error is tried again a few times by itself; after that, select **Retry** and it carries on from where it stopped. "There isn't enough free space on this PC" means the drive holding the data folder is too full: free some space, then retry. A checksum message means the file that arrived was not the file Hearthkeep expected, so it was removed: select **Retry** to fetch it again, and if it keeps happening, report it on the project's GitHub page. "Hearthkeep needs an update to fetch it" means a download address has changed; update Hearthkeep ([step 14](#14-updating)).
+**A download stops or fails.** Settings › Chat model (or Image models) shows the reason next to the item. A network error is tried again a few times by itself; after that, select **Retry** and it carries on from where it stopped. "There isn't enough free space on this PC" means the drive holding the data folder (or the one holding your own image models folder) is too full: free some space, then retry. A checksum message means the file that arrived was not the file Hearthkeep expected, so it was removed: select **Retry** to fetch it again, and if it keeps happening, report it on the project's GitHub page. "Hearthkeep needs an update to fetch it" means a download address has changed; update Hearthkeep ([step 14](#14-updating)).
 
 **The chat model won't start.** Open `<data>\logs\llama-server.log`. The usual causes:
 
