@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { startRegistration } from '@simplewebauthn/browser'
 import App from '../App'
 import { page, waitForSetupDone } from '../api/server'
-import type { Catalog, CatalogItem, Job } from '../api/models'
+import type { Catalog, CatalogItem, Job, JobItem } from '../api/models'
 import { readSetupSecret } from '../api/setup'
 import { forbiddenIn } from '../test/copyRules'
 import { addonList, bodyOf, healthy, mockFetch, signedIn, signedOut, type Handler, type Reply } from '../test/fetch'
@@ -531,7 +531,7 @@ describe('Setup wizard', () => {
     })
     renderWizard()
     expect(await screen.findByText(HOME)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Change…' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Change…' }))
     const field = screen.getByRole('textbox', { name: 'New data folder' })
     expect(field).toHaveValue(HOME)
     fireEvent.change(field, { target: { value: TARGET } })
@@ -722,7 +722,7 @@ describe('Setup wizard', () => {
     seen.push(container.textContent ?? '')
     await next()
     await screen.findByText(HOME)
-    fireEvent.click(screen.getByRole('button', { name: 'Change…' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Change…' }))
     seen.push(container.textContent ?? '')
     await next()
     fireEvent.click(await screen.findByRole('button', { name: 'Choose Gemma 4 12B' }))
@@ -742,5 +742,141 @@ describe('Setup wizard', () => {
     seen.push(container.textContent ?? '')
     for (const text of seen) expect(forbiddenIn(text)).toEqual([])
     for (const text of Object.values(SETUP_COPY)) expect(forbiddenIn(text)).toEqual([])
+  })
+})
+
+// ---- Done after the hand-over (ruling Q10) ------------------------------------------------
+
+function jobWith(state: Job['state'], items: [string, JobItem['state']][]): Job {
+  return {
+    id: 'job-1',
+    state,
+    restart_needed: false,
+    items: items.map(([id, itemState]) => ({
+      id,
+      name: CATALOG.items.find((i) => i.id === id)?.name ?? id,
+      state: itemState,
+      done_bytes: 0,
+      total_bytes: 1_000_000_000,
+      speed_bps: 0,
+      error: itemState === 'failed' ? 'network' : null,
+    })),
+  }
+}
+
+/** From the Downloads step with `job` there, through the passkey to Done. */
+async function doneWith(job: Job) {
+  window.sessionStorage.setItem('hk.setup.step', '4')
+  wizardRoutes({ 'POST /api/setup/install/status': { body: { job } } })
+  renderWizard()
+  await screen.findByText(new RegExp(`of ${job.items.length} done`))
+  await next()
+  fireEvent.click(await screen.findByRole('button', { name: 'Create passkey' }))
+  await heading('Hearthkeep is ready')
+}
+
+function listAfter(name: string): string[] {
+  const title = screen.getByRole('heading', { level: 3, name })
+  return [...title.nextElementSibling!.querySelectorAll('li')].map((li) => li.textContent ?? '')
+}
+
+describe('Setup wizard › Done', () => {
+  beforeEach(() => {
+    window.sessionStorage.clear()
+  })
+
+  it('after Stop, nothing carries on and the stopped downloads say so', async () => {
+    await doneWith(
+      jobWith('cancelled', [
+        ['llama-cuda', 'done'],
+        ['chat-gemma-4-12b', 'cancelled'],
+      ]),
+    )
+    expect(screen.queryByRole('heading', { level: 3, name: 'Still downloading' })).toBeNull()
+    expect(screen.queryByText(/carry on in a moment/)).toBeNull()
+    expect(listAfter('Not downloaded')).toEqual(['Gemma 4 12B'])
+    expect(screen.getByText('Stopped. Download them again in Settings.')).toBeInTheDocument()
+  })
+
+  it('after a failed job, the failed and unreached items are listed as not downloaded', async () => {
+    await doneWith(
+      jobWith('failed', [
+        ['llama-cuda', 'failed'],
+        ['chat-gemma-4-12b', 'cancelled'],
+      ]),
+    )
+    expect(screen.queryByText(/carry on in a moment/)).toBeNull()
+    expect(listAfter('Not downloaded')).toEqual(['Chat engine for NVIDIA graphics cards', 'Gemma 4 12B'])
+  })
+
+  it('image downloads carry on and point to Settings › Image models', async () => {
+    await doneWith(
+      jobWith('running', [
+        ['comfyui', 'done'],
+        ['image-z-image-turbo', 'downloading'],
+      ]),
+    )
+    expect(listAfter('Still downloading')).toEqual(['Z-Image Turbo'])
+    expect(
+      screen.getByText(
+        "They'll carry on in a moment, when Hearthkeep starts on its own. You'll see their progress in Settings › Image models.",
+      ),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { level: 3, name: 'Not downloaded' })).toBeNull()
+  })
+
+  it('chat and image downloads name both places', async () => {
+    await doneWith(
+      jobWith('running', [
+        ['llama-cuda', 'done'],
+        ['chat-gemma-4-12b', 'downloading'],
+        ['comfyui', 'queued'],
+        ['image-z-image-turbo', 'queued'],
+      ]),
+    )
+    expect(listAfter('Still downloading')).toEqual(['Gemma 4 12B', 'Picture maker (ComfyUI)', 'Z-Image Turbo'])
+    const line = screen.getByText(/carry on in a moment/)
+    expect(line).toHaveTextContent('Settings › Chat model and Settings › Image models.')
+    expect(forbiddenIn(line.textContent ?? '')).toEqual([])
+    expect(forbiddenIn(SETUP_COPY.doneStopped)).toEqual([])
+  })
+})
+
+describe('Setup wizard › Your PC while moving', () => {
+  beforeEach(() => {
+    window.sessionStorage.clear()
+    window.sessionStorage.setItem('hk.setup.step', '1')
+  })
+
+  it('a move refused because the folder is already moving has its sentence', async () => {
+    wizardRoutes({ 'POST /api/setup/data-folder': { status: 409, body: { reason: 'moving' } } })
+    renderWizard()
+    fireEvent.click(await screen.findByRole('button', { name: 'Change…' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Move here' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(SETUP_COPY.dataMoving)
+  })
+
+  it('Change… waits until the add-ons say what this PC is', async () => {
+    let answer: (reply: Reply) => void = () => {}
+    wizardRoutes({ 'POST /api/setup/addons': () => new Promise<Reply>((resolve) => (answer = resolve)) })
+    renderWizard()
+    expect(await screen.findByText(HOME)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Change…' })).toBeNull()
+    answer(addonsReply())
+    expect(await screen.findByRole('button', { name: 'Change…' })).toBeInTheDocument()
+  })
+
+  it('Next and Back are held while the data folder moves', async () => {
+    wizardRoutes({
+      'POST /api/setup/data-folder': { status: 202, body: { ok: true } },
+      'GET /api/health': () => Promise.reject(new TypeError('Failed to fetch')),
+    })
+    render(<SetupPage onLeave={() => {}} pollMs={20} moveWait={{ intervalMs: 10, timeoutMs: 1000 }} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Change…' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'New data folder' }), { target: { value: 'D:\\Hearthkeep' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Move here' }))
+    await screen.findByText('Moving the data folder…')
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled()
   })
 })

@@ -40,8 +40,8 @@ export const SETUP_COPY = {
   doneSetUp: "What's set up",
   doneNothing: 'Nothing else yet. Add more from Settings whenever you like.',
   doneStillDownloading: 'Still downloading',
-  doneCarryOn:
-    "They'll carry on in a moment, when Hearthkeep starts on its own. You'll see their progress in Settings › Chat model.",
+  doneNotDownloaded: 'Not downloaded',
+  doneStopped: 'Stopped. Download them again in Settings.',
   doneExternal: 'Chat: a model server you run',
   doneAnalysis: 'Analysis',
   doneStartup: 'Start at login',
@@ -56,4 +56,11 @@ export function diskLine(size: string, withEngine: boolean): string {
 
 export function notEnoughSpace(neededGb: number, freeGb: number): string {
   return `There isn't enough free space there: ${neededGb} GB is needed and ${freeGb} GB is free.`
+}
+
+/** Where the downloads that carry on after setup show their progress. */
+export function carryOnLine(chat: boolean, images: boolean): string {
+  const where =
+    chat && images ? 'Settings › Chat model and Settings › Image models' : images ? 'Settings › Image models' : 'Settings › Chat model'
+  return `They'll carry on in a moment, when Hearthkeep starts on its own. You'll see their progress in ${where}.`
 }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from typing import Annotated, Literal
 
@@ -30,6 +31,8 @@ from hearthkeep.auth.sessions import Session
 from hearthkeep.auth.webauthn import VerificationError, b64url_decode
 from hearthkeep.lifecycle import EXIT_STOPPED
 from hearthkeep.models.service import remember_unfinished_download
+
+_log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
@@ -176,7 +179,10 @@ async def enroll_verify(body: EnrollVerifyBody, request: Request) -> JSONRespons
         # Setup is finished: the secret goes now, and once this answer is sent the setup
         # server stops so `hearthkeep setup` can hand over to the launcher. A download still
         # under way stops with it: what hadn't arrived is kept for the next start to resume.
-        remember_unfinished_download(hk)
+        try:
+            remember_unfinished_download(hk)
+        except Exception as exc:  # the first passkey is made either way
+            _log.warning("could not keep the setup download: %s", type(exc).__name__)
         hk.setup.complete()
         if hk.control is not None:
             response.background = BackgroundTask(hk.control.request, EXIT_STOPPED)
