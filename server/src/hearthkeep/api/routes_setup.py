@@ -24,6 +24,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
+from hearthkeep import addons as addons_module
+from hearthkeep import startup
 from hearthkeep.api.common import (
     ENROLLMENT_CODE_TTL_MINUTES,
     ApiError,
@@ -297,14 +299,41 @@ class SetupStartupBody(SetupBody):
     enabled: bool
 
 
+async def _startup_view(hk: Services) -> dict:
+    """Start at login as the wizard's switch shows it (ruling Q15), in the shape of
+    `GET /api/settings/startup`: `enabled` is what setup will leave it as, and
+    `other_data_folder` that a task starting another data folder stays as it is. Until the
+    owner chooses, such a task is left alone; otherwise setup turns it on for this folder."""
+    state = await asyncio.to_thread(addons_module.startup_status)
+    if not state.supported:
+        return {"supported": False, "enabled": False, "other_data_folder": False}
+    setup = hk.setup
+    other = startup.on_for_another_folder(state, hk.settings.data_dir)
+    if other and not setup.startup_chosen:
+        setup.start_at_login = False
+    chosen = setup.start_at_login
+    return {
+        "supported": True,
+        "enabled": chosen or other,
+        "other_data_folder": other and not chosen,
+    }
+
+
+@router.post("/startup/status")
+async def setup_startup_status(_: SetupDep, body: SetupBody, request: Request) -> dict:
+    return await _startup_view(services(request))
+
+
 @router.post("/startup")
 async def setup_startup(_: SetupDep, body: SetupStartupBody, request: Request) -> dict:
     """Whether to start Hearthkeep at login once setup is done. Only the choice is kept here:
     `cmd_setup` turns it on after the first passkey exists."""
     if not current_host().supported:
         raise ApiError(400, "unsupported")
-    services(request).setup.start_at_login = body.enabled
-    return {"enabled": body.enabled}
+    hk = services(request)
+    hk.setup.start_at_login = body.enabled
+    hk.setup.startup_chosen = True
+    return await _startup_view(hk)
 
 
 # ---- the add-ons ----------------------------------------------------------------------------

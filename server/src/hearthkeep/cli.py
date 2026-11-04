@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 from uvicorn.config import STARTUP_FAILURE  # what uvicorn exits with when it could not start
 
 import hearthkeep
-from hearthkeep import db, launcher, shortcut, startup
+from hearthkeep import audit, db, launcher, shortcut, startup
 from hearthkeep.api.app import DB_FILE
 from hearthkeep.api.common import ENROLLMENT_CODE_TTL_MINUTES
 from hearthkeep.api.routes_setup import folder_move_problem
@@ -142,6 +142,19 @@ def _settings(data: Path) -> Settings:
 
 def _connect(settings: Settings):
     return db.connect(Path(settings.data_dir) / DB_FILE)
+
+
+def _audit(settings: Settings, event: str, detail: dict) -> None:
+    """One audit row, actor `setup`, on its own connection (setup's server has stopped). A
+    failure is logged by type and never stops setup."""
+    try:
+        conn = _connect(settings)
+        try:
+            audit.record(conn, "setup", event, detail)
+        finally:
+            conn.close()
+    except Exception as exc:
+        log.warning("the audit row %s wasn't written: %s", event, type(exc).__name__)
 
 
 def _upgrade(settings: Settings, host: Host) -> UpgradeReport | None:
@@ -922,8 +935,12 @@ def cmd_setup(
     if setup.start_at_login:  # the wizard's choice, applied now that the passkey exists
         try:
             host.enable_startup(data)
-        except (startup.StartupError, HostUnsupported, OSError):
+        except (startup.StartupError, HostUnsupported, OSError) as exc:
+            log.warning("start at login wasn't turned on: %s", type(exc).__name__)
             print(STARTUP_NOT_TURNED_ON)
+            _audit(settings, "startup.enable_failed", {"error": type(exc).__name__})
+        else:
+            _audit(settings, "startup.enabled", {})
     try:
         process = host.spawn_detached(launcher.launcher_argv(data))
     except OSError:

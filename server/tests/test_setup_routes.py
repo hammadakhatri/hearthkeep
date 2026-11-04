@@ -24,6 +24,7 @@ from test_api_model_install import (
 )
 from test_installer import NO_GPU, NVIDIA
 
+from hearthkeep import addons as addons_module
 from hearthkeep import host as host_module
 from hearthkeep.api import routes_setup
 from hearthkeep.api.app import DB_FILE, create_app
@@ -37,6 +38,7 @@ from hearthkeep.lifecycle import EXIT_RELOCATE, ServerControl
 from hearthkeep.models.runtime import load_runtime
 from hearthkeep.secrets import SecretStore
 from hearthkeep.setupmode import SetupMode
+from hearthkeep.startup import StartupStatus
 
 SECRET = "setup-secret-marker-" + "q" * 24
 LOOPBACK = ("127.0.0.1", 50000)
@@ -52,6 +54,7 @@ ROUTES = [
     ("/api/setup/chat", {"source": "local", "card": "qwen3.5-4b"}),
     ("/api/setup/data-folder", {"path": "C:\\Hearthkeep\\elsewhere"}),
     ("/api/setup/startup", {"enabled": False}),
+    ("/api/setup/startup/status", {}),
     ("/api/setup/sandbox/build", {}),
     ("/api/setup/sandbox/status", {}),
     ("/api/setup/addons", {}),
@@ -724,7 +727,7 @@ def test_move_refuses_a_folder_it_cant_look_into(setup_app, tmp_path, folder_hos
 # ---- start at login -------------------------------------------------------------------------
 
 
-def test_setup_startup_choice_is_only_recorded(setup_app, monkeypatch):
+def _windows_task(monkeypatch, state: StartupStatus) -> None:
     class Host(host_module.WindowsHost):
         def enable_startup(self, data_dir, *, run=None):
             raise AssertionError("nothing runs until the hand-over")
@@ -733,16 +736,66 @@ def test_setup_startup_choice_is_only_recorded(setup_app, monkeypatch):
             raise AssertionError("nothing runs until the hand-over")
 
     monkeypatch.setattr(routes_setup, "current_host", lambda: Host())
+    monkeypatch.setattr(addons_module, "startup_status", lambda fresh=False: state)
+
+
+def test_setup_startup_choice_is_only_recorded(setup_app, monkeypatch):
+    _windows_task(monkeypatch, StartupStatus(True, False, None))
     client = setup_app()
     assert client.mode.start_at_login is True
     off = post(client, "/api/setup/startup", {"enabled": False})
-    assert (off.status_code, off.json()) == (200, {"enabled": False})
-    assert client.mode.start_at_login is False
+    view = {"supported": True, "enabled": False, "other_data_folder": False}
+    assert (off.status_code, off.json()) == (200, view)
+    assert client.mode.start_at_login is False and client.mode.startup_chosen is True
     on = post(client, "/api/setup/startup", {"enabled": True})
-    assert (on.status_code, on.json()) == (200, {"enabled": True})
+    assert (on.status_code, on.json()) == (200, {**view, "enabled": True})
     assert client.mode.start_at_login is True
     assert post(client, "/api/setup/startup", {"enabled": "maybe"}).status_code == 422
     assert post(client, "/api/setup/startup", {}).status_code == 422
+
+
+def test_setup_startup_status_shows_the_choice(setup_app, monkeypatch):
+    _windows_task(monkeypatch, StartupStatus(True, False, None))
+    client = setup_app()
+    r = post(client, "/api/setup/startup/status")
+    assert (r.status_code, r.json()) == (
+        200,
+        {"supported": True, "enabled": True, "other_data_folder": False},
+    )
+
+
+def test_setup_startup_status_shows_a_task_for_another_data_folder(
+    setup_app, tmp_path, monkeypatch
+):
+    """Ruling Q15: the switch shows "On, for another data folder", and setup leaves that task
+    alone unless the owner turns the switch on."""
+    other = str(tmp_path.parent / "another-install")
+    _windows_task(monkeypatch, StartupStatus(True, True, other, launcher=True))
+    client = setup_app()
+    elsewhere = {"supported": True, "enabled": True, "other_data_folder": True}
+    assert post(client, "/api/setup/startup/status").json() == elsewhere
+    assert client.mode.start_at_login is False and client.mode.startup_chosen is False
+    on = post(client, "/api/setup/startup", {"enabled": True})
+    assert on.json() == {**elsewhere, "other_data_folder": False}
+    assert client.mode.start_at_login is True
+    # Once chosen, a later look keeps the choice.
+    assert post(client, "/api/setup/startup/status").json()["other_data_folder"] is False
+    off = post(client, "/api/setup/startup", {"enabled": False})
+    assert off.json() == elsewhere and client.mode.start_at_login is False
+
+
+def test_setup_startup_status_for_this_folder_is_on(setup_app, tmp_path, monkeypatch):
+    _windows_task(monkeypatch, StartupStatus(True, True, str(tmp_path.resolve()), launcher=True))
+    client = setup_app()
+    view = post(client, "/api/setup/startup/status").json()
+    assert view == {"supported": True, "enabled": True, "other_data_folder": False}
+    assert client.mode.start_at_login is True
+
+
+def test_setup_startup_status_off_windows(setup_app):
+    client = setup_app()  # the test hosts' start at login: unsupported
+    r = post(client, "/api/setup/startup/status")
+    assert r.json() == {"supported": False, "enabled": False, "other_data_folder": False}
 
 
 def test_setup_startup_is_unsupported_off_windows(setup_app, monkeypatch):

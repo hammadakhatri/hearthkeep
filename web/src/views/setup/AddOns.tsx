@@ -3,7 +3,7 @@ import type { Catalog, CatalogItem } from '../../api/models'
 import { ADDONS_FAILED, dockerHint } from '../../components/AddonsPanel'
 import { ImageModelPicker } from '../../components/ModelsPanel'
 import { SandboxBuild } from '../../components/SandboxBuild'
-import { StartupSwitch } from '../../components/StartupSwitch'
+import { StartupSwitch, type StartupState } from '../../components/StartupSwitch'
 import { AlertIcon } from '../../shell/icons'
 import { SETUP_COPY } from './copy'
 import { StepFrame } from './StepFrame'
@@ -17,7 +17,8 @@ type Props = {
   catalog: Catalog | null
   chosen: readonly string[]
   onChoose(item: CatalogItem): void
-  startup: boolean
+  /** Start at login as setup will leave it; `null` while it is read. */
+  startup: StartupState | null
   startupBusy: boolean
   startupError: string | null
   onStartup(enabled: boolean): void
@@ -59,7 +60,7 @@ export function AddOns(props: Props) {
       case 'startup':
         return (
           <StartupSwitch
-            state={{ supported: true, enabled: props.startup }}
+            state={props.startup}
             onChange={props.onStartup}
             busy={props.startupBusy}
             error={props.startupError}

@@ -206,7 +206,8 @@ class FakeRunServer:
                 if self.startup_choice is not None:
                     chosen = {**body, "enabled": self.startup_choice}
                     r = client.post("/api/setup/startup", json=chosen, headers=CSRF)
-                    assert r.json() == {"enabled": self.startup_choice}, r.text
+                    assert r.status_code == 200, r.text
+                    assert hk.setup.start_at_login is self.startup_choice
                 status = client.post("/api/setup/status", json=body, headers=CSRF)
                 assert status.json() == {"state": "needs_passkey"}, status.text
                 issued = client.post("/api/setup/enrollment-code", json=body, headers=CSRF)
@@ -773,11 +774,55 @@ def test_setup_finishes_when_startup_hits_an_oserror(tmp_path, capsys, monkeypat
     assert STARTUP_NOT_TURNED_ON in out and FINISHED in out and "disk full" not in out
 
 
+def _startup_rows(data: Path) -> list[tuple]:
+    return query(
+        data, "SELECT actor, event, detail FROM audit WHERE event LIKE 'startup.%' ORDER BY id"
+    )
+
+
+def test_setup_audits_turning_startup_on(tmp_path, run_cmd_setup):
+    """Ruling Q15: the hand-over's start at login is in the audit log, actor setup."""
+    data = tmp_path / "data"
+    assert run_cmd_setup(data) == 0
+    assert _startup_rows(data) == [("setup", "startup.enabled", "{}")]
+
+
+def test_setup_audits_a_startup_that_failed_and_logs_its_type(tmp_path, monkeypatch, run_cmd_setup):
+    def refuse(data, *, run=None):
+        raise startup.StartupError("Windows refused to create the task: access denied")
+
+    monkeypatch.setattr(run_cmd_setup.host, "enable_startup", refuse)
+    # The setup window keeps Hearthkeep's log lines out of sight; a handler on the logger
+    # itself still sees them.
+    lines: list[str] = []
+    handler = logging.Handler()
+    handler.emit = lambda record: lines.append(record.getMessage())
+    cli.log.addHandler(handler)
+    try:
+        data = tmp_path / "data"
+        assert run_cmd_setup(data) == 0
+    finally:
+        cli.log.removeHandler(handler)
+    assert _startup_rows(data) == [
+        ("setup", "startup.enable_failed", json.dumps({"error": "StartupError"}))
+    ]
+    assert any("StartupError" in line for line in lines)
+    assert not any("access denied" in line for line in lines)
+
+
+def test_setup_audits_nothing_when_startup_was_turned_off(tmp_path, run_cmd_setup):
+    run_cmd_setup.run_server.startup_choice = False
+    data = tmp_path / "data"
+    assert run_cmd_setup(data) == 0
+    assert _startup_rows(data) == []
+
+
 def test_setup_relocate_enables_startup_once_for_the_new_folder(tmp_path, run_cmd_setup):
     new = tmp_path / "elsewhere" / "data"
     run_cmd_setup.run_server.moves = [new]
     assert run_cmd_setup(tmp_path / "data") == 0
     assert run_cmd_setup.host.enabled == [new.resolve()]
+    assert _startup_rows(new) == [("setup", "startup.enabled", "{}")]
 
 
 def test_setup_waits_for_the_launcher_and_says_when_it_is_slow(tmp_path, capsys, run_cmd_setup):
