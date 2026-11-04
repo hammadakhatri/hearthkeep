@@ -62,6 +62,11 @@ def test_messages_that_send_the_owner_somewhere_name_the_screen(text):
     assert SCREEN in text
 
 
+def test_no_chat_model_names_the_chat_model_screen():
+    assert "Settings › Chat model" in chat.NO_CHAT_MODEL
+    assert SCREEN not in chat.NO_CHAT_MODEL
+
+
 def test_exact_copy():
     assert python.NO_DOCKER == (
         "Python analysis needs Docker Desktop running on this PC. "

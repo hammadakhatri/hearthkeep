@@ -130,7 +130,9 @@ def test_no_chat_model_server_starts_and_refuses_messages(serve_fresh, capsys):
     assert r.json()["message"] == seen["chat"].message and seen["chat"].message
     assert seen["messages"] == 0
     out = capsys.readouterr().out
-    assert "Chat: no chat model is set up yet. Open Hearthkeep and go to Settings › Add-ons." in out
+    assert (
+        "Chat: no chat model is set up yet. Open Hearthkeep and go to Settings › Chat model." in out
+    )
     assert type(serve_fresh.hk.runner._loop._client) is NoChatModelClient
 
 
@@ -159,7 +161,7 @@ async def test_no_chat_model_client_raises_provider_error():
         async for _ in NoChatModelClient().stream([], [], False):
             pass
     assert e.value.user_message == NO_CHAT_MODEL
-    assert NO_CHAT_MODEL == "No chat model is set up yet. Open Settings › Add-ons to set one up."
+    assert NO_CHAT_MODEL == "No chat model is set up yet. Open Settings › Chat model to set one up."
 
 
 def test_no_chat_model_warnings_do_not_name_chat_base_url(serve_fresh, tmp_path, capsys):
@@ -269,4 +271,4 @@ def test_console_lines_name_no_placeholder(setup, tmp_path, monkeypatch, capsys)
     assert Serve(data, monkeypatch)() == 0
     captured = capsys.readouterr()
     assert forbidden_in(captured.out + captured.err) == []
-    assert "Images: not set up. Open Settings › Add-ons to see what it needs." in captured.out
+    assert "Images: not set up. Open Settings › Image models to add them." in captured.out
