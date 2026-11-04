@@ -223,10 +223,6 @@
   width: min(400px, 100%);
 }
 
-.device.model.chosen {
-  box-shadow: inset 3px 0 0 var(--accent);
-}
-
 @media (max-width: 640px) {
   .setup-nav .btn {
     flex: 1 1 auto;
