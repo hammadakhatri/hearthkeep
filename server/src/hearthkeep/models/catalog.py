@@ -128,7 +128,11 @@ def _item(raw: object, cards: dict[str, ModelCard]) -> CatalogItem:
     if variant not in _VARIANTS:
         raise CatalogError(f"{where}: unknown variant {variant!r}")
     licence_url = _text(raw, "licence_url", where, required=True)
-    if httpx.URL(licence_url).scheme != "https":
+    try:
+        licence_scheme = httpx.URL(licence_url).scheme
+    except httpx.InvalidURL as exc:
+        raise CatalogError(f"{where}: licence_url is not a valid url") from exc
+    if licence_scheme != "https":
         raise CatalogError(f"{where}: licence_url must be https")
     needs_nvidia = raw.get("needs_nvidia", False)
     if not isinstance(needs_nvidia, bool):

@@ -73,3 +73,21 @@ def test_write_rewrites_size_and_sha_in_place(tmp_path):
     assert pin_catalog.main(["--write", "--catalog", str(path)], api=api) == 0
     text = path.read_text(encoding="utf-8")
     assert text == CATALOG.replace("size = 20", "size = 21").replace(SHA_B, "3" * 64)
+
+
+def _failing_api(url: str):
+    raise LookupError("no such asset")
+
+
+def test_check_exits_one_when_a_lookup_fails(tmp_path, capsys):
+    path = tmp_path / "catalog.toml"
+    path.write_text(CATALOG, encoding="utf-8")
+    assert pin_catalog.main(["--check", "--catalog", str(path)], api=_failing_api) == 1
+    assert "differs: lookup failed" in capsys.readouterr().out
+
+
+def test_write_exits_one_and_keeps_the_file_when_a_lookup_fails(tmp_path):
+    path = tmp_path / "catalog.toml"
+    path.write_text(CATALOG, encoding="utf-8")
+    assert pin_catalog.main(["--write", "--catalog", str(path)], api=_failing_api) == 1
+    assert path.read_text(encoding="utf-8") == CATALOG

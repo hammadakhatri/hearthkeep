@@ -132,13 +132,40 @@ def test_catalog_rule_refuses(name):
         load_catalog(broken)
 
 
-def test_catalog_refuses_missing_size_bands():
-    # Without the two small Qwen items nothing in the catalog is a small or mid chat model.
-    text = shipped_text()
-    for item_id in ("chat-qwen3.5-4b", "chat-qwen3.5-9b"):
-        start = text.index(f'id = "{item_id}"')
-        start = text.rindex("[[item]]", 0, start)
+def _without_items(text: str, *item_ids: str) -> str:
+    for item_id in item_ids:
+        start = text.rindex("[[item]]", 0, text.index(f'id = "{item_id}"'))
         nxt = text.find("[[item]]", start + 1)
         text = text[:start] + (text[nxt:] if nxt != -1 else "")
+    return text
+
+
+@pytest.mark.parametrize("removed", ["chat-qwen3.5-4b", "chat-qwen3.5-9b"])
+def test_catalog_refuses_a_missing_size_band(removed):
     with pytest.raises(CatalogError):
+        load_catalog(_without_items(shipped_text(), removed))
+
+
+def test_catalog_refuses_missing_gemma():
+    with pytest.raises(CatalogError):
+        load_catalog(_without_items(shipped_text(), "chat-gemma-4-12b"))
+
+
+def test_catalog_refuses_renamed_gemma():
+    with pytest.raises(CatalogError):
+        load_catalog(shipped_text().replace('id = "chat-gemma-4-12b"', 'id = "chat-gemma-big"'))
+
+
+def test_catalog_refuses_chat_item_with_image_card():
+    text = shipped_text().replace('card = "qwen3.5-9b"', 'card = "z-image-turbo"')
+    with pytest.raises(CatalogError, match="card"):
+        load_catalog(text)
+
+
+def test_catalog_refuses_unparseable_licence_url():
+    text = shipped_text().replace(
+        'licence_url = "https://huggingface.co/Qwen/Qwen3.5-9B"',
+        'licence_url = "https://x.org/\\u0000"',
+    )
+    with pytest.raises(CatalogError, match="licence_url"):
         load_catalog(text)
