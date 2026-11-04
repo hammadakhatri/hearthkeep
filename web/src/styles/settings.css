@@ -194,7 +194,7 @@
   margin-top: 0;
 }
 
-/* Start at login: the state, then the command to change it on the PC. */
+/* Start at login. */
 .startup {
   display: flex;
   flex-direction: column;

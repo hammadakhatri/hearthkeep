@@ -162,12 +162,15 @@ async def set_startup(body: StartupBody, session: SessionDep, request: Request) 
         if body.enabled:
             await asyncio.to_thread(host.enable_startup, hk.settings.data_dir)
         else:
-            await asyncio.to_thread(host.disable_startup)
+            removed = await asyncio.to_thread(host.disable_startup)
     except HostUnsupported:
         raise ApiError(400, "unsupported") from None
-    except startup.StartupError:
+    except (startup.StartupError, OSError):
         raise ApiError(502, "startup_failed", message=STARTUP_FAILED) from None
+    view = await _startup_view(hk, fresh=True)
+    if not body.enabled and not removed and view["enabled"]:
+        raise ApiError(502, "startup_failed", message=STARTUP_FAILED)  # the task is still there
     record(hk, actor(session), "startup.enabled" if body.enabled else "startup.disabled", {})
     if hk.addons is not None:
         await hk.addons.refresh("startup", fresh=True)
-    return await _startup_view(hk, fresh=True)
+    return view

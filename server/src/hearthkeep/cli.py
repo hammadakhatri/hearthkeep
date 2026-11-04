@@ -921,7 +921,7 @@ def cmd_setup(
     if setup.start_at_login:  # the wizard's choice, applied now that the passkey exists
         try:
             host.enable_startup(data)
-        except (startup.StartupError, HostUnsupported):
+        except (startup.StartupError, HostUnsupported, OSError):
             print(STARTUP_NOT_TURNED_ON)
     try:
         process = host.spawn_detached(launcher.launcher_argv(data))
