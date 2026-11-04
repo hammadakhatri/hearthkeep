@@ -795,7 +795,7 @@ describe('Setup wizard › Done', () => {
     expect(screen.queryByRole('heading', { level: 3, name: 'Still downloading' })).toBeNull()
     expect(screen.queryByText(/carry on in a moment/)).toBeNull()
     expect(listAfter('Not downloaded')).toEqual(['Gemma 4 12B'])
-    expect(screen.getByText('Stopped. Download them again in Settings.')).toBeInTheDocument()
+    expect(screen.getByText("These didn't finish. Download them again in Settings.")).toBeInTheDocument()
   })
 
   it('after a failed job, the failed and unreached items are listed as not downloaded', async () => {

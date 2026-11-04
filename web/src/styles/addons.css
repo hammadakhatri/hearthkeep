@@ -53,6 +53,14 @@
   color: var(--amber);
 }
 
+.addon-message.later {
+  color: var(--fg2);
+}
+
+.addon-message.ready {
+  color: var(--green);
+}
+
 .addon .settings-actions {
   margin-top: auto;
   padding-top: var(--sp-2);

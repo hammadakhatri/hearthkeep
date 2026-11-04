@@ -49,7 +49,7 @@ export function ChatModel(props: Props) {
       )}
       <CatalogState catalog={catalog} failed={failed} onReload={props.onReload} label="Loading chat models" />
       {catalog && (
-        <div aria-busy={busy || undefined}>
+        <div className="setup-models" aria-busy={busy || undefined}>
           <ChatModelPicker
             catalog={catalog}
             action={{ kind: 'choose', chosen, onChoose: props.onChoose }}

@@ -36,7 +36,7 @@ export function AddOns(props: Props) {
     switch (addon.id) {
       case 'analysis':
         return addon.ready ? (
-          <p className="addon-message">{addon.message}</p>
+          <p className="addon-message ready">{addon.message}</p>
         ) : (
           <>
             <p className="addon-message">{addon.message}</p>
@@ -53,9 +53,9 @@ export function AddOns(props: Props) {
           <ImageModelPicker catalog={catalog} action={{ kind: 'choose', chosen: props.chosen, onChoose: props.onChoose }} />
         ) : null
       case 'github':
-        return <p className="addon-message">{SETUP_COPY.github}</p>
+        return <p className="addon-message later">{SETUP_COPY.github}</p>
       case 'devices':
-        return <p className="addon-message">{SETUP_COPY.phone}</p>
+        return <p className="addon-message later">{SETUP_COPY.phone}</p>
       case 'startup':
         return (
           <StartupSwitch
