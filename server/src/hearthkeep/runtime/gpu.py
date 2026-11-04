@@ -27,7 +27,7 @@ from hearthkeep.runtime.supervisor import ManagedProcess, ProcessError
 
 RESERVED_GB = 1.5  # kept free for the CUDA contexts, the desktop and fragmentation
 _TOO_BIG = "This model needs more GPU memory than this PC has."
-_NVIDIA_SMI_ARGS = ["--query-gpu=memory.total", "--format=csv,noheader,nounits"]
+_NVIDIA_SMI_ARGS = ["--query-gpu=name,memory.total", "--format=csv,noheader,nounits"]
 
 log = logging.getLogger(__name__)
 
@@ -43,13 +43,14 @@ def _nvidia_smi_path() -> Path | None:
     return find_executable("nvidia-smi", candidates)
 
 
-def detect_vram_gb() -> float | None:
-    """Total memory of the first NVIDIA GPU in GB (nvidia-smi reports MiB); None if unknown."""
+def nvidia_smi_query(*, run=subprocess.run) -> tuple[str, float] | None:
+    """(name, total memory in GB) of the first NVIDIA GPU (nvidia-smi reports MiB); None if
+    nvidia-smi is missing, fails or prints something unexpected."""
     exe = _nvidia_smi_path()
     if exe is None:
         return None
     try:
-        result = subprocess.run(
+        result = run(
             [str(exe), *_NVIDIA_SMI_ARGS],
             capture_output=True,
             text=True,
@@ -61,10 +62,17 @@ def detect_vram_gb() -> float | None:
         return None
     if result.returncode != 0 or not result.stdout.strip():
         return None
+    name, sep, memory = result.stdout.strip().splitlines()[0].rpartition(",")
     try:
-        return float(result.stdout.strip().splitlines()[0]) / 1024
+        return (name.strip(), float(memory) / 1024) if sep and name.strip() else None
     except ValueError:
         return None
+
+
+def detect_vram_gb() -> float | None:
+    """Total memory of the first NVIDIA GPU in GB; None if unknown."""
+    found = nvidia_smi_query(run=subprocess.run)
+    return None if found is None else found[1]
 
 
 class ModelLoadError(ProcessError):

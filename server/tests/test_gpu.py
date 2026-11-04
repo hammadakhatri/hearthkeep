@@ -458,12 +458,14 @@ def test_detect_vram_gb_reads_nvidia_smi(monkeypatch, smi):
 
     def run(argv, **kwargs):
         seen["argv"], seen["timeout"] = argv, kwargs.get("timeout")
-        return subprocess.CompletedProcess(argv, 0, stdout="16376\n", stderr="")
+        return subprocess.CompletedProcess(
+            argv, 0, stdout="NVIDIA GeForce RTX 4080, 16376\n", stderr=""
+        )
 
     monkeypatch.setattr(gpu.subprocess, "run", run)
     assert detect_vram_gb() == pytest.approx(16376 / 1024)
     assert seen["argv"] == [
-        str(smi), "--query-gpu=memory.total", "--format=csv,noheader,nounits"
+        str(smi), "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"
     ]  # fmt: skip
     assert seen["timeout"] == 5
 
@@ -474,7 +476,7 @@ def test_detect_vram_gb_reads_nvidia_smi(monkeypatch, smi):
         FileNotFoundError("no nvidia-smi"),
         subprocess.TimeoutExpired("nvidia-smi", 5),
         subprocess.CompletedProcess([], 9, stdout="", stderr="no devices"),
-        subprocess.CompletedProcess([], 0, stdout="N/A\n", stderr=""),
+        subprocess.CompletedProcess([], 0, stdout="GPU, N/A\n", stderr=""),
     ],
 )
 def test_detect_vram_gb_none_on_failure(monkeypatch, smi, outcome):
@@ -506,7 +508,7 @@ def test_nvidia_smi_fallbacks_and_never_a_bare_or_cwd_name(tmp_path, monkeypatch
 
     def run(argv, **kwargs):
         ran.append(argv)
-        return subprocess.CompletedProcess(argv, 0, stdout="8192\n", stderr="")
+        return subprocess.CompletedProcess(argv, 0, stdout="GPU, 8192\n", stderr="")
 
     monkeypatch.setattr(gpu.subprocess, "run", run)
     assert detect_vram_gb() is None and ran == []  # nothing installed outside the cwd
