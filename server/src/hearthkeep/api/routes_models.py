@@ -169,6 +169,8 @@ async def get_catalog(session: SessionDep, request: Request) -> dict:
         "recommended": recommended,
         "items": items,
         "chat": await asyncio.to_thread(_chat_state, hk),
+        # The installer's own check, so the web app lists the engine only when a download adds it.
+        "runtime_ready": await asyncio.to_thread(installer.runtime_ready),
         "restart_needed": _restart_needed(hk),
         "supervised": hk.control is not None and hk.control.supervised,
     }

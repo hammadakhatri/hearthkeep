@@ -318,6 +318,12 @@
   font-weight: 500;
 }
 
+.models-sub {
+  margin-top: var(--sp-2);
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
 .downloads {
   display: flex;
   flex-direction: column;

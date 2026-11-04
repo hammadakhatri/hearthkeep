@@ -81,14 +81,18 @@ function pcLine(pc: PcInfo): string {
 
 type Section = 'chat' | 'images'
 
-/** Exactly what downloading `item` fetches: the chat engine when none is installed yet, and the
- *  picture maker for an image model when it's missing (the server adds the same). */
+/** A download makes its chat model the one in use, unless the owner chose a server they run. */
+function makesDefault(catalog: Catalog | null): boolean {
+  return catalog?.chat.source !== 'external'
+}
+
+/** What downloading `item` fetches: the recommended chat engine when the server says none is
+ *  ready, and the picture maker for an image model when it's missing (the server adds the same). */
 function downloadPlan(catalog: Catalog, item: CatalogItem): CatalogItem[] {
   const plan = [item]
-  if (item.kind === 'chat') {
-    const engineReady = catalog.chat.source === 'local' || catalog.items.some((i) => i.kind === 'runtime' && i.installed)
+  if (item.kind === 'chat' && !catalog.runtime_ready) {
     const engine = catalog.items.find((i) => i.id === catalog.recommended?.runtime)
-    if (!engineReady && engine) plan.unshift(engine)
+    if (engine) plan.unshift(engine)
   }
   if (item.kind === 'image') {
     plan.unshift(...catalog.items.filter((i) => i.kind === 'comfyui' && !i.installed))
@@ -163,14 +167,17 @@ function ModelRow({ item, badge, inUse, why, canDownload, onDownload, onUse }: R
 
 type ConfirmProps = {
   plan: CatalogItem[]
+  /** The download makes its chat model the one in use. */
+  makesDefault: boolean
   busy: boolean
   boxRef: RefObject<HTMLDivElement | null>
   onConfirm(): void
   onCancel(): void
 }
 
-/** What will be fetched and its total size, before the passkey is asked for. */
-function ConfirmDownload({ plan, busy, boxRef, onConfirm, onCancel }: ConfirmProps) {
+/** What will be fetched and its size, before the passkey is asked for. "Up to": a file shared with
+ *  an installed model, or one partly downloaded already, isn't fetched again in full. */
+function ConfirmDownload({ plan, makesDefault, busy, boxRef, onConfirm, onCancel }: ConfirmProps) {
   const titleId = useId()
   const total = plan.reduce((sum, i) => sum + i.size_bytes, 0)
   return (
@@ -185,7 +192,8 @@ function ConfirmDownload({ plan, busy, boxRef, onConfirm, onCancel }: ConfirmPro
           </li>
         ))}
       </ul>
-      <p className="model-total">Total: {formatBytes(total)}</p>
+      <p className="model-total">Up to {formatBytes(total)}</p>
+      {makesDefault && <p className="perm-sub">It becomes the chat model in use after a restart.</p>}
       <div className="settings-actions">
         <button type="button" className="btn primary" aria-busy={busy || undefined} disabled={busy} onClick={onConfirm}>
           <PasskeyIcon />
@@ -283,7 +291,15 @@ export function ModelsPanel({ pollMs = POLL_MS }: Props) {
       asking = true
       try {
         const next = await getJob()
-        if (live && next) setJob(next)
+        if (!live) return
+        if (next === null) {
+          // The server forgot the job (it restarted): stop asking and show what is installed now.
+          asking = false
+          setJob(null)
+          loadCatalog()
+          return
+        }
+        setJob(next)
       } catch {
         // Keep the last known state and ask again.
       }
@@ -305,7 +321,7 @@ export function ModelsPanel({ pollMs = POLL_MS }: Props) {
       window.clearTimeout(timer)
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [running, pollMs])
+  }, [running, pollMs, loadCatalog])
 
   // When a job this page watched ends: fresh catalog, and a restart if models.toml changed.
   const lastState = useRef<Job['state'] | null>(null)
@@ -330,8 +346,8 @@ export function ModelsPanel({ pollMs = POLL_MS }: Props) {
           : focusTo === 'in-use'
             ? inUseRef.current
             : opener.current
-    if (!target) return
-    target.focus()
+    // One try: a target that isn't on screen (the list ended, the box closed) isn't waited for.
+    target?.focus()
     setFocusTo(null)
   })
 
@@ -353,7 +369,7 @@ export function ModelsPanel({ pollMs = POLL_MS }: Props) {
     setBusy(true)
     setError(null)
     try {
-      const started = await startInstall([item.id], true)
+      const started = await startInstall([item.id], makesDefault(catalog))
       if (!alive.current) return
       setConfirm(null)
       setJob(started)
@@ -415,7 +431,9 @@ export function ModelsPanel({ pollMs = POLL_MS }: Props) {
       setKey('')
       switched(result)
     } catch (e) {
-      if (alive.current) setError({ section: 'chat', text: modelsErrorMessage(e, 'Changing the chat model') })
+      if (!alive.current) return
+      setKey('')
+      setError({ section: 'chat', text: modelsErrorMessage(e, 'Changing the chat model') })
     }
     if (alive.current) setBusy(false)
   }
@@ -423,7 +441,8 @@ export function ModelsPanel({ pollMs = POLL_MS }: Props) {
   const showJob = job !== null && (job.state !== 'done' || watched)
   const jobSection = job ? sectionOf(catalog, job) : null
   const restartSection = restartAt ?? (server?.info?.restart_reasons?.includes('models') ? 'chat' : null)
-  const supervised = server?.info ? server.info.supervised && !server.stopped : (catalog?.supervised ?? false)
+  // "Restart now" only when the server's own state is known; otherwise the plain sentence.
+  const supervised = server?.info ? server.info.supervised && !server.stopped : false
 
   function downloads(section: Section) {
     if (!showJob || jobSection !== section || !job) return null
@@ -455,9 +474,11 @@ export function ModelsPanel({ pollMs = POLL_MS }: Props) {
 
   function confirmBox(section: Section) {
     if (confirm?.section !== section || !catalog) return null
+    const plan = downloadPlan(catalog, confirm.item)
     return (
       <ConfirmDownload
-        plan={downloadPlan(catalog, confirm.item)}
+        plan={plan}
+        makesDefault={makesDefault(catalog) && plan.some((i) => i.kind === 'chat')}
         busy={busy}
         boxRef={confirmRef}
         onConfirm={() => void download()}
@@ -469,6 +490,7 @@ export function ModelsPanel({ pollMs = POLL_MS }: Props) {
   const canDownload = !running && !busy && confirm === null
   const loading = catalog === null && loadError === null
   const chatItems = catalog?.items.filter((i) => i.kind === 'chat') ?? []
+  const engineItems = catalog?.items.filter((i) => i.kind === 'runtime') ?? []
   const imageItems = catalog?.items.filter((i) => i.kind === 'comfyui' || i.kind === 'image') ?? []
   const chat = catalog?.chat
   const inUseName =
@@ -547,6 +569,23 @@ export function ModelsPanel({ pollMs = POLL_MS }: Props) {
                   canDownload={canDownload}
                   onDownload={(i, button) => openConfirm('chat', i, button)}
                   onUse={(i) => void useLocal(i)}
+                />
+              ))}
+            </ul>
+            <h3 className="models-sub">Chat engine</h3>
+            <p className="settings-lede">
+              The program that runs the chat model. Downloading a chat model adds the one recommended here if none is
+              installed yet.
+            </p>
+            <ul className="device-list" aria-label="Chat engines">
+              {engineItems.map((item) => (
+                <ModelRow
+                  key={item.id}
+                  item={item}
+                  badge={item.id === catalog.recommended?.runtime ? 'Recommended for this PC' : undefined}
+                  why={item.fits ? null : MODELS_ERRORS.needs_nvidia}
+                  canDownload={canDownload}
+                  onDownload={(i, button) => openConfirm('chat', i, button)}
                 />
               ))}
             </ul>

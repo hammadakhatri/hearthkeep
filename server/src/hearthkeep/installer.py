@@ -315,6 +315,11 @@ class Installer:
         paths = card_file_paths(card, rt)
         return paths is not None and all(p.is_file() for p in paths)
 
+    def runtime_ready(self) -> bool:
+        """Whether a chat engine is there: the one models.toml names (a catalog build or the
+        owner's own), or a catalog build already unpacked. `plan()` adds none when this is true."""
+        return self._runtime_installed()
+
     def _runtime_installed(self) -> bool:
         exe = self._runtime_config().llama_server_exe
         if exe is not None and exe.is_file():

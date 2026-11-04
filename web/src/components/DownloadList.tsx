@@ -59,19 +59,28 @@ function ItemState({ item }: { item: JobItem }) {
 type Props = { job: Job; onRetry(): void; onCancel(): void }
 
 /** One row per item of an install job: size, progress, speed, Verified once checked, and a plain
- *  sentence with Retry for an item that failed. Presentational: the caller polls and acts. */
+ *  sentence for an item that failed; one Retry for the job. Presentational: the caller polls and
+ *  acts. */
 export function DownloadList({ job, onRetry, onCancel }: Props) {
   const done = job.items.filter((i) => i.state === 'done').length
+  const failed = job.items.filter((i) => i.state === 'failed' && i.error !== 'cancelled').length
   const running = job.state === 'running'
+  // The server retries every failed and stopped item of the job at once: one button for all.
+  const canRetry = !running && job.items.some((i) => i.state === 'failed' || i.state === 'cancelled')
   return (
     <div className="downloads">
       <div className="downloads-head">
         <p className="downloads-summary" aria-live="polite">
-          {done} of {job.items.length} done
+          {`${done} of ${job.items.length} done${failed > 0 ? `, ${failed} failed` : ''}`}
         </p>
         {running && (
           <button type="button" className="btn ghost" onClick={onCancel}>
             Stop downloading
+          </button>
+        )}
+        {canRetry && (
+          <button type="button" className="btn" onClick={onRetry}>
+            Retry
           </button>
         )}
       </div>
@@ -80,8 +89,7 @@ export function DownloadList({ job, onRetry, onCancel }: Props) {
           const part = fraction(item)
           const percent = Math.round(part * 100)
           const stopped = item.state === 'cancelled' || item.error === 'cancelled'
-          const failed = item.state === 'failed' && !stopped
-          const canRetry = !running && (failed || stopped)
+          const itemFailed = item.state === 'failed' && !stopped
           return (
             <li key={item.id} className="device download">
               <div className="download-top">
@@ -102,15 +110,8 @@ export function DownloadList({ job, onRetry, onCancel }: Props) {
               <div className="download-state">
                 {stopped ? <span>{ITEM_ERRORS.cancelled}</span> : <ItemState item={item} />}
               </div>
-              {failed && (
+              {itemFailed && (
                 <p className="download-error">{(item.error && ITEM_ERRORS[item.error]) || UNKNOWN_ERROR}</p>
-              )}
-              {canRetry && (
-                <div className="settings-actions">
-                  <button type="button" className="btn" aria-label={`Retry ${item.name}`} onClick={onRetry}>
-                    Retry
-                  </button>
-                </div>
               )}
             </li>
           )
