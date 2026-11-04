@@ -76,6 +76,7 @@ async def run(
         "https://huggingface.co:443/x",
         "https://cas-bridge.xethub.hf.co/x",
         "https://release-assets.githubusercontent.com/x",
+        "https://HUGGINGFACE.CO/x",
     ],
 )
 def test_allowed_url_accepts_catalog_hosts(url):
@@ -93,6 +94,9 @@ def test_allowed_url_accepts_catalog_hosts(url):
         "https://user@huggingface.co/x",
         "https://huggingface.co:8443/x",
         "https://xhf.co/x",
+        "https://huggingface.co./x",  # a trailing dot is a different name
+        "https://.hf.co/x",  # a suffix match must leave a label
+        "https://a..hf.co/x",
     ],
 )
 def test_allowed_url_refuses_everything_else(url):
@@ -274,6 +278,58 @@ async def test_five_redirects_are_followed_and_six_are_not(tmp_path):
     assert not bad.exists()
 
 
+async def test_a_following_client_cannot_skip_the_hop_check(tmp_path):
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request.url.host)
+        if request.url.host == "huggingface.co":
+            return httpx.Response(302, headers={"Location": "https://evil.example/x"})
+        return httpx.Response(200, content=BODY)
+
+    part = tmp_path / "m.part"
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), trust_env=False, follow_redirects=True
+    )
+    async with client:
+        with pytest.raises(FetchError) as info:
+            await download_file(
+                URL,
+                part,
+                size=len(BODY),
+                sha256=sha(BODY),
+                client=client,
+                on_progress=lambda p: None,
+                cancelled=never_cancelled,
+            )
+    assert info.value.reason == "network"
+    assert requested == ["huggingface.co"]
+    assert not part.exists()
+
+
+async def test_every_request_asks_for_identity_encoding(tmp_path):
+    seen: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("Accept-Encoding"))
+        if len(seen) == 1:
+            return httpx.Response(302, headers={"Location": "https://cas-bridge.xethub.hf.co/x"})
+        return httpx.Response(200, content=BODY)
+
+    await run(handler, tmp_path / "m.part")
+    assert seen == ["identity", "identity"]
+
+
+async def test_an_error_while_hashing_is_a_network_error(tmp_path, monkeypatch):
+    def broken(path):
+        raise OSError(errno.EIO, "read error")
+
+    monkeypatch.setattr(fetching, "sha256_file", broken)
+    with pytest.raises(FetchError) as info:
+        await run(lambda r: httpx.Response(200, content=BODY), tmp_path / "m.part")
+    assert info.value.reason == "network"
+
+
 async def test_a_redirect_without_a_location_is_a_network_error(tmp_path):
     with pytest.raises(FetchError) as info:
         await run(lambda r: httpx.Response(302), tmp_path / "m.part")
@@ -313,23 +369,34 @@ async def test_cancel_keeps_part(tmp_path, monkeypatch):
 
 
 async def test_disk_full_keeps_part(tmp_path, monkeypatch):
+    monkeypatch.setattr(fetching, "CHUNK", 1024)
+
     class FullDisk:
+        """Writes the first chunk for real, then the disk fills up."""
+
+        def __init__(self, path):
+            self.f = path.open("wb")
+            self.writes = 0
+
         def __enter__(self):
             return self
 
         def __exit__(self, *exc):
+            self.f.close()
             return False
 
         def write(self, data):
-            raise OSError(errno.ENOSPC, "No space left on device")
+            if self.writes:
+                raise OSError(errno.ENOSPC, "No space left on device")
+            self.writes += 1
+            self.f.write(data)
 
     part = tmp_path / "m.part"
-    part.write_bytes(b"")
-    monkeypatch.setattr(fetching, "_open_part", lambda path, resume: FullDisk())
+    monkeypatch.setattr(fetching, "_open_part", lambda path, resume: FullDisk(path))
     with pytest.raises(FetchError) as info:
         await run(lambda r: httpx.Response(200, content=BODY), part)
     assert info.value.reason == "no_space"
-    assert part.exists()
+    assert part.read_bytes() == BODY[:1024]
 
 
 async def test_windows_disk_full_error_is_no_space(tmp_path, monkeypatch):
