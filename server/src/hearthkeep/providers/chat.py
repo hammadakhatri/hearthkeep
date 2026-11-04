@@ -73,12 +73,12 @@ class ProviderError(Exception):
         self.user_message = user_message
 
 
-NO_CHAT_MODEL = "No chat model is set up yet. Open Settings › Add-ons to set one up."
+NO_CHAT_MODEL = "No chat model is set up yet. Open Settings › Chat model to set one up."
 
 
 class NoChatModelClient:
     """The chat client when no chat model is set up: every stream fails at once with a
-    message that sends the owner to Settings › Add-ons."""
+    message that sends the owner to Settings › Chat model."""
 
     async def stream(
         self,

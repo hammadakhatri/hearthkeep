@@ -368,7 +368,7 @@ def build_model_stack(
         )
     else:
         lines.append(
-            "Chat: no chat model is set up yet. Open Hearthkeep and go to Settings › Add-ons."
+            "Chat: no chat model is set up yet. Open Hearthkeep and go to Settings › Chat model."
         )
     if comfy is not None:
         scope = "" if owned else " Image models only make room for each other on the GPU."
@@ -376,7 +376,7 @@ def build_model_stack(
             f"Images: ComfyUI on {LOOPBACK}:{rt.comfyui_port}, started on first use.{scope}"
         )
     else:
-        lines.append("Images: not set up. Open Settings › Add-ons to see what it needs.")
+        lines.append("Images: not set up. Open Settings › Image models to add them.")
 
     stack = ModelStack(
         cards=cards,
