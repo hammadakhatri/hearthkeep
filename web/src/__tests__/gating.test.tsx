@@ -50,12 +50,12 @@ describe('the composer follows the chat add-on', () => {
     const box = await screen.findByRole('textbox', { name: 'Message Hearthkeep' })
     expect(box).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
-    const why = screen.getByText('Set up your chat model to start chatting.')
+    const why = screen.getByText('Choose a chat model in Settings › Chat model to start chatting.')
     expect(why).toBeVisible()
     expect(box).toHaveAttribute('aria-describedby', expect.stringContaining('composer-state'))
     expect(why.closest('#composer-state')).not.toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Set up' }))
-    expect(openSettings).toHaveBeenCalledWith('addon-chat')
+    expect(openSettings).toHaveBeenCalledWith('settings-chat')
   })
 
   it('an offline chat server disables the composer with visible text, not a tooltip', async () => {
@@ -110,7 +110,7 @@ describe('the composer follows the chat add-on', () => {
     chatRoutes({
       'POST /api/chats/c1/messages': {
         status: 409,
-        body: { reason: 'chat_not_set_up', message: 'Set up your chat model to start chatting.' },
+        body: { reason: 'chat_not_set_up', message: 'Choose a chat model in Settings › Chat model to start chatting.' },
       },
     })
     // Add-ons unknown (no provider): the composer is usable and the server answers for it.
@@ -118,7 +118,7 @@ describe('the composer follows the chat add-on', () => {
     const box = await screen.findByRole('textbox', { name: 'Message Hearthkeep' })
     fireEvent.change(box, { target: { value: 'Hello' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('Set up your chat model to start chatting.')
+    expect(await screen.findByRole('alert')).toHaveTextContent('Choose a chat model in Settings › Chat model to start chatting.')
   })
 
   it('Composer: a notice keeps it usable and is announced', () => {
@@ -227,17 +227,17 @@ describe('Images', () => {
     expect(within(panel).getByText('Create and edit images on this PC.')).toBeInTheDocument()
     expect(within(panel).getByText('Needs: ComfyUI and at least one image model.')).toBeInTheDocument()
     fireEvent.click(within(panel).getByRole('button', { name: 'Set up Images' }))
-    expect(openSettings).toHaveBeenCalledWith('addon-images')
+    expect(openSettings).toHaveBeenCalledWith('settings-images')
     expect(screen.queryByText(/docs\/models\.md/)).toBeNull()
   })
 
-  it('images ready but chat not set up shows no Create form and a button to the chat card', async () => {
+  it('images ready but chat not set up shows no Create form and a button to Settings › Chat model', async () => {
     mockFetch({ 'GET /api/models': noModels, 'GET /api/images?limit=24': { body: { images: [] } } })
     const { openSettings } = renderWithAddons(<Images />, addons({ chat: 'not_set_up' }))
     expect(screen.queryByRole('textbox', { name: 'Describe the image you want' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Create' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Set up Chat model' }))
-    expect(openSettings).toHaveBeenCalledWith('addon-chat')
+    expect(openSettings).toHaveBeenCalledWith('settings-chat')
   })
 
   it('images ready and the chat model loading keeps the Create form', async () => {
@@ -259,7 +259,7 @@ describe('Images', () => {
     mockFetch({ 'GET /api/models': noModels, 'GET /api/images?limit=24': { body: { images: [] } } })
     render(<Images />)
     const panel = await screen.findByRole('region', { name: 'Set up Images' })
-    expect(within(panel).getByText("ComfyUI and an image model aren't set up on this PC.")).toBeInTheDocument()
+    expect(within(panel).getByText("Image making isn't set up on this PC yet. Add it in Settings › Image models.")).toBeInTheDocument()
     expect(screen.queryByRole('textbox', { name: 'Describe the image you want' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Create' })).toBeNull()
     expect(forbiddenIn(panel.textContent ?? '')).toEqual([])
@@ -298,7 +298,7 @@ describe('Images', () => {
       'POST /api/chats': { status: 201, body: { id: 'ic1', title: 'Images', think: false, created_at: '2026-10-26T10:00:00Z', active_turn: null } },
       'POST /api/chats/ic1/messages': {
         status: 409,
-        body: { reason: 'chat_not_set_up', message: 'Set up your chat model to start chatting.' },
+        body: { reason: 'chat_not_set_up', message: 'Choose a chat model in Settings › Chat model to start chatting.' },
       },
     })
     render(<Images />)
@@ -306,7 +306,7 @@ describe('Images', () => {
       target: { value: 'A kite' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Create' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('Set up your chat model to start chatting.')
+    expect(await screen.findByRole('alert')).toHaveTextContent('Choose a chat model in Settings › Chat model to start chatting.')
   })
 
   it('keeps saved images visible under the panel', async () => {

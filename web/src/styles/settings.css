@@ -249,6 +249,147 @@
   margin-top: 0;
 }
 
+/* Chat model and Image models: the catalog, what will be fetched, and downloads in progress. */
+.models-in-use {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.models-in-use .perm-sub {
+  margin-top: 0;
+  color: var(--fg);
+}
+
+.model-note,
+.model-why {
+  margin-top: 3px;
+  font-size: var(--text-sm);
+  color: var(--fg2);
+}
+
+.model-why {
+  color: var(--muted);
+}
+
+.model-confirm,
+.model-external {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.model-confirm h3,
+.model-external h3 {
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.model-external .perm-sub {
+  margin-top: 0;
+}
+
+.model-confirm-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  font-size: var(--text-sm);
+}
+
+.model-confirm-list li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+
+.model-confirm-list b {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.model-confirm-list span {
+  color: var(--fg2);
+}
+
+.model-total {
+  font-weight: 500;
+}
+
+.downloads {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.downloads-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+.downloads-summary {
+  font-size: var(--text-sm);
+  color: var(--fg2);
+}
+
+.download-top {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 14px;
+}
+
+.download-name {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.download-size,
+.download-state {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.download-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+}
+
+.download-verified {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--green);
+}
+
+.download-bar {
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--s3);
+  overflow: hidden;
+}
+
+/* Moved with transform, never width, so progress doesn't relayout the list. */
+.download-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transform-origin: left center;
+  transition: transform var(--dur) var(--ease);
+}
+
+.download-error {
+  font-size: var(--text-sm);
+  color: var(--red);
+}
+
 @media (max-width: 640px) {
   .device-main {
     grid-template-columns: minmax(0, 1fr);

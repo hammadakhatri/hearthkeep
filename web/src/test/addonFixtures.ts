@@ -28,7 +28,11 @@ const ADDON_ABOUT: Record<string, [string, string, string]> = {
 
 // "id.state" -> [message, action, short]
 const ADDON_COPY: Record<string, [string, string | null, string | null]> = {
-  'chat.not_set_up': ['Set up your chat model to start chatting.', 'open_setup', 'Needs a chat model'],
+  'chat.not_set_up': [
+    'Choose a chat model in Settings › Chat model to start chatting.',
+    'open_setup',
+    'Needs a chat model',
+  ],
   'chat.ready': ['Ready.', null, null],
   'chat.starting': ['Loading the chat model…', null, null],
   'chat.offline': [
@@ -41,7 +45,11 @@ const ADDON_COPY: Record<string, [string, string | null, string | null]> = {
   'analysis.docker_stopped': ["Docker Desktop isn't running. Start it, then check again.", 'start_docker', 'Needs Docker'],
   'analysis.needs_image': ["The analysis sandbox isn't built yet.", 'build_image', 'Needs the analysis sandbox'],
   'analysis.ready': ['Ready.', null, null],
-  'images.not_set_up': ["ComfyUI and an image model aren't set up on this PC.", 'install', 'Needs Images'],
+  'images.not_set_up': [
+    "Image making isn't set up on this PC yet. Add it in Settings › Image models.",
+    'install',
+    'Needs Images',
+  ],
   'images.error': [
     "Hearthkeep can't find ComfyUI or the image model files on this PC.",
     'open_setup',

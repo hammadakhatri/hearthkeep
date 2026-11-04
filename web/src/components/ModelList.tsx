@@ -14,7 +14,7 @@ const gb = (n: number) => n.toFixed(1)
 
 function DocsLine() {
   return (
-    <p className="models-docs">To add a model, add a card file. See docs/models.md in the Hearthkeep repository.</p>
+    <p className="models-docs">Add models in Settings › Chat model.</p>
   )
 }
 

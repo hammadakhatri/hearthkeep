@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { stepUp } from '../api/webauthn'
 import { QrCode } from '../components/QrCode'
 import { Settings } from '../views/Settings'
-import { bodyOf, mockFetch, serverInfo, type Handler, type Reply } from '../test/fetch'
+import { bodyOf, mockFetch, modelsIdle, serverInfo, type Handler, type Reply } from '../test/fetch'
 
 vi.mock('../api/webauthn', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../api/webauthn')>()),
@@ -38,6 +38,7 @@ function routes(extra: Record<string, Handler | Reply> = {}) {
     'GET /api/folders': { body: noFolders },
     'GET /api/settings/startup': { body: startupOff },
     'GET /api/server': serverInfo(),
+    ...modelsIdle,
     ...extra,
   })
 }

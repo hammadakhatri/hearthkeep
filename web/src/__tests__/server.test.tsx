@@ -7,7 +7,7 @@ import { ServerPanel } from '../components/ServerPanel'
 import { UpdateNote } from '../components/UpdateNote'
 import { renderWithAddons } from '../test/addons'
 import { forbiddenIn } from '../test/copyRules'
-import { bodyOf, headerOf, mockFetch, serverInfo, type Handler, type Reply } from '../test/fetch'
+import { bodyOf, headerOf, mockFetch, modelsIdle, serverInfo, type Handler, type Reply } from '../test/fetch'
 import { Settings } from '../views/Settings'
 
 vi.mock('../api/webauthn', async (importOriginal) => ({
@@ -42,6 +42,7 @@ function settingsRoutes(extra: Record<string, Handler | Reply> = {}) {
     'GET /api/devices': { body: [] },
     'GET /api/folders': { body: { folders: [], suggestions: [] } },
     'GET /api/settings/startup': { body: { supported: true, enabled: true, command: null } },
+    ...modelsIdle,
     ...extra,
   })
 }
