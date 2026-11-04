@@ -67,6 +67,9 @@ export type Catalog = {
   recommended: Recommendation | null
   items: CatalogItem[]
   chat: ChatState
+  /** A chat engine is there (a catalog build, or one set up by hand): a chat model download
+   *  adds none. The installer's own check. */
+  runtime_ready: boolean
   restart_needed: boolean
   supervised: boolean
 }

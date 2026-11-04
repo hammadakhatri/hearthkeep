@@ -235,6 +235,14 @@ const ITEMS: CatalogItem[] = [
     needs_nvidia: true,
     licence: 'MIT',
   }),
+  item({
+    id: 'llama-vulkan',
+    kind: 'runtime',
+    name: 'Chat engine for other graphics cards',
+    size_bytes: 37_660_003,
+    variant: 'vulkan',
+    licence: 'MIT',
+  }),
   item({ id: 'llama-cpu', kind: 'runtime', name: 'Chat engine for the processor only', size_bytes: 24_706_916, variant: 'cpu' }),
   item({
     id: 'chat-qwen3.5-4b',
@@ -286,6 +294,8 @@ const ITEMS: CatalogItem[] = [
   }),
 ]
 
+const GEMMA = ITEMS.find((i) => i.id === 'chat-gemma-4-12b')!
+
 function catalog(over: Partial<Catalog> = {}, installed: string[] = []): Catalog {
   const nvidia = (over.pc ?? RTX).nvidia
   return {
@@ -297,6 +307,7 @@ function catalog(over: Partial<Catalog> = {}, installed: string[] = []): Catalog
       fits: i.needs_nvidia ? nvidia : true,
     })),
     chat: { source: 'none', model: null, base_url: null },
+    runtime_ready: installed.some((id) => id.startsWith('llama-')),
     restart_needed: false,
     supervised: true,
     ...over,
@@ -368,8 +379,8 @@ describe('Settings › Chat model and Image models', () => {
     const gemma = await row('Gemma 4 12B')
     expect(within(gemma).getByText('Recommended for this PC')).toBeInTheDocument()
     expect(within(gemma).getByText('10.4 GB')).toBeInTheDocument()
-    expect(within(gemma).getByText(ITEMS[4].note)).toBeInTheDocument()
-    expect(within(gemma).getByRole('link', { name: /Apache 2\.0/ })).toHaveAttribute('href', ITEMS[4].licence_url)
+    expect(within(gemma).getByText(GEMMA.note)).toBeInTheDocument()
+    expect(within(gemma).getByRole('link', { name: /Apache 2\.0/ })).toHaveAttribute('href', GEMMA.licence_url)
     expect(within(await row('Qwen3.5 9B')).queryByText('Recommended for this PC')).toBeNull()
     expect(within(chatSection()).getByRole('heading', { level: 2, name: 'Chat model' })).toBeInTheDocument()
     expect(within(imageSection()).getByRole('heading', { level: 2, name: 'Image models' })).toBeInTheDocument()
@@ -408,7 +419,8 @@ describe('Settings › Chat model and Image models', () => {
       expect.stringContaining('Chat engine for NVIDIA graphics cards'),
       expect.stringContaining('Gemma 4 12B'),
     ])
-    expect(within(confirm).getByText('Total: 11.0 GB')).toBeInTheDocument()
+    expect(within(confirm).getByText('Up to 11.0 GB')).toBeInTheDocument()
+    expect(within(confirm).getByText('It becomes the chat model in use after a restart.')).toBeInTheDocument()
     expect(confirm).toHaveFocus()
     expect(stepUp).not.toHaveBeenCalled()
 
@@ -468,6 +480,28 @@ describe('Settings › Chat model and Image models', () => {
     expect(screen.getAllByText('Verified')).toHaveLength(2)
   })
 
+  it('the summary counts failures, and one Retry serves the whole job', () => {
+    const onRetry = vi.fn()
+    render(
+      <DownloadList
+        job={job(
+          [
+            jobItem({ id: 'a', name: 'Alpha', state: 'done' }),
+            jobItem({ id: 'b', name: 'Beta', state: 'failed', error: 'network' }),
+            jobItem({ id: 'c', name: 'Gamma', state: 'failed', error: 'checksum' }),
+          ],
+          { state: 'failed' },
+        )}
+        onRetry={onRetry}
+        onCancel={() => {}}
+      />,
+    )
+    expect(screen.getByText('1 of 3 done, 2 failed')).toHaveAttribute('aria-live', 'polite')
+    expect(screen.getAllByRole('button', { name: 'Retry' })).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(onRetry).toHaveBeenCalledOnce()
+  })
+
   it('failed item shows its sentence and Retry calls retry', async () => {
     const failed = job(
       [
@@ -489,10 +523,11 @@ describe('Settings › Chat model and Image models', () => {
     expect(
       within(list).getByText("The file didn't match its checksum, so it was removed. Retry to download it again."),
     ).toBeInTheDocument()
-    fireEvent.click(within(list).getByRole('button', { name: 'Retry Qwen3.5 9B' }))
+    expect(within(list).getAllByRole('button', { name: 'Retry' })).toHaveLength(1)
+    fireEvent.click(within(list).getByRole('button', { name: 'Retry' }))
     await waitFor(() => expect(calls.some((c) => c.path === '/api/models/install/retry')).toBe(true))
     expect(stepUp).not.toHaveBeenCalled()
-    await waitFor(() => expect(within(list).queryByRole('button', { name: /^Retry/ })).toBeNull())
+    await waitFor(() => expect(within(list).queryByRole('button', { name: 'Retry' })).toBeNull())
     expect(list).toHaveFocus()
   })
 
@@ -506,7 +541,7 @@ describe('Settings › Chat model and Image models', () => {
       />,
     )
     expect(screen.getByText('Stopped')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Retry Alpha' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(onRetry).toHaveBeenCalledOnce()
   })
 
@@ -749,7 +784,8 @@ describe('Settings › Chat model and Image models', () => {
       expect.stringContaining('Picture maker (ComfyUI)'),
       expect.stringContaining('FLUX.2 klein 4B'),
     ])
-    expect(within(confirm).getByText('Total: 18.1 GB')).toBeInTheDocument()
+    expect(within(confirm).getByText('Up to 18.1 GB')).toBeInTheDocument()
+    expect(within(confirm).queryByText(/chat model in use/)).toBeNull()
   })
 
   it('says so when downloads are not available', async () => {
@@ -776,6 +812,133 @@ describe('Settings › Chat model and Image models', () => {
     expect(openSettings).toHaveBeenLastCalledWith('settings-chat')
     fireEvent.click(screen.getByRole('button', { name: 'Add image models' }))
     expect(openSettings).toHaveBeenLastCalledWith('settings-images')
+  })
+
+  it('a job the server forgot stops polling and reloads the catalog', async () => {
+    let forgotten = false
+    let polls = 0
+    let catalogs = 0
+    const downloading = job([jobItem({ id: 'chat-qwen3.5-9b', name: 'Qwen3.5 9B', state: 'downloading' })])
+    modelRoutes(catalog(), {
+      'GET /api/models/catalog': () => {
+        catalogs++
+        return { body: catalog() }
+      },
+      'GET /api/models/install': () => {
+        polls++
+        return { body: { job: forgotten ? null : downloading } }
+      },
+    })
+    renderPanel(20)
+    await screen.findByRole('region', { name: 'Downloads' })
+    forgotten = true
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Downloads' })).toBeNull())
+    await waitFor(() => expect(catalogs).toBe(2))
+    const at = polls
+    await pause(100)
+    expect(polls).toBe(at)
+    expect(within(await row('Qwen3.5 9B')).getByRole('button', { name: 'Download Qwen3.5 9B' })).toBeEnabled()
+  })
+
+  it('lists the chat engines, with the recommended one marked', async () => {
+    modelRoutes(catalog({}, ['llama-cpu']))
+    renderPanel()
+    const engines = await within(chatSection()).findByRole('list', { name: 'Chat engines' })
+    const names = within(engines)
+      .getAllByRole('listitem')
+      .map((li) => li.querySelector('.model-name')!.textContent)
+    expect(names).toEqual([
+      'Chat engine for NVIDIA graphics cards',
+      'Chat engine for other graphics cards',
+      'Chat engine for the processor only',
+    ])
+    const cuda = await row('Chat engine for NVIDIA graphics cards')
+    expect(within(cuda).getByText('Recommended for this PC')).toBeInTheDocument()
+    expect(within(engines).getAllByText('Recommended for this PC')).toHaveLength(1)
+    expect(within(await row('Chat engine for the processor only')).getByText('Installed')).toBeInTheDocument()
+    // The chat model badge stays on the chat model.
+    expect(within(await row('Gemma 4 12B')).getByText('Recommended for this PC')).toBeInTheDocument()
+  })
+
+  it('choosing Vulkan posts llama-vulkan only', async () => {
+    const started = job([jobItem({ id: 'llama-vulkan', name: 'Chat engine for other graphics cards' })])
+    const { calls } = modelRoutes(catalog(), {
+      'POST /api/models/install': { status: 202, body: { job: started } },
+    })
+    renderPanel(60_000)
+    const vulkan = await row('Chat engine for other graphics cards')
+    fireEvent.click(within(vulkan).getByRole('button', { name: 'Download Chat engine for other graphics cards' }))
+    const confirm = await screen.findByRole('group', { name: 'Ready to download' })
+    expect(within(confirm).getAllByRole('listitem')).toHaveLength(1)
+    expect(within(confirm).getByText('Up to 38 MB')).toBeInTheDocument()
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Download with passkey' }))
+    await screen.findByRole('region', { name: 'Downloads' })
+    expect(stepUp).toHaveBeenCalledExactlyOnceWith('download')
+    const post = calls.find((c) => c.path === '/api/models/install' && c.init.method === 'POST')!
+    expect(bodyOf(post).items).toEqual(['llama-vulkan'])
+  })
+
+  it('the CUDA engine needs an NVIDIA graphics card', async () => {
+    modelRoutes(
+      catalog({ pc: NO_GPU, recommended: { chat: 'chat-qwen3.5-4b', runtime: 'llama-cpu', reason: 'no_nvidia' } }),
+    )
+    renderPanel()
+    const cuda = await row('Chat engine for NVIDIA graphics cards')
+    expect(within(cuda).getByRole('button', { name: 'Download Chat engine for NVIDIA graphics cards' })).toBeDisabled()
+    expect(within(cuda).getByText('Needs an NVIDIA graphics card')).toBeInTheDocument()
+    const cpu = await row('Chat engine for the processor only')
+    expect(within(cpu).getByText('Recommended for this PC')).toBeInTheDocument()
+  })
+
+  it('an engine the server already has is not listed, even one set up by hand', async () => {
+    modelRoutes(catalog({ runtime_ready: true }))
+    renderPanel()
+    fireEvent.click(within(await row('Gemma 4 12B')).getByRole('button', { name: 'Download Gemma 4 12B' }))
+    const confirm = await screen.findByRole('group', { name: 'Ready to download' })
+    expect(within(confirm).getAllByRole('listitem')).toHaveLength(1)
+    expect(within(confirm).getByText('Up to 10.4 GB')).toBeInTheDocument()
+  })
+
+  it('with a model server in use, a download does not take over chat', async () => {
+    const started = job([jobItem({ id: 'chat-qwen3.5-9b', name: 'Qwen3.5 9B' })])
+    const { calls } = modelRoutes(
+      catalog({ chat: { source: 'external', model: 'local', base_url: 'http://127.0.0.1:8080/v1' } }),
+      { 'POST /api/models/install': { status: 202, body: { job: started } } },
+    )
+    renderPanel(60_000)
+    fireEvent.click(within(await row('Qwen3.5 9B')).getByRole('button', { name: 'Download Qwen3.5 9B' }))
+    const confirm = await screen.findByRole('group', { name: 'Ready to download' })
+    expect(within(confirm).queryByText(/chat model in use/)).toBeNull()
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Download with passkey' }))
+    await screen.findByRole('region', { name: 'Downloads' })
+    const post = calls.find((c) => c.path === '/api/models/install' && c.init.method === 'POST')!
+    expect(bodyOf(post).make_default).toBe(false)
+  })
+
+  it('without the server state, a switch says to restart Hearthkeep', async () => {
+    mockFetch({
+      'GET /api/models/catalog': { body: catalog({}, ['chat-qwen3.5-4b', 'llama-cpu']) },
+      'GET /api/models/install': noJob,
+      'GET /api/server': { status: 500, body: {} },
+      'POST /api/models/chat': {
+        body: { source: 'local', model: 'qwen3.5-4b', base_url: null, restart_needed: true },
+      },
+    })
+    renderPanel()
+    fireEvent.click(within(await row('Qwen3.5 4B')).getByRole('button', { name: 'Use this: Qwen3.5 4B' }))
+    expect(await within(chatSection()).findByText('Restart Hearthkeep to use it.')).toBeInTheDocument()
+  })
+
+  it('a failed server change clears the key too', async () => {
+    modelRoutes(catalog(), { 'POST /api/models/chat': { status: 400, body: { reason: 'bad_url' } } })
+    renderPanel()
+    const form = await screen.findByRole('form', { name: 'Use a model server I already run' })
+    const key = within(form).getByLabelText('Key (optional)')
+    fireEvent.change(within(form).getByLabelText('Server address'), { target: { value: 'http://example.com/v1' } })
+    fireEvent.change(key, { target: { value: 'sk-very-secret' } })
+    fireEvent.click(within(form).getByRole('button', { name: 'Use this server' }))
+    await within(chatSection()).findByRole('alert')
+    expect(key).toHaveValue('')
   })
 
   it('every new string passes forbiddenIn', async () => {

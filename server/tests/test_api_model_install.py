@@ -37,7 +37,9 @@ from hearthkeep.secrets import SecretStore, SecretStoreError
 from hearthkeep.tomledit import TomlEditError
 
 SECRET = "external-chat-key-marker-7f3a"
-CATALOG_KEYS = {"pc", "recommended", "items", "chat", "restart_needed", "supervised"}
+CATALOG_KEYS = {
+    "pc", "recommended", "items", "chat", "runtime_ready", "restart_needed", "supervised",
+}  # fmt: skip
 ITEM_KEYS = {
     "id", "kind", "name", "note", "licence", "licence_url", "size_bytes", "needs_nvidia",
     "variant", "card", "installed", "fits",
@@ -59,6 +61,9 @@ class FakeInstaller:
 
     def installed(self, item) -> bool:
         return item.id in self.installed_ids
+
+    def runtime_ready(self) -> bool:
+        return any(self.installed(i) for i in self.catalog.values() if i.kind == "runtime")
 
     def current(self) -> Job | None:
         return self.job
@@ -240,6 +245,7 @@ def test_catalog_shape_and_no_paths(app_with, tmp_path):
     assert by_id["llama-cuda"]["variant"] == "cuda"
     assert body["chat"] == {"source": "none", "model": None, "base_url": None}
     assert body["restart_needed"] is False and body["supervised"] is True
+    assert body["runtime_ready"] is True
     assert not leaks_path(response.text, tmp_path)
 
 
@@ -258,6 +264,24 @@ def test_catalog_shows_a_local_chat_model(app_with, tmp_path):
     )
     body = app_with(FakeInstaller()).get("/api/models/catalog").json()
     assert body["chat"] == {"source": "local", "model": "qwen3.5-4b", "base_url": None}
+
+
+def test_catalog_runtime_ready_comes_from_the_installer(app_with):
+    fake = FakeInstaller()
+    client = app_with(fake)
+    assert client.get("/api/models/catalog").json()["runtime_ready"] is False
+    fake.installed_ids.add("llama-vulkan")
+    assert client.get("/api/models/catalog").json()["runtime_ready"] is True
+
+
+def test_catalog_says_whether_a_chat_engine_is_ready(app_with, tmp_path):
+    """The installer's own check: a catalog engine, or one the owner set up by hand."""
+    client = app_with(real=Server(), pc=NO_GPU)
+    assert client.get("/api/models/catalog").json()["runtime_ready"] is False
+    install_local_chat(tmp_path)  # llama_server_exe outside every catalog install folder
+    body = client.get("/api/models/catalog").json()
+    assert body["runtime_ready"] is True
+    assert not any(i["installed"] for i in body["items"] if i["kind"] == "runtime")
 
 
 # ---- starting a job -------------------------------------------------------------------------
@@ -381,6 +405,7 @@ def test_real_install_end_to_end(app_with, tmp_path):
     assert catalog["chat"] == {"source": "local", "model": "qwen3.5-4b", "base_url": None}
     installed = {i["id"]: i["installed"] for i in catalog["items"]}
     assert installed["chat-qwen3.5-4b"] and installed["llama-cpu"]
+    assert catalog["runtime_ready"] is True
     rows = {e["event"]: e for e in events(tmp_path)}
     started = rows["models.install_started"]
     assert started["actor"] == "system"
