@@ -73,6 +73,7 @@ from hearthkeep.hardware import PcCache, PcInfo, read_pc
 from hearthkeep.images import ImageStore
 from hearthkeep.installer import Installer
 from hearthkeep.lifecycle import ServerControl
+from hearthkeep.models.chatstate import chat_is_external
 from hearthkeep.numbercheck import NumberChecker
 from hearthkeep.push import PushSender, PushSubscriptions, VapidKeys
 from hearthkeep.runtime.stack import ModelStack
@@ -466,7 +467,11 @@ def create_app(
 
             try:
                 installer = installer_factory(
-                    data_dir, server_control, record=record_install, pc=pc.last
+                    data_dir,
+                    server_control,
+                    record=record_install,
+                    pc=pc.last,
+                    chat_is_external=lambda: chat_is_external(data_dir, settings),
                 )
             except Exception as exc:
                 _log.warning("could not set up model downloads: %s", type(exc).__name__)

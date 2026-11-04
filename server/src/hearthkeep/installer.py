@@ -25,20 +25,21 @@ import contextlib
 import errno
 import logging
 import math
+import ntpath
 import os
 import shutil
 import stat
 import subprocess
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
 
 import httpx
 
-from hearthkeep.config import ConfigError
+from hearthkeep.config import ConfigError, Settings
 from hearthkeep.fetching import (
     FetchError,
     Progress,
@@ -50,6 +51,7 @@ from hearthkeep.hardware import PcInfo, read_pc, recommend
 from hearthkeep.lifecycle import ServerControl
 from hearthkeep.models.cards import ModelCard, load_cards, load_shipped_cards
 from hearthkeep.models.catalog import CatalogFile, CatalogItem, load_catalog
+from hearthkeep.models.chatstate import chat_is_external
 from hearthkeep.models.runtime import (
     IMAGE_FILE_FOLDERS,
     RuntimeConfig,
@@ -72,6 +74,11 @@ TAR_POLL_SECONDS = 0.1
 UNPACK_FACTOR = {"zip": 3, "7z": 4}
 # Pauses before the three automatic retries of a file that failed on the network.
 RETRY_DELAYS: tuple[float, ...] = (2.0, 5.0, 10.0)
+# Pauses before the three retries of a rename that Windows refused because another program (a
+# virus scanner, the search indexer) had the file or folder open for a moment.
+RENAME_RETRY_DELAYS: tuple[float, ...] = (1.0, 1.0, 1.0)
+# Windows' ERROR_NOT_SAME_DEVICE: a rename can't cross drives.
+_NOT_SAME_DEVICE = 17
 SPACE_MARGIN = 1.1
 SPEED_WINDOW_SECONDS = 2.0
 BACKUP_NAME = "models.toml.before-hearthkeep"
@@ -131,7 +138,21 @@ class NothingToDo(Exception):
     """Everything asked for is already installed (or nothing is left to retry)."""
 
 
-def _is_link(path: Path) -> bool:
+def _long_path(path: Path | str, *, windows: bool = os.name == "nt") -> str:
+    """`path` with Windows' `\\\\?\\` prefix, so a folder deeper than 260 characters (ComfyUI's
+    Python packages go deep) can still be walked and removed. Unchanged off Windows or when it
+    already has the prefix. `path` is absolute."""
+    text = str(path)
+    if not windows or text.startswith("\\\\?\\"):
+        return text
+    text = ntpath.normpath(text)
+    if text.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + text[2:]
+    return "\\\\?\\" + text
+
+
+def _is_link(path: Path | str) -> bool:
+    path = Path(_long_path(path))
     if path.is_symlink() or path.is_junction():
         return True
     try:
@@ -141,6 +162,10 @@ def _is_link(path: Path) -> bool:
     return bool(attributes & _REPARSE_POINT)
 
 
+def _walk_refused(exc: OSError) -> None:
+    raise FetchError("unpack", f"could not check the unpacked files: {type(exc).__name__}")
+
+
 def _refuse_links(root: Path) -> None:
     """Raise `unpack` when anything under `root` is a symlink, junction or other reparse point,
     or a file with another hard link. Each folder's entries are checked before the walk could go
@@ -148,8 +173,8 @@ def _refuse_links(root: Path) -> None:
 
     Names outside the staging folder are refused by bsdtar (Windows' tar.exe) itself: by default
     it strips a leading `/` or drive and refuses entries with `..` (no `-P`). This walk catches
-    what bsdtar does create: links."""
-    for folder, dirs, files in os.walk(root, followlinks=False):
+    what bsdtar does create: links. A folder the walk can't read refuses the install too."""
+    for folder, dirs, files in os.walk(_long_path(root), followlinks=False, onerror=_walk_refused):
         for name in (*dirs, *files):
             path = Path(folder) / name
             if _is_link(path):
@@ -164,6 +189,7 @@ def _refuse_links(root: Path) -> None:
 
 
 def _remove_tree(path: Path) -> None:
+    path = Path(_long_path(path))
     if path.is_symlink() or path.is_junction():
         with contextlib.suppress(OSError):
             path.unlink()
@@ -174,20 +200,33 @@ def _remove_tree(path: Path) -> None:
             path.unlink()
 
 
-def _swap_in(new: Path, target: Path) -> None:
+def _retry_busy(op: Callable[[], object], sleep: Callable[[float], None]) -> None:
+    """Run a rename; when Windows refuses it with PermissionError (another program has the file
+    open for a moment), wait and try again, up to three more times."""
+    for delay in RENAME_RETRY_DELAYS:
+        try:
+            op()
+            return
+        except PermissionError:
+            sleep(delay)
+    op()
+
+
+def _swap_in(new: Path, target: Path, *, sleep: Callable[[float], None] = time.sleep) -> None:
     """Replace `target` with `new` by renames (`target` -> `target.old`, `new` -> `target`), then
-    remove `target.old`. If the second rename fails, the old `target` is put back."""
+    remove `target.old`. If the second rename fails, the old `target` is put back. A busy file
+    is retried."""
     target.parent.mkdir(parents=True, exist_ok=True)
     old = target.with_name(target.name + ".old")
     _remove_tree(old)
     had_old = target.exists()
     if had_old:
-        target.rename(old)
+        _retry_busy(lambda: target.rename(old), sleep)
     try:
-        new.rename(target)
+        _retry_busy(lambda: new.rename(target), sleep)
     except OSError:
         if had_old:
-            old.rename(target)
+            _retry_busy(lambda: old.rename(target), sleep)
         raise
     _remove_tree(old)
 
@@ -198,9 +237,44 @@ def _kill(proc: subprocess.Popen) -> None:
         proc.wait(timeout=5)
 
 
-def _move_into_place(part: Path, dest: Path) -> None:
+def _other_drive(exc: OSError) -> bool:
+    return exc.errno == errno.EXDEV or getattr(exc, "winerror", None) == _NOT_SAME_DEVICE
+
+
+def _move_into_place(
+    part: Path, dest: Path, *, sleep: Callable[[float], None] = time.sleep
+) -> None:
+    """Rename the checked `.part` to `dest`. When `dest` is on another drive (an owner's
+    `comfyui_model_root`), copy it to `dest.tmp` beside `dest` and rename that, so `dest` is
+    never half-written, then remove the `.part`. A busy file is retried. Runs in a thread."""
     dest.parent.mkdir(parents=True, exist_ok=True)
-    os.replace(part, dest)
+    try:
+        _retry_busy(lambda: os.replace(part, dest), sleep)
+        return
+    except OSError as exc:
+        if not _other_drive(exc):
+            raise
+    tmp = dest.with_name(dest.name + ".tmp")
+    try:
+        shutil.copyfile(part, tmp)
+        _retry_busy(lambda: os.replace(tmp, dest), sleep)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        raise
+    with contextlib.suppress(OSError):
+        part.unlink()
+
+
+def _volume_of(path: Path) -> Hashable:
+    """Which drive `path` is on (or would be, once created)."""
+    path = Path(path)
+    while not path.exists() and path != path.parent:
+        path = path.parent
+    try:
+        return os.stat(path).st_dev
+    except OSError:
+        return path.anchor
 
 
 def _in_place(path: Path, size: int) -> bool:
@@ -229,6 +303,9 @@ class Installer:
         clock: Callable[[], float] = time.monotonic,
         record: Callable[[str, dict], None] = lambda event, detail: None,
         pc: Callable[[], PcInfo] | None = None,
+        chat_is_external: Callable[[], bool] | None = None,
+        volume: Callable[[Path], Hashable] = _volume_of,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.data = Path(data_dir).resolve()
         self._control = control
@@ -239,6 +316,10 @@ class Installer:
         self._clock = clock
         self._record = record
         self._pc = pc if pc is not None else (lambda: read_pc(self.data))
+        # Whether chat uses an external server now, by the models API's rule (`chat_state`).
+        self._chat_is_external = chat_is_external or (lambda: chat_is_external_default(self.data))
+        self._volume = volume
+        self._sleep = sleep
         self._shipped = load_shipped_cards()
         self._job: Job | None = None
         self._task: asyncio.Task | None = None
@@ -276,6 +357,12 @@ class Installer:
             card = self._shipped[item.card]
             return image_root / IMAGE_FILE_FOLDERS[f.save_as] / card.files[f.save_as]
         return None
+
+    def _staging(self, item: CatalogItem) -> Path:
+        """Where an archive is unpacked: beside its folder, on the same drive, so putting it in
+        place is a rename (`tools/.comfyui.new` for `tools/comfyui`)."""
+        target = self.data / item.install_dir
+        return target.with_name(f".{target.name}.new")
 
     def _required(self, item: CatalogItem) -> tuple[str, ...]:
         """The files an unpacked runtime or ComfyUI must have, relative to its install_dir."""
@@ -348,12 +435,21 @@ class Installer:
                     wanted.setdefault(comfy.id, comfy)
         return sorted(wanted.values(), key=lambda i: _KIND_ORDER[i.kind])
 
-    def needed_bytes(self, items: list[CatalogItem]) -> int:
-        """Bytes still to download (a shared file once, less what's already in a `.part`), plus
-        room to unpack each archive (`UNPACK_FACTOR` times its size)."""
+    def _needs(self, items: list[CatalogItem]) -> dict[Hashable, tuple[Path, int]]:
+        """Bytes needed on each drive, as (a folder on it, bytes): what's still to download (a
+        shared file once, less what's already in a `.part`) and room to unpack each archive
+        (`UNPACK_FACTOR` times its size) on the data folder's drive, plus each model file again
+        on the drive it goes to when that is another one (it is copied there)."""
+        needs: dict[Hashable, tuple[Path, int]] = {}
+
+        def add(folder: Path, size: int) -> None:
+            key = self._volume(folder)
+            first, total = needs.get(key, (folder, 0))
+            needs[key] = (first, total + size)
+
         seen: set[str] = set()
-        total = 0
         image_root = self._image_root()
+        downloads = self._volume(self._downloads)
         for item in items:
             if item.kind in ("runtime", "comfyui") and self._unpacked_here(item):
                 continue  # a retry will skip it
@@ -361,7 +457,8 @@ class Installer:
                 if f.sha256 in seen:
                     continue
                 seen.add(f.sha256)
-                total += f.size * UNPACK_FACTOR.get(f.unpack, 0)
+                if f.unpack:
+                    add(self._staging(item), f.size * UNPACK_FACTOR.get(f.unpack, 0))
                 dest = self._dest(item, f, image_root)
                 if dest is not None and _in_place(dest, f.size):
                     continue
@@ -370,11 +467,17 @@ class Installer:
                     have = part.stat().st_size if part.is_file() else 0
                 except OSError:
                     have = 0
-                total += f.size - min(have, f.size)
-        return total
+                add(self._downloads, f.size - min(have, f.size))
+                if dest is not None and self._volume(dest) != downloads:
+                    add(dest.parent, f.size)
+        return needs
 
-    def _free_bytes(self) -> int:
-        root = self.data
+    def needed_bytes(self, items: list[CatalogItem]) -> int:
+        """Bytes needed on all drives together (see `_needs`)."""
+        return sum(size for _, size in self._needs(items).values())
+
+    def _free_bytes(self, folder: Path) -> int:
+        root = folder
         while not root.exists() and root != root.parent:
             root = root.parent
         try:
@@ -383,11 +486,14 @@ class Installer:
             return 0
 
     def _check_space(self, items: list[CatalogItem]) -> int:
-        needed = self.needed_bytes(items)
-        free = self._free_bytes()
-        if needed * SPACE_MARGIN > free:
-            raise NotEnoughSpace(needed, free)
-        return needed
+        """Refuse when any drive the job writes to is short: the error names that drive's
+        bytes needed and free. Returns the bytes needed on all of them."""
+        needs = self._needs(items)
+        for folder, needed in needs.values():
+            free = self._free_bytes(folder)
+            if needed * SPACE_MARGIN > free:
+                raise NotEnoughSpace(needed, free)
+        return sum(size for _, size in needs.values())
 
     # ---- the job ----------------------------------------
 
@@ -529,7 +635,7 @@ class Installer:
                 archives.append((f, part))
                 continue
             try:
-                await asyncio.to_thread(_move_into_place, part, dest)
+                await asyncio.to_thread(_move_into_place, part, dest, sleep=self._sleep)
             except OSError as exc:
                 raise _place_error(exc) from exc
         if archives:
@@ -585,40 +691,47 @@ class Installer:
     ) -> None:
         progress.state = "unpacking"
         progress.speed_bps = 0.0
-        staging = self._downloads / f"{item.id}.unpack"
+        staging = self._staging(item)
         await asyncio.to_thread(_remove_tree, staging)  # what a stopped run left behind
         try:
-            for f, part in archives:
-                if f.unpack == "zip":
-                    await asyncio.to_thread(
-                        safe_extract_zip,
-                        part,
-                        staging,
-                        max_files=ZIP_MAX_FILES,
-                        max_bytes=ZIP_MAX_BYTES,
-                    )
-                elif f.unpack == "7z":
-                    await self._untar(part, staging)
-                else:
-                    raise FetchError("unpack", "a program file that isn't an archive")
-            await asyncio.to_thread(_refuse_links, staging)
-            for rel in self._required(item):
-                if not (staging / rel).is_file():
-                    raise FetchError("unpack", f"the archive has no {rel}")
-            if self._cancel:
-                raise FetchError("cancelled")
             try:
-                await asyncio.to_thread(_swap_in, staging, self.data / item.install_dir)
-            except OSError as exc:
+                await self._unpack_into(item, archives, staging)
+            except OSError as exc:  # a full disk reads no_space; anything else, unpack
                 raise _place_error(exc) from exc
         except asyncio.CancelledError:
             raise  # stopping: a thread may still be writing there; the next run clears it
         except BaseException:
             await asyncio.to_thread(_remove_tree, staging)
+            with contextlib.suppress(OSError):
+                staging.parent.rmdir()  # only when nothing else is there
             raise
         for _, part in archives:
             with contextlib.suppress(OSError):
                 part.unlink(missing_ok=True)
+
+    async def _unpack_into(
+        self, item: CatalogItem, archives: list[tuple[CatalogFile, Path]], staging: Path
+    ) -> None:
+        for f, part in archives:
+            if f.unpack == "zip":
+                await asyncio.to_thread(
+                    safe_extract_zip,
+                    part,
+                    staging,
+                    max_files=ZIP_MAX_FILES,
+                    max_bytes=ZIP_MAX_BYTES,
+                )
+            elif f.unpack == "7z":
+                await self._untar(part, staging)
+            else:
+                raise FetchError("unpack", "a program file that isn't an archive")
+        await asyncio.to_thread(_refuse_links, staging)
+        for rel in self._required(item):
+            if not (staging / rel).is_file():
+                raise FetchError("unpack", f"the archive has no {rel}")
+        if self._cancel:
+            raise FetchError("cancelled")
+        await asyncio.to_thread(_swap_in, staging, self.data / item.install_dir, sleep=self._sleep)
 
     async def _untar(self, archive: Path, staging: Path) -> None:
         tar = system32_exe("tar.exe")
@@ -680,6 +793,10 @@ class Installer:
         if chats and job.make_default:
             set_top["default_chat_model"] = chats[-1].card
             set_top["chat_server"] = "local"
+        elif chats and self._chat_is_external():
+            # The owner's own server stays in use: without this, a downloaded card that is
+            # also the default (Gemma) would make the local engine win after the restart.
+            set_top["chat_server"] = "external"
 
         comfys = [i for i in items if i.kind == "comfyui"]
         if not comfys and "image" in kinds:
@@ -725,3 +842,8 @@ class Installer:
         self._control.mark_restart_needed("models")
         job.restart_needed = True
         job.state = "done"
+
+
+def chat_is_external_default(data: Path) -> bool:
+    """`chat_is_external` read from the data folder alone (no running server's settings)."""
+    return chat_is_external(data, Settings(data_dir=data))
