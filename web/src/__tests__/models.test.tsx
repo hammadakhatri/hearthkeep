@@ -978,6 +978,10 @@ describe('Settings › Chat model and Image models', () => {
     expect(address).toHaveAttribute('placeholder', 'http://127.0.0.1:11434/v1')
     const model = within(form).getByLabelText('Model name (optional)')
     expect(within(form).getByText("The model's name on that server, if it asks for one.")).toBeInTheDocument()
+    const keyHint = within(form).getByText(
+      'The address usually ends in /v1. Leave the key empty to keep the key for the server you already use.',
+    )
+    expect(forbiddenIn(keyHint.textContent ?? '')).toEqual([])
     fireEvent.change(address, { target: { value: 'http://127.0.0.1:11434/v1' } })
     fireEvent.change(model, { target: { value: '  qwen2.5:7b  ' } })
     fireEvent.click(within(form).getByRole('button', { name: 'Use this server' }))
