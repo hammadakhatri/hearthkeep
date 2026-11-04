@@ -6,11 +6,12 @@ import ctypes
 import shutil
 import sys
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
 from hearthkeep.config import ConfigError
-from hearthkeep.models.cards import ModelCard
+from hearthkeep.models.cards import ModelCard, load_cards
 from hearthkeep.models.catalog import CatalogItem
 from hearthkeep.models.runtime import load_runtime
 from hearthkeep.runtime.gpu import nvidia_smi_query
@@ -77,55 +78,73 @@ def read_pc(
     found = smi()
     try:
         configured = load_runtime(data_dir).gpu_vram_gb
-    except ConfigError:
+    except (ConfigError, OSError):
         configured = None
     vram = configured if configured is not None else (found[1] if found else None)
     root = Path(data_dir)
     while not root.exists() and root != root.parent:
         root = root.parent  # the data folder may not exist yet: ask about its drive
+    try:
+        free_gb = disk(root).free / _GB
+    except OSError:
+        free_gb = 0.0
     return PcInfo(
         gpu_name=found[0] if found else None,
         vram_gb=vram,
         nvidia=found is not None,
         ram_gb=memory(),
-        free_disk_gb=disk(root).free / _GB,
+        free_disk_gb=free_gb,
     )
 
 
-def _smallest_chat_gb(cards: dict[str, ModelCard]) -> float | None:
-    sizes = [c.vram_gb for c in cards.values() if c.kind == "chat"]
-    return min(sizes) if sizes else None
+@lru_cache(maxsize=1)
+def _shipped_cards() -> dict[str, ModelCard]:
+    return load_cards(Path("no-owner-cards-here"))[0]
 
 
-def fits(item: CatalogItem, pc: PcInfo, cards: dict[str, ModelCard]) -> bool:
+def _smallest_chat(catalog: dict[str, CatalogItem]) -> CatalogItem | None:
+    """The catalog's smallest chat model, sized by the shipped cards: an owner's own cards
+    never change which model always fits."""
+    shipped = _shipped_cards()
+    chats = [i for i in catalog.values() if i.kind == "chat" and i.card in shipped]
+    return min(chats, key=lambda i: shipped[i.card].vram_gb, default=None)
+
+
+def fits(
+    item: CatalogItem,
+    pc: PcInfo,
+    cards: dict[str, ModelCard],
+    catalog: dict[str, CatalogItem],
+) -> bool:
     """Whether this PC can use the item. Chat models fit when their card's memory need is
-    within the PC's VRAM, and the smallest chat model always fits (it runs on the CPU)."""
+    within the PC's VRAM, and the smallest catalog chat model always fits (it runs on the CPU)."""
     if item.kind in ("image", "comfyui"):
         return pc.nvidia
     if item.kind == "runtime":
         return pc.nvidia if item.variant == "cuda" else True
-    card = cards.get(item.card)
-    if card is None:
-        return False
-    if pc.vram_gb is not None and card.vram_gb <= pc.vram_gb:
+    smallest = _smallest_chat(catalog)
+    if smallest is not None and item.id == smallest.id:
         return True
-    return card.vram_gb == _smallest_chat_gb(cards)
+    card = cards.get(item.card)
+    return card is not None and pc.vram_gb is not None and card.vram_gb <= pc.vram_gb
 
 
 def recommend(
     pc: PcInfo, catalog: dict[str, CatalogItem], cards: dict[str, ModelCard]
 ) -> Recommendation:
     """The largest chat model whose card fits the VRAM; with no NVIDIA GPU the smallest on the
-    CPU build."""
+    CPU build. The runtime follows `pc.nvidia` only: an owner's VRAM setting sizes the model
+    but never picks CUDA without an NVIDIA GPU."""
     chats = sorted(
         (i for i in catalog.values() if i.kind == "chat" and i.card in cards),
         key=lambda i: cards[i.card].vram_gb,
     )
-    smallest = chats[0].id
+    smallest = _smallest_chat(catalog)
+    if not chats or smallest is None:
+        raise ValueError("no chat model in the catalog")
     if not pc.nvidia:
-        return Recommendation(smallest, "llama-cpu", "no_nvidia")
-    vram = pc.vram_gb
-    fitting = [i for i in chats if vram is not None and cards[i.card].vram_gb <= vram]
+        return Recommendation(smallest.id, "llama-cpu", "no_nvidia")
+    fitting = [i for i in chats if pc.vram_gb is not None and cards[i.card].vram_gb <= pc.vram_gb]
     if not fitting:
-        return Recommendation(smallest, "llama-cuda", "small_gpu")
+        return Recommendation(smallest.id, "llama-cuda", "small_gpu")
     return Recommendation(fitting[-1].id, "llama-cuda", "fits_gpu")
