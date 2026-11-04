@@ -431,3 +431,14 @@ def test_flux_edit_workflow_structure(tmp_path):
     for name in ("prompt", "unet", "text_encoder", "vae"):
         assert "{{" + name + "}}" in text, name
     assert ".safetensors" not in text and ".png" not in text and "http" not in text
+
+
+def test_chat_server_key(tmp_path):
+    assert load_runtime(tmp_path).chat_server == ""
+    for value in ("external", "local"):
+        (tmp_path / "models.toml").write_text(f'chat_server = "{value}"\n', encoding="utf-8")
+        assert load_runtime(tmp_path).chat_server == value
+    for bad in ('"remote"', '""', "5"):
+        (tmp_path / "models.toml").write_text(f"chat_server = {bad}\n", encoding="utf-8")
+        with pytest.raises(ConfigError):
+            load_runtime(tmp_path)

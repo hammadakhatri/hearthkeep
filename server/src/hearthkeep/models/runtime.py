@@ -5,13 +5,14 @@ from __future__ import annotations
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from hearthkeep.config import ConfigError
 from hearthkeep.models.cards import ModelCard
 
 _PATH_KEYS = ("llama_server_exe", "comfyui_python", "comfyui_main", "comfyui_model_root")
 _PORT_KEYS = ("llama_port", "comfyui_port")
-_STR_KEYS = ("default_chat_model", "default_image_model")
+_STR_KEYS = ("default_chat_model", "default_image_model", "chat_server")
 _KEYS = {*_PATH_KEYS, *_PORT_KEYS, *_STR_KEYS, "gpu_vram_gb", "model_dirs"}
 # Where ComfyUI looks for each image file, under comfyui_model_root.
 IMAGE_FILE_FOLDERS = {"unet": "diffusion_models", "text_encoder": "text_encoders", "vae": "vae"}
@@ -29,6 +30,7 @@ class RuntimeConfig:
     gpu_vram_gb: float | None = None
     default_chat_model: str = "gemma-4-12b"
     default_image_model: str = "z-image-turbo"
+    chat_server: Literal["", "local", "external"] = ""
 
 
 def _path(key: str, value: object) -> Path | None:
@@ -70,6 +72,8 @@ def load_runtime(data_dir: Path) -> RuntimeConfig:
             if not isinstance(raw[key], str) or not raw[key].strip():
                 raise ConfigError(f"models.toml key '{key}' must be a non-empty string")
             values[key] = raw[key].strip()
+    if values.get("chat_server", "local") not in ("local", "external"):
+        raise ConfigError('models.toml key \'chat_server\' must be "local" or "external"')
     if "gpu_vram_gb" in raw:
         vram = raw["gpu_vram_gb"]
         if isinstance(vram, bool) or not isinstance(vram, int | float) or vram <= 0:
