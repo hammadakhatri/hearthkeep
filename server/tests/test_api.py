@@ -90,8 +90,12 @@ def harness(tmp_path):
             control=None,
             setup=None,
             peer=("127.0.0.1", 50000),
+            sandbox_builder_factory=None,
         ):
             self.chat = FakeChatClient(list(scripts))
+            extra = {}
+            if sandbox_builder_factory is not None:
+                extra["sandbox_builder_factory"] = sandbox_builder_factory
 
             async def healthy():
                 return True
@@ -114,6 +118,7 @@ def harness(tmp_path):
                 addon_probes=addon_probes,
                 control=control,
                 setup=setup,
+                **extra,
             )
             # The TCP peer: this PC by default (setup mode answers only to it).
             client = TestClient(app, base_url=ORIGIN, client=peer)

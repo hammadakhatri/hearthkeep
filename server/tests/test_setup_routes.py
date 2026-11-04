@@ -52,6 +52,8 @@ ROUTES = [
     ("/api/setup/chat", {"source": "local", "card": "qwen3.5-4b"}),
     ("/api/setup/data-folder", {"path": "C:\\Hearthkeep\\elsewhere"}),
     ("/api/setup/startup", {"enabled": False}),
+    ("/api/setup/sandbox/build", {}),
+    ("/api/setup/sandbox/status", {}),
 ]
 # And the two 2a routes, now behind the same dependency.
 ALL_ROUTES = [("/api/setup/status", {}), ("/api/setup/enrollment-code", {}), *ROUTES]
@@ -65,7 +67,9 @@ async def _healthy():
 def setup_app(tmp_path):
     clients: list[TestClient] = []
 
-    def _start(installer=None, *, pc=NO_GPU, peer=LOOPBACK, limiter=None, control=None):
+    def _start(
+        installer=None, *, pc=NO_GPU, peer=LOOPBACK, limiter=None, control=None, builder=None
+    ):
         fake = installer if installer is not None else FakeInstaller()
         mode = SetupMode(SECRET)
         app = create_app(
@@ -80,6 +84,7 @@ def setup_app(tmp_path):
             installer_factory=lambda data, ctl, **kw: fake,
             pc_reader=PcReader(pc),
             rate_limiter=limiter,
+            **({"sandbox_builder_factory": builder} if builder else {}),
         )
         client = TestClient(app, base_url=ORIGIN, client=peer)
         client.__enter__()
@@ -670,3 +675,60 @@ def test_setup_startup_is_unsupported_off_windows(setup_app, monkeypatch):
     r = post(client, "/api/setup/startup", {"enabled": False})
     assert (r.status_code, r.json()) == (400, {"reason": "unsupported"})
     assert client.mode.start_at_login is True
+
+
+# ---- the analysis sandbox -------------------------------------------------------------------
+
+
+def test_setup_build_uses_the_secret(setup_app, tmp_path):
+    import time
+
+    from test_sandbox_builder import Fake, factory
+
+    fake = Fake()
+    client = setup_app(builder=factory(fake))
+    idle = post(client, "/api/setup/sandbox/status")
+    assert (idle.status_code, idle.json()) == (
+        200,
+        {"build": {"state": "idle", "step": None, "reason": None}},
+    )
+    started = post(client, "/api/setup/sandbox/build")
+    assert started.status_code == 202, started.text
+    assert set(started.json()) == {"build"}
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        build = post(client, "/api/setup/sandbox/status").json()["build"]
+        if build["state"] != "building":
+            break
+        time.sleep(0.02)
+    assert build == {"state": "done", "step": None, "reason": None}
+    assert fake.calls == ["sb:1", "repo:2"]
+    rows = [e for e in reversed(events(tmp_path)) if e["event"].startswith("sandbox.")]
+    assert [(e["event"], e["actor"]) for e in rows] == [
+        ("sandbox.build_started", "setup"),
+        ("sandbox.build_finished", "setup"),
+    ]
+
+
+def test_setup_build_is_busy_while_building_and_stops_with_the_server(setup_app):
+    from test_sandbox_builder import Fake, factory
+
+    fake = Fake(block=True)
+    client = setup_app(builder=factory(fake))
+    assert post(client, "/api/setup/sandbox/build").status_code == 202
+    assert fake.entered.wait(5)
+    busy = post(client, "/api/setup/sandbox/build")
+    assert (busy.status_code, busy.json()) == (409, {"reason": "busy"})
+    client.__exit__(None, None, None)
+    assert fake.proc.killed
+
+
+def test_setup_build_is_refused_once_the_data_folder_is_moving(setup_app):
+    from test_sandbox_builder import Fake, factory
+
+    fake = Fake()
+    client = setup_app(builder=factory(fake))
+    client.mode.next_data_dir = Path("D:/elsewhere")
+    moving = post(client, "/api/setup/sandbox/build")
+    assert (moving.status_code, moving.json()) == (409, {"reason": "moving"})
+    assert fake.calls == []

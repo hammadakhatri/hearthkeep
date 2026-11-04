@@ -181,3 +181,87 @@ def test_background_task_cancelled_on_shutdown(harness, caplog):
     harness.stop(client)
     gc.collect()
     assert "Task was destroyed" not in caplog.text
+
+
+# ---- building the analysis sandbox ----------------------------------------------------------
+
+
+def _wait_build(client, want=("done", "failed"), seconds=5):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        build = client.get("/api/addons/analysis/build").json()["build"]
+        if build["state"] in want:
+            return build
+        time.sleep(0.02)
+    raise AssertionError(build)
+
+
+def test_api_build_needs_settings_step_up(harness):
+    from test_api import step_up
+    from test_sandbox_builder import Fake, factory
+
+    fake = Fake()
+    client = signed_in(harness, sandbox_builder_factory=factory(fake))
+    assert (
+        harness.start().post("/api/addons/analysis/build", json={}, headers=CSRF).status_code == 401
+    )
+    idle = client.get("/api/addons/analysis/build")
+    assert idle.json() == {"build": {"state": "idle", "step": None, "reason": None}}
+    for token in (None, "nope", step_up(client, "server")):
+        payload = {} if token is None else {"step_up_token": token}
+        denied = client.post("/api/addons/analysis/build", json=payload, headers=CSRF)
+        assert (denied.status_code, denied.json()) == (403, {"reason": "step_up_required"})
+    assert fake.calls == []
+    assert [e["detail"] for e in harness.events() if e["event"] == "sandbox.build_denied"] == [
+        {"reason": "step_up_required"}
+    ] * 3
+
+    token = step_up(client, "settings")
+    started = client.post("/api/addons/analysis/build", json={"step_up_token": token}, headers=CSRF)
+    assert started.status_code == 202, started.text
+    assert set(started.json()) == {"build"}
+    assert _wait_build(client) == {"state": "done", "step": None, "reason": None}
+    assert fake.calls == ["sb:1", "repo:2"]
+    rows = [e for e in reversed(harness.events()) if e["event"].startswith("sandbox.build_")]
+    assert [(e["event"], e["actor"].split(":")[0]) for e in rows if "denied" not in e["event"]] == [
+        ("sandbox.build_started", "session"),
+        ("sandbox.build_finished", "session"),
+    ]
+    assert all("two" not in str(e["detail"]) for e in rows)  # the build's lines stay out
+
+
+def test_api_build_while_building_is_busy_and_reports_docker(harness):
+    from test_api import step_up
+    from test_sandbox_builder import Fake, factory
+
+    fake = Fake(block=True)
+    client = signed_in(harness, sandbox_builder_factory=factory(fake))
+    go = lambda: client.post(  # noqa: E731
+        "/api/addons/analysis/build",
+        json={"step_up_token": step_up(client, "settings")},
+        headers=CSRF,
+    )
+    assert go().status_code == 202
+    assert fake.entered.wait(5)
+    busy = go()
+    assert (busy.status_code, busy.json()) == (409, {"reason": "busy"})
+    state = client.get("/api/addons/analysis/build").json()["build"]
+    assert state["state"] == "building" and state["step"] == "sandbox"
+    harness.stop(client)  # the server stopping kills the build
+    assert fake.proc.killed
+
+
+def test_api_build_says_when_docker_is_stopped(harness):
+    from test_api import step_up
+    from test_sandbox_builder import Fake, factory
+
+    fake = Fake()
+    client = signed_in(harness, sandbox_builder_factory=factory(fake, docker_ok=False))
+    started = client.post(
+        "/api/addons/analysis/build",
+        json={"step_up_token": step_up(client, "settings")},
+        headers=CSRF,
+    )
+    assert started.status_code == 202
+    assert started.json()["build"] == {"state": "failed", "step": None, "reason": "docker_stopped"}
+    assert fake.calls == []

@@ -629,7 +629,7 @@ def test_sandbox_build_builds_both_images(tmp_path, monkeypatch, capsys):
     built = []
     monkeypatch.setattr(image, "docker_ok", lambda docker=("docker",): True)
 
-    def fake_build(tag, docker=("docker",), image_dir=image.IMAGE_DIR):
+    def fake_build(tag, docker=("docker",), image_dir=image.IMAGE_DIR, *, on_line=None):
         built.append((tag, Path(image_dir)))
         return 0
 
@@ -660,7 +660,7 @@ def test_sandbox_build_stops_when_the_first_image_fails(tmp_path, monkeypatch, c
     built = []
     monkeypatch.setattr(image, "docker_ok", lambda docker=("docker",): True)
 
-    def fake_build(tag, docker=("docker",), image_dir=image.IMAGE_DIR):
+    def fake_build(tag, docker=("docker",), image_dir=image.IMAGE_DIR, *, on_line=None):
         built.append(tag)
         return 1
 

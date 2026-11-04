@@ -78,6 +78,7 @@ from hearthkeep.numbercheck import NumberChecker
 from hearthkeep.push import PushSender, PushSubscriptions, VapidKeys
 from hearthkeep.runtime.stack import ModelStack
 from hearthkeep.sandbox import image as sandbox_image
+from hearthkeep.sandbox.builder import SandboxBuilder
 from hearthkeep.sandbox.handle import SandboxHandle
 from hearthkeep.sandbox.inspect import Inspector
 from hearthkeep.sandbox.runner import SandboxRunner
@@ -320,6 +321,7 @@ def create_app(
     control: ServerControl | None = None,
     setup: SetupMode | None = None,
     installer_factory: Callable[..., Installer] = Installer,
+    sandbox_builder_factory: Callable[..., SandboxBuilder] = SandboxBuilder,
     pc_reader: Callable[[Path], PcInfo] = read_pc,
 ) -> FastAPI:
     """`sandbox`, when given (tests), is used as is; otherwise one is made when Docker is
@@ -361,6 +363,7 @@ def create_app(
         sent: SentStore | None = None
         addons_task: asyncio.Task | None = None
         installer: Installer | None = None
+        sandbox_builder: SandboxBuilder | None = None
         try:
             recover_after_restart(conn)
             approvals = ApprovalStore(
@@ -475,6 +478,16 @@ def create_app(
                 )
             except Exception as exc:
                 _log.warning("could not set up model downloads: %s", type(exc).__name__)
+
+            def record_build(who: str, event: str, detail: dict) -> None:
+                # The state and nothing of Docker's output (that goes to logs/sandbox-build.log).
+                record(app.state.hk, who, event, detail)
+
+            sandbox_builder = sandbox_builder_factory(
+                data_dir,
+                record=record_build,
+                refresh=lambda: addons.refresh("analysis", fresh=True),
+            )
             app.state.hk = Services(
                 settings=settings,
                 conn=conn,
@@ -517,6 +530,7 @@ def create_app(
                 addons=addons,
                 chat_mode=stack.chat_mode,
                 installer=installer,
+                sandbox_builder=sandbox_builder,
                 pc=pc,
             )
             # One full check before serving, so nobody sees the not-ready defaults; a failing
@@ -536,6 +550,13 @@ def create_app(
                     await installer.shutdown()
             except Exception as exc:
                 _log.warning("could not stop the model download: %s", type(exc).__name__)
+            try:
+                # Also first: the build's last audit row needs the connection too, and its
+                # `docker build` child is killed so none outlives the server.
+                if sandbox_builder is not None:
+                    await sandbox_builder.shutdown()
+            except Exception as exc:
+                _log.warning("could not stop the sandbox build: %s", type(exc).__name__)
             try:
                 if addons_task is not None:
                     addons_task.cancel()

@@ -100,18 +100,22 @@ def test_cli_sandbox_build_without_docker(tmp_path, monkeypatch, capsys):
     assert "Docker" in captured.err
 
 
-def test_cli_sandbox_build_runs_docker_build(tmp_path, monkeypatch, capsys):
+def test_cli_sandbox_build_still_prints(tmp_path, monkeypatch, capsys):
     calls = []
     monkeypatch.setattr(image, "docker_ok", lambda docker=("docker",): True)
 
-    def fake_build(tag, docker=("docker",), image_dir=image.IMAGE_DIR):
+    def fake_build(tag, docker=("docker",), image_dir=image.IMAGE_DIR, *, on_line=None, **kw):
         calls.append(tag)
+        on_line("Step 1/2 : FROM python ✓")  # a real build's text isn't always ASCII
         return 0
 
     monkeypatch.setattr(image, "build_image", fake_build)
     assert cli.main(["sandbox", "build", "--data", str(tmp_path / "data")]) == 0
     assert calls == [image.image_tag(), image.repo_image_tag()]
-    assert f"Sandbox image ready: {image.image_tag()}" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert f"Sandbox image ready: {image.image_tag()}" in out
+    assert "Step 1/2 : FROM python" in out  # the build's own lines still reach the console
+    assert out.isascii()
 
 
 @pytest.mark.docker
@@ -250,3 +254,59 @@ def test_entry_takes_back_exactly_the_names_the_host_accepts():
     spec.loader.exec_module(entry)
     assert entry.MEMBER_NAME.pattern == runner.MEMBER_NAME.pattern
     assert entry.MEMBER_NAME.flags == runner.MEMBER_NAME.flags
+
+
+class _FakePopen:
+    def __init__(self, command, **kwargs):
+        self.command, self.kwargs = command, kwargs
+        self.stdout = iter(["Step 1/3 : FROM python\r\n", "naughty ✓ line\n", "done"])
+        self.killed = False
+
+    def poll(self):
+        return None if not self.killed else -9
+
+    def kill(self):
+        self.killed = True
+
+    def wait(self, timeout=None):
+        return 0
+
+
+def test_build_image_with_on_line_pipes_each_line_and_hands_over_the_child(monkeypatch):
+    made = []
+
+    def popen(command, **kwargs):
+        made.append(_FakePopen(command, **kwargs))
+        return made[0]
+
+    monkeypatch.setattr(image.subprocess, "Popen", popen)
+    lines, procs = [], []
+    code = image.build_image(
+        "hearthkeep-sandbox:0123456789ab",
+        ("docker",),
+        image.IMAGE_DIR,
+        on_line=lines.append,
+        on_proc=procs.append,
+    )
+    assert code == 0
+    assert lines == ["Step 1/3 : FROM python", "naughty ✓ line", "done"]
+    assert procs == made
+    kwargs = made[0].kwargs
+    assert kwargs["stdin"] == subprocess.DEVNULL
+    assert kwargs["stdout"] == subprocess.PIPE and kwargs["stderr"] == subprocess.STDOUT
+    assert kwargs["creationflags"] == getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    assert made[0].command[:4] == ["docker", "build", "-t", "hearthkeep-sandbox:0123456789ab"]
+
+
+def test_build_image_with_on_line_without_docker_is_127():
+    code = image.build_image(
+        "t:1", ("hearthkeep-test-no-such-docker",), image.IMAGE_DIR, on_line=lambda line: None
+    )
+    assert code == 127
+
+
+def test_build_targets_are_the_two_images_in_order():
+    assert image.build_targets() == [
+        ("Sandbox image", image.image_tag(), image.IMAGE_DIR),
+        ("Repo image", image.repo_image_tag(), image.REPO_IMAGE_DIR),
+    ]

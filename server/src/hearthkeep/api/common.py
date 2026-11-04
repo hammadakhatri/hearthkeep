@@ -39,6 +39,7 @@ from hearthkeep.models.cards import CardError, ModelCard
 from hearthkeep.numbercheck import NumberChecker
 from hearthkeep.push import PushSender, PushSubscriptions
 from hearthkeep.runtime.gpu import GpuScheduler
+from hearthkeep.sandbox.builder import SandboxBuilder
 from hearthkeep.sandbox.handle import SandboxHandle
 from hearthkeep.sandbox.inspect import Inspector
 from hearthkeep.sandbox.runs import RunStore
@@ -172,6 +173,7 @@ class Services:
     control: ServerControl | None = None  # restart and stop requests
     setup: SetupMode | None = None  # set while `hearthkeep setup` runs this server
     installer: Installer | None = None  # model downloads (None when it couldn't be made)
+    sandbox_builder: SandboxBuilder | None = None  # building the analysis sandbox
     pc: PcCache | None = None  # this PC's GPU, memory and disk, read off the loop
     chat_mode: Literal["owned", "external", "none"] = "external"
     health_cache: tuple[float, bool] | None = None
