@@ -1275,3 +1275,15 @@ def test_install_docs_send_tailscale_owners_to_step_7_before_setup():
     install = (root / "docs" / "install.md").read_text("utf-8")
     assert "Settings › General › Stop Hearthkeep" in install
     assert 'public_origin = "https://homepc.tail1234.ts.net"' in install
+
+
+def test_a_folder_holding_only_the_sandbox_build_log_can_still_be_removed(tmp_path):
+    folder = tmp_path / "moved-from"
+    (folder / "logs").mkdir(parents=True)
+    (folder / "logs" / "sandbox-build.log").write_text("step 1\n", encoding="utf-8")
+    (folder / "config.toml").write_text("", encoding="utf-8")
+    assert cli._remove_setup_folder(folder) is True and not folder.exists()
+    other = tmp_path / "keeps"
+    (other / "logs").mkdir(parents=True)
+    (other / "logs" / "mine.log").write_text("x", encoding="utf-8")
+    assert cli._remove_setup_folder(other) is False

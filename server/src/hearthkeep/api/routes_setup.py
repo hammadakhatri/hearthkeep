@@ -120,6 +120,15 @@ def _download_started(hk: Services) -> bool:
     return hk.installer is not None and hk.installer.current() is not None
 
 
+def _build_running(hk: Services) -> bool:
+    return hk.sandbox_builder is not None and hk.sandbox_builder.busy()
+
+
+def _move_closed(hk: Services) -> bool:
+    """A download or the sandbox build is under way: both write into this data folder."""
+    return _download_started(hk) or _build_running(hk)
+
+
 @router.post("/pc")
 async def setup_pc(_: SetupDep, body: SetupBody, request: Request) -> dict:
     """This PC, and the data folder: the one place a path is shown, the folder the owner chose
@@ -133,7 +142,7 @@ async def setup_pc(_: SetupDep, body: SetupBody, request: Request) -> dict:
         "pc": pc.to_json(),
         "data_dir": str(data),
         "data_dir_default": await asyncio.to_thread(_is_default, data),
-        "can_move_data": bool(hk.setup.created_folder) and not _download_started(hk),
+        "can_move_data": bool(hk.setup.created_folder) and not _move_closed(hk),
     }
 
 
@@ -181,7 +190,7 @@ async def setup_data_folder(
     host = current_host()
     if not host.supported:
         raise ApiError(400, "unsupported")
-    if not hk.setup.created_folder or _download_started(hk):
+    if not hk.setup.created_folder or _move_closed(hk):
         raise ApiError(409, "too_late")
     target = Path(body.path)
     current = Path(hk.settings.data_dir).resolve()
@@ -194,7 +203,7 @@ async def setup_data_folder(
         raise ApiError(400, "not_enough_space", free_gb=round(free / _GB, 1), needed_gb=MIN_FREE_GB)
     # Checked again with no await before the folder is set: a download that started while the
     # folder was being checked wins. From here on downloads answer `moving` (below).
-    if _download_started(hk):
+    if _move_closed(hk):
         raise ApiError(409, "too_late")
     hk.setup.next_data_dir = target
     # As the 2a hand-over: the server stops only after this answer has gone out.

@@ -265,3 +265,26 @@ def test_api_build_says_when_docker_is_stopped(harness):
     assert started.status_code == 202
     assert started.json()["build"] == {"state": "failed", "step": None, "reason": "docker_stopped"}
     assert fake.calls == []
+
+
+def test_analysis_stays_buildable_while_a_build_runs(harness):
+    """Mid-build the add-on still says needs_image/build_image, so the card keeps its progress."""
+    from test_api import step_up
+    from test_sandbox_builder import Fake, factory
+
+    fake = Fake(block=True)
+    client = signed_in(
+        harness, addon_probes=CountingProbes(), sandbox_builder_factory=factory(fake)
+    )
+    analysis = lambda: {a["id"]: a for a in client.get("/api/addons").json()["addons"]}["analysis"]  # noqa: E731
+    assert analysis()["state"] == "ready"
+    client.post(
+        "/api/addons/analysis/build",
+        json={"step_up_token": step_up(client, "settings")},
+        headers=CSRF,
+    )
+    assert fake.entered.wait(5)
+    refreshed = client.post("/api/addons/refresh", headers=CSRF).json()["addons"]
+    mid = {a["id"]: a for a in refreshed}["analysis"]
+    assert (mid["state"], mid["action"], mid["ready"]) == ("needs_image", "build_image", False)
+    harness.stop(client)

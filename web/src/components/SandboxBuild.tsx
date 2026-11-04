@@ -16,11 +16,13 @@ type Props = {
   onCheckAgain?: () => void
   /** The build ended, well or not: the caller can read the add-ons again. */
   onFinished?: () => void
+  /** Whether a build is running, so a card can keep this on screen whatever the list says. */
+  onBusyChange?: (busy: boolean) => void
 }
 
 /** Building the analysis sandbox: Docker missing or stopped, the Build button, progress, done
  *  or failed with Retry. Shows state words only; what Docker prints stays on the PC. */
-export function SandboxBuild({ api, docker = 'ready', onCheckAgain, onFinished }: Props) {
+export function SandboxBuild({ api, docker = 'ready', onCheckAgain, onFinished, onBusyChange }: Props) {
   const [build, setBuild] = useState<SandboxBuildState>(IDLE)
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState(false)
@@ -62,6 +64,13 @@ export function SandboxBuild({ api, docker = 'ready', onCheckAgain, onFinished }
     }
   }, [building])
 
+  const busyRef = useRef(onBusyChange)
+  busyRef.current = onBusyChange
+  useEffect(() => {
+    busyRef.current?.(building)
+  }, [building])
+  useEffect(() => () => busyRef.current?.(false), [])
+
   const wasBuilding = useRef(false)
   useEffect(() => {
     if (wasBuilding.current && (build.state === 'done' || build.state === 'failed')) finishedRef.current?.()
@@ -74,6 +83,7 @@ export function SandboxBuild({ api, docker = 'ready', onCheckAgain, onFinished }
     try {
       const next = await apiRef.current.startBuild()
       if (alive.current) setBuild(next)
+      if (next.state === 'done' || next.state === 'failed') finishedRef.current?.()
     } catch (e) {
       if (!alive.current) return
       if (isApiError(e, 'busy')) setBuild({ state: 'building', step: null, reason: null })

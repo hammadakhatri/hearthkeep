@@ -256,11 +256,22 @@ def test_entry_takes_back_exactly_the_names_the_host_accepts():
     assert entry.MEMBER_NAME.flags == runner.MEMBER_NAME.flags
 
 
+class _Pipe:
+    def __init__(self, lines):
+        self._lines, self.closed = iter(lines), False
+
+    def __iter__(self):
+        return self._lines
+
+    def close(self):
+        self.closed = True
+
+
 class _FakePopen:
     def __init__(self, command, **kwargs):
         self.command, self.kwargs = command, kwargs
-        self.stdout = iter(["Step 1/3 : FROM python\r\n", "naughty ✓ line\n", "done"])
-        self.killed = False
+        self.stdout = _Pipe(["Step 1/3 : FROM python\r\n", "naughty ✓ line\n", "done"])
+        self.killed, self.pid = False, 0
 
     def poll(self):
         return None if not self.killed else -9
@@ -290,7 +301,8 @@ def test_build_image_with_on_line_pipes_each_line_and_hands_over_the_child(monke
     )
     assert code == 0
     assert lines == ["Step 1/3 : FROM python", "naughty ✓ line", "done"]
-    assert procs == made
+    assert [h.proc for h in procs] == made
+    assert made[0].stdout.closed
     kwargs = made[0].kwargs
     assert kwargs["stdin"] == subprocess.DEVNULL
     assert kwargs["stdout"] == subprocess.PIPE and kwargs["stderr"] == subprocess.STDOUT
@@ -310,3 +322,38 @@ def test_build_targets_are_the_two_images_in_order():
         ("Sandbox image", image.image_tag(), image.IMAGE_DIR),
         ("Repo image", image.repo_image_tag(), image.REPO_IMAGE_DIR),
     ]
+
+
+def test_build_image_hands_over_a_handle_that_kills_the_whole_tree(monkeypatch):
+    made = []
+
+    class Job:
+        def __init__(self):
+            self.assigned, self.terminated, self.closed = None, 0, 0
+
+        def assign(self, pid):
+            self.assigned = pid
+
+        def terminate(self, code=1):
+            self.terminated += 1
+
+        def close(self):
+            self.closed += 1
+
+    job = Job()
+    monkeypatch.setattr(image, "_new_job", lambda: job)
+
+    def popen(command, **kwargs):
+        made.append(_FakePopen(command, **kwargs))
+        made[0].pid = 4242
+        return made[0]
+
+    monkeypatch.setattr(image.subprocess, "Popen", popen)
+    handles = []
+    image.build_image(
+        "t:1", ("docker",), image.IMAGE_DIR, on_line=lambda s: None, on_proc=handles.append
+    )
+    assert job.assigned == 4242
+    handles[0].kill()
+    assert job.terminated == 1 and made[0].killed
+    assert job.closed >= 1  # and the job is closed when the build ends

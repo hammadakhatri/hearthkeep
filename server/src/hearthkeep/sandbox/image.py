@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import subprocess
+import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -77,6 +78,35 @@ def image_present(tag: str, docker: Sequence[str] = DOCKER) -> bool:
     return _quiet([*docker, "image", "inspect", tag], DOCKER_INSPECT_TIMEOUT_S)
 
 
+def _new_job():
+    """A kill-on-close Windows job object (the supervisor's own), or None elsewhere."""
+    if sys.platform != "win32":
+        return None
+    from hearthkeep.runtime.winjob import KillOnCloseJob
+
+    return KillOnCloseJob()
+
+
+class BuildProcess:
+    """The `docker build` child and everything it starts (buildx keeps the output pipe open
+    after the client is killed): `kill()` ends the whole tree."""
+
+    def __init__(self, proc: subprocess.Popen, job) -> None:
+        self.proc, self._job = proc, job
+
+    def kill(self) -> None:
+        if self._job is not None:
+            with contextlib.suppress(OSError):
+                self._job.terminate()
+        self.proc.kill()
+
+    def close(self) -> None:
+        if self._job is not None:
+            with contextlib.suppress(OSError):
+                self._job.close()
+            self._job = None
+
+
 def build_targets() -> list[tuple[str, str, Path]]:
     """(label, tag, folder) for each image a build makes, in order: the sandbox, then the
     image repo dependencies are installed and tested in."""
@@ -92,11 +122,11 @@ def build_image(
     image_dir: Path = IMAGE_DIR,
     *,
     on_line: Callable[[str], None] | None = None,
-    on_proc: Callable[[subprocess.Popen], None] | None = None,
+    on_proc: Callable[[BuildProcess], None] | None = None,
 ) -> int:
     """`docker build -t <tag> <image_dir>`. Without `on_line` its output goes to the console as
     it runs. With it, output is piped and each line (no line ending) is passed to `on_line`;
-    `on_proc` is handed the child process first, so a caller can kill it."""
+    `on_proc` is handed a handle first (`.kill()` ends the child and its descendants)."""
     command = [*docker, "build", "-t", tag, str(image_dir)]
     if on_line is None:
         try:
@@ -121,14 +151,28 @@ def build_image(
         )
     except OSError:
         return 127
+    job = None
+    try:
+        job = _new_job()
+        if job is not None:
+            job.assign(proc.pid)
+    except OSError:
+        if job is not None:
+            job.close()
+        job = None  # still killed through the child itself
+    handle = BuildProcess(proc, job)
     try:
         if on_proc is not None:
-            on_proc(proc)
+            on_proc(handle)
         for line in proc.stdout or ():
             on_line(line.rstrip("\r\n"))
         return proc.wait()
     finally:
         if proc.poll() is None:  # on_line or on_proc raised: don't leave the build running
             with contextlib.suppress(OSError, subprocess.SubprocessError):
-                proc.kill()
+                handle.kill()
                 proc.wait(timeout=5)
+        handle.close()  # anything the build left behind ends with the job
+        with contextlib.suppress(OSError):
+            if proc.stdout is not None:
+                proc.stdout.close()

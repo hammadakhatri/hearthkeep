@@ -732,3 +732,20 @@ def test_setup_build_is_refused_once_the_data_folder_is_moving(setup_app):
     moving = post(client, "/api/setup/sandbox/build")
     assert (moving.status_code, moving.json()) == (409, {"reason": "moving"})
     assert fake.calls == []
+
+
+def test_move_refused_while_the_sandbox_builds(setup_app, tmp_path, folder_host):
+    from test_sandbox_builder import Fake, factory
+
+    fake = Fake(block=True)
+    control = ServerControl(supervised=False, setup_mode=True)
+    client = setup_app(control=control, builder=factory(fake))
+    client.mode.created_folder = True
+    pc = post(client, "/api/setup/pc").json()
+    assert pc["can_move_data"] is True
+    assert post(client, "/api/setup/sandbox/build").status_code == 202
+    assert fake.entered.wait(5)
+    r = post(client, "/api/setup/data-folder", {"path": str(moved(tmp_path))})
+    assert (r.status_code, r.json()) == (409, {"reason": "too_late"})
+    assert client.mode.next_data_dir is None and control.exit_code is None
+    assert post(client, "/api/setup/pc").json()["can_move_data"] is False

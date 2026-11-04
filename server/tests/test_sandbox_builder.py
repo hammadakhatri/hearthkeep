@@ -198,3 +198,77 @@ def factory(fake, *, docker_ok=True, installed=True):
         return builder
 
     return make_builder
+
+
+# ---- fix round 1 ----------------------------------------------------------------------------
+
+
+async def test_shutdown_gives_up_when_the_build_will_not_end(tmp_path, caplog):
+    """A grandchild (buildx) can keep the pipe open after the kill: shutdown is bounded."""
+    import time
+
+    stuck = threading.Event()
+
+    def never_ends(tag, docker, image_dir, *, on_line=None, on_proc=None):
+        on_proc(FakeProc(threading.Event()))
+        stuck.wait(5)  # ignores the kill
+        return 1
+
+    builder = SandboxBuilder(
+        tmp_path,
+        run_build=never_ends,
+        docker_ok=lambda d: True,
+        docker_installed=lambda: True,
+        targets=lambda: TARGETS,
+        stop_timeout=0.2,
+    )
+    await builder.start()
+    await asyncio.sleep(0.05)
+    began = time.monotonic()
+    await builder.shutdown()
+    assert time.monotonic() - began < 2
+    assert any("TimeoutError" in r.getMessage() for r in caplog.records)
+    stuck.set()
+    await builder.wait()
+
+
+async def test_a_docker_check_that_raises_is_docker_missing_not_stuck(tmp_path):
+    builder, fake = make(tmp_path)
+
+    def boom(docker):
+        raise RuntimeError("D:/private")
+
+    builder._docker_ok = boom
+    state = await builder.start()
+    assert state == {"state": "failed", "step": None, "reason": "docker_missing"}
+    assert fake.calls == []
+
+
+async def test_a_stop_during_the_docker_check_builds_nothing(tmp_path):
+    builder, fake = make(tmp_path)
+    real = builder._docker_ok
+
+    def stopping(docker):
+        builder._stopping = True  # the server is stopping while Docker is looked at
+        return real(docker)
+
+    builder._docker_ok = stopping
+    state = await builder.start()
+    assert state["state"] == "failed" and fake.calls == []
+
+
+async def test_busy_is_true_only_while_images_build(tmp_path):
+    seen = []
+    builder, fake = make(tmp_path)
+    original = builder._refresh
+
+    async def watch():
+        seen.append(builder.busy())  # the add-on check runs after the build, not during it
+        await original()
+
+    builder._refresh = watch
+    assert builder.busy() is False
+    await builder.start()
+    assert builder.busy() is True
+    await builder.wait()
+    assert seen == [False] and builder.busy() is False
