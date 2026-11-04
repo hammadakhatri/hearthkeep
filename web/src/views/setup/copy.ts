@@ -39,9 +39,9 @@ export const SETUP_COPY = {
   doneTitle: 'Hearthkeep is ready',
   doneSetUp: "What's set up",
   doneNothing: 'Nothing else yet. Add more from Settings whenever you like.',
-  doneStillToDownload: 'Still to download',
-  doneStopped:
-    'Downloads stop while Hearthkeep starts. Download them again in Settings › Chat model or Image models; nothing that arrived is lost.',
+  doneStillDownloading: 'Still downloading',
+  doneCarryOn:
+    "They'll carry on in a moment, when Hearthkeep starts on its own. You'll see their progress in Settings › Chat model.",
   doneExternal: 'Chat: a model server you run',
   doneAnalysis: 'Analysis',
   doneStartup: 'Start at login',

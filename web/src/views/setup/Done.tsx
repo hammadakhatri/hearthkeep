@@ -4,13 +4,13 @@ import { StepFrame } from './StepFrame'
 type Props = {
   /** What is set up, a few words each. */
   setUp: string[]
-  /** The downloads that hadn't finished when the passkey was made. */
+  /** The downloads that hadn't finished when the passkey was made; the next start carries on with them. */
   unfinished: string[]
   onOpen(): void
   focus: boolean
 }
 
-/** Step 7: what's set up, what still needs downloading, and "Open Hearthkeep". */
+/** Step 7: what's set up, what's still downloading, and "Open Hearthkeep". */
 export function Done({ setUp, unfinished, onOpen, focus }: Props) {
   return (
     <StepFrame title={SETUP_COPY.doneTitle} focus={focus}>
@@ -26,13 +26,13 @@ export function Done({ setUp, unfinished, onOpen, focus }: Props) {
       )}
       {unfinished.length > 0 && (
         <>
-          <h3 className="setup-sub">{SETUP_COPY.doneStillToDownload}</h3>
+          <h3 className="setup-sub">{SETUP_COPY.doneStillDownloading}</h3>
           <ul className="setup-list">
             {unfinished.map((name) => (
               <li key={name}>{name}</li>
             ))}
           </ul>
-          <p className="setup-text">{SETUP_COPY.doneStopped}</p>
+          <p className="setup-text">{SETUP_COPY.doneCarryOn}</p>
         </>
       )}
       <div className="setup-nav">

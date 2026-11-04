@@ -74,6 +74,7 @@ from hearthkeep.images import ImageStore
 from hearthkeep.installer import Installer
 from hearthkeep.lifecycle import ServerControl
 from hearthkeep.models.chatstate import chat_is_external
+from hearthkeep.models.service import resume_setup_download
 from hearthkeep.numbercheck import NumberChecker
 from hearthkeep.push import PushSender, PushSubscriptions, VapidKeys
 from hearthkeep.runtime.stack import ModelStack
@@ -534,6 +535,12 @@ def create_app(
                 sandbox_builder=sandbox_builder,
                 pc=pc,
             )
+            if setup is None:
+                # A download setup left unfinished at its hand-over carries on (once).
+                try:
+                    resume_setup_download(app.state.hk)
+                except Exception as exc:
+                    _log.warning("could not resume the setup download: %s", type(exc).__name__)
             # One full check before serving, so nobody sees the not-ready defaults; a failing
             # probe is caught inside, and the loop sleeps before its first. Anything else that
             # goes wrong is logged by type only: it never stops Hearthkeep from starting.
