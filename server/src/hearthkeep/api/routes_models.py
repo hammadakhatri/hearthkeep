@@ -30,7 +30,7 @@ from hearthkeep.api.common import (
     services,
 )
 from hearthkeep.auth.sessions import Session
-from hearthkeep.config import ConfigError, Settings, check_chat_base_url, load_settings
+from hearthkeep.config import ConfigError, Settings, check_chat_base_url
 from hearthkeep.hardware import PcInfo, fits, recommend
 from hearthkeep.installer import (
     BACKUP_NAME,
@@ -42,6 +42,7 @@ from hearthkeep.installer import (
     NothingToDo,
 )
 from hearthkeep.models.cards import load_cards
+from hearthkeep.models.chatstate import chat_state, read_settings
 from hearthkeep.models.runtime import RuntimeConfig, card_file_paths, load_runtime
 from hearthkeep.secrets import SecretStoreError
 from hearthkeep.tomledit import TomlEditError, edit_toml
@@ -95,36 +96,13 @@ def _read_runtime(data: Path) -> RuntimeConfig:
 
 def _read_settings(hk: Services) -> Settings:
     """config.toml as it is now (it may have changed since the server started)."""
-    try:
-        return load_settings(Path(hk.settings.data_dir))
-    except (ConfigError, OSError):
-        return hk.settings
+    return read_settings(Path(hk.settings.data_dir), hk.settings)
 
 
 def _chat_state(hk: Services) -> dict:
-    """Where chat comes from once the server (re)starts, by the rule `build_model_stack` uses:
-    a local llama-server when models.toml sets it up fully and doesn't choose the external
-    server; else the external server when config.toml names one; else none."""
-    data = Path(hk.settings.data_dir)
-    rt = _read_runtime(data)
-    settings = _read_settings(hk)
-    card = load_cards(data)[0].get(rt.default_chat_model)
-    external_chosen = rt.chat_server == "external" and settings.chat_base_url_set
-    if (
-        rt.llama_server_exe is not None
-        and not external_chosen
-        and card is not None
-        and card.kind == "chat"
-        and card.id in rt.model_dirs
-    ):
-        return {"source": "local", "model": card.id, "base_url": None}
-    if settings.chat_base_url_set:
-        return {
-            "source": "external",
-            "model": settings.chat_model,
-            "base_url": settings.chat_base_url,
-        }
-    return {"source": "none", "model": None, "base_url": None}
+    """Where chat comes from once the server (re)starts (`chat_state`, which the installer
+    shares)."""
+    return chat_state(Path(hk.settings.data_dir), _read_settings(hk))
 
 
 def _items(hk: Services, installer: Installer, pc: PcInfo) -> tuple[list[dict], dict | None]:
@@ -272,8 +250,12 @@ class LocalChat(BaseModel):
 class ExternalChat(BaseModel):
     source: Literal["external"]
     base_url: str = Field(max_length=200)
-    # None keeps the stored key, "" deletes it.
+    # None keeps the stored key (when chat already uses an external server; otherwise a key
+    # left from before is deleted), "" deletes it.
     api_key: str | None = Field(default=None, max_length=512)
+    # The model's name on that server, for servers that ask for one. None keeps config.toml's
+    # chat_model. Checked by `_model_ok` (400 bad_model), so only absurd input is a 422.
+    model: str | None = Field(default=None, max_length=1024)
     step_up_token: str | None = Field(default="", max_length=256)
 
 
@@ -317,6 +299,20 @@ def _put_back(files: dict[Path, bytes | None]) -> None:
             os.replace(tmp, path)
         except OSError as exc:
             _log.warning("could not put %s back: %s", path.name, type(exc).__name__)
+
+
+MODEL_NAME_MAX = 128
+
+
+def _model_ok(model: str) -> bool:
+    """A plain name: 1 to 128 printable characters, no quotes, no line breaks, no spaces at
+    either end (`isprintable` already refuses line breaks, tabs and other control characters)."""
+    return (
+        0 < len(model) <= MODEL_NAME_MAX
+        and model.isprintable()
+        and model == model.strip()
+        and not any(c in model for c in "\"'`")
+    )
 
 
 def _url_parts_ok(url: str) -> bool:
@@ -363,39 +359,52 @@ async def choose_chat(body: ChatBody, session: SessionDep, request: Request) -> 
 async def _switch_external(
     hk: Services, data: Path, body: ExternalChat, lock: asyncio.Lock
 ) -> None:
-    """All or nothing: every check first, then models.toml, config.toml and the key last. A
-    step that fails puts back what the earlier steps changed."""
+    """All or nothing: every check first, then models.toml, config.toml (the address and, when
+    given, the model name) and the key last. A step that fails puts back what the earlier steps
+    changed."""
     try:
         check_chat_base_url(body.base_url)
     except ConfigError:
         raise ApiError(400, "bad_url") from None
     if not _url_parts_ok(body.base_url):
         raise ApiError(400, "bad_url")
+    if body.model is not None and not _model_ok(body.model):
+        raise ApiError(400, "bad_model")
     secrets = hk.secrets
-    if body.api_key is not None:
-        try:
-            if secrets is None:
-                raise SecretStoreError("no secret store")
-            await asyncio.to_thread(secrets.names)  # readable now, before anything changes
-        except SecretStoreError:
-            raise ApiError(503, "secrets_unreadable", message=SECRETS_UNREADABLE) from None
+    name = hk.settings.chat_api_key_secret
     models, config, backup = data / "models.toml", data / "config.toml", data / BACKUP_NAME
+    values = {"chat_base_url": body.base_url}
+    if body.model is not None:
+        values["chat_model"] = body.model
     async with lock:
+        # A key stored while chat wasn't external (an old generated one) must never be sent to
+        # this server: with no key given, it is deleted.
+        was_external = (await asyncio.to_thread(_chat_state, hk))["source"] == "external"
+        key = body.api_key if body.api_key is not None or was_external else ""
+        stored = False
+        if key is not None and secrets is None:
+            if body.api_key is not None:
+                raise ApiError(503, "secrets_unreadable", message=SECRETS_UNREADABLE)
+            key = None  # no store: nothing stale to delete
+        if key is not None and secrets is not None:
+            try:  # readable now, before anything changes
+                stored = name in await asyncio.to_thread(secrets.names)
+            except SecretStoreError:
+                raise ApiError(503, "secrets_unreadable", message=SECRETS_UNREADABLE) from None
         before = {
             path: await asyncio.to_thread(_read_bytes, path) for path in (models, backup, config)
         }
         await _edit(models, {"chat_server": "external"}, backup)
         try:
-            await _edit(config, {"chat_base_url": body.base_url})
+            await _edit(config, values)
         except ApiError:
             await asyncio.to_thread(_put_back, {models: before[models], backup: before[backup]})
             raise
-        if body.api_key is None or secrets is None:
+        if key is None or secrets is None or (not key and not stored):
             return
-        name = hk.settings.chat_api_key_secret
         try:
-            if body.api_key:
-                await asyncio.to_thread(secrets.put, name, body.api_key)
+            if key:
+                await asyncio.to_thread(secrets.put, name, key)
             else:
                 await asyncio.to_thread(secrets.delete, name)
         except SecretStoreError:
