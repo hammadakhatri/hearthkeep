@@ -4,7 +4,19 @@ so starting the same items again resumes them.
 
 The job runs as one asyncio task on the server's loop. Hashing, moving and unpacking run in
 threads, so the loop never waits on the disk. Request handlers read the job's plain attributes on
-the same loop, so no locking is needed."""
+the same loop, so no locking is needed.
+
+Stopping: a download and the tar.exe run (a child process, killed when the job is cancelled or
+the server stops) stop at once. A hash or a zip extract runs in a thread that can't be killed:
+`shutdown()` doesn't wait for it (the task is cancelled and returns), so it only finishes on its
+own in the background; the next run clears the unpack folder first, and a `.part` that was being
+hashed is simply hashed again. `cancel()` lets such a step finish, then stops before the next one.
+
+A model file already at its destination with the catalog size counts as in place: only this
+installer writes there, and only after the SHA-256 check, so it isn't hashed again.
+
+An unexpected exception inside the job (a bug, not the owner's network) is logged and reported
+as `network`, so the job ends `failed` and the server keeps running."""
 
 from __future__ import annotations
 
@@ -55,6 +67,9 @@ JobState = Literal["running", "done", "failed", "cancelled"]
 ZIP_MAX_FILES = 5000
 ZIP_MAX_BYTES = 4 * 1024**3
 TAR_TIMEOUT_SECONDS = 30 * 60
+TAR_POLL_SECONDS = 0.1
+# Room to leave for unpacking, as a multiple of the archive's size.
+UNPACK_FACTOR = {"zip": 3, "7z": 4}
 # Pauses before the three automatic retries of a file that failed on the network.
 RETRY_DELAYS: tuple[float, ...] = (2.0, 5.0, 10.0)
 SPACE_MARGIN = 1.1
@@ -127,12 +142,25 @@ def _is_link(path: Path) -> bool:
 
 
 def _refuse_links(root: Path) -> None:
-    """Raise `unpack` when anything under `root` is a symlink, junction or other reparse point.
-    Each folder's entries are checked before the walk could go into them."""
+    """Raise `unpack` when anything under `root` is a symlink, junction or other reparse point,
+    or a file with another hard link. Each folder's entries are checked before the walk could go
+    into them.
+
+    Names outside the staging folder are refused by bsdtar (Windows' tar.exe) itself: by default
+    it strips a leading `/` or drive and refuses entries with `..` (no `-P`). This walk catches
+    what bsdtar does create: links."""
     for folder, dirs, files in os.walk(root, followlinks=False):
         for name in (*dirs, *files):
-            if _is_link(Path(folder) / name):
+            path = Path(folder) / name
+            if _is_link(path):
                 raise FetchError("unpack", f"refused a link in the archive: {name!r}")
+        for name in files:
+            try:
+                links = os.lstat(Path(folder) / name).st_nlink
+            except OSError:
+                links = 2
+            if links > 1:
+                raise FetchError("unpack", f"refused a hard link in the archive: {name!r}")
 
 
 def _remove_tree(path: Path) -> None:
@@ -164,6 +192,12 @@ def _swap_in(new: Path, target: Path) -> None:
     _remove_tree(old)
 
 
+def _kill(proc: subprocess.Popen) -> None:
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        proc.kill()
+        proc.wait(timeout=5)
+
+
 def _move_into_place(part: Path, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     os.replace(part, dest)
@@ -190,7 +224,7 @@ class Installer:
         *,
         catalog: dict[str, CatalogItem] | None = None,
         client_factory: Callable[[], httpx.AsyncClient] = new_client,
-        run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+        popen: Callable[..., subprocess.Popen] = subprocess.Popen,
         disk: Callable = shutil.disk_usage,
         clock: Callable[[], float] = time.monotonic,
         record: Callable[[str, dict], None] = lambda event, detail: None,
@@ -200,7 +234,7 @@ class Installer:
         self._control = control
         self._catalog = catalog if catalog is not None else load_catalog()
         self._client_factory = client_factory
-        self._run = run
+        self._popen = popen
         self._disk = disk
         self._clock = clock
         self._record = record
@@ -209,7 +243,8 @@ class Installer:
         self._job: Job | None = None
         self._task: asyncio.Task | None = None
         self._cancel = False
-        self._in_download = False  # only a download may be interrupted by cancelling the task
+        # Only a download or the tar run may be interrupted by cancelling the task.
+        self._interruptible = False
 
     # ---- paths ----------------------------------------
 
@@ -220,15 +255,19 @@ class Installer:
     def _part(self, f: CatalogFile) -> Path:
         return self._downloads / f"{f.sha256}.part"
 
-    def _dest(self, item: CatalogItem, f: CatalogFile) -> Path | None:
+    def _image_root(self, rt: RuntimeConfig | None = None) -> Path:
+        """Where image files go: the owner's `comfyui_model_root` when set, else ours."""
+        rt = rt if rt is not None else self._runtime_config()
+        return rt.comfyui_model_root or self.data / "models" / "image"
+
+    def _dest(self, item: CatalogItem, f: CatalogFile, image_root: Path) -> Path | None:
         """Where a model file goes; None for an archive, which is unpacked instead."""
         if item.kind == "chat":
             card = self._shipped[item.card]
             return self.data / "models" / "chat" / card.id / card.files[f.save_as]
         if item.kind == "image":
             card = self._shipped[item.card]
-            folder = IMAGE_FILE_FOLDERS[f.save_as]
-            return self.data / "models" / "image" / folder / card.files[f.save_as]
+            return image_root / IMAGE_FILE_FOLDERS[f.save_as] / card.files[f.save_as]
         return None
 
     def _required(self, item: CatalogItem) -> tuple[str, ...]:
@@ -299,17 +338,19 @@ class Installer:
 
     def needed_bytes(self, items: list[CatalogItem]) -> int:
         """Bytes still to download (a shared file once, less what's already in a `.part`), plus
-        room to unpack each archive."""
+        room to unpack each archive (`UNPACK_FACTOR` times its size)."""
         seen: set[str] = set()
         total = 0
+        image_root = self._image_root()
         for item in items:
+            if item.kind in ("runtime", "comfyui") and self._unpacked_here(item):
+                continue  # a retry will skip it
             for f in item.files:
                 if f.sha256 in seen:
                     continue
                 seen.add(f.sha256)
-                if f.unpack:
-                    total += f.size
-                dest = self._dest(item, f)
+                total += f.size * UNPACK_FACTOR.get(f.unpack, 0)
+                dest = self._dest(item, f, image_root)
                 if dest is not None and _in_place(dest, f.size):
                     continue
                 part = self._part(f)
@@ -386,14 +427,15 @@ class Installer:
         if not self._running():
             return
         self._cancel = True
-        if self._in_download and self._task is not None:
+        if self._interruptible and self._task is not None:
             self._task.cancel()
 
     async def wait(self) -> Job | None:
         """Wait for the running job (if any) to end."""
         if self._task is not None:
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
+            # asyncio.wait never raises the task's own cancellation, but a cancellation aimed
+            # at the caller still reaches it.
+            await asyncio.wait({self._task})
         return self._job
 
     async def shutdown(self) -> None:
@@ -426,7 +468,7 @@ class Installer:
             _log.exception("the install job stopped unexpectedly")
             self._end(job, todo, current, "failed", "network")
         finally:
-            self._in_download = False
+            self._interruptible = False
             self._record(
                 "models.install_finished",
                 {"items": [i.id for i in job.items], "state": job.state},
@@ -459,10 +501,11 @@ class Installer:
             return
         progress.done_bytes = 0
         archives: list[tuple[CatalogFile, Path]] = []
+        image_root = self._image_root()
         for f in item.files:
             if self._cancel:
                 raise FetchError("cancelled")
-            dest = self._dest(item, f)
+            dest = self._dest(item, f, image_root)
             if dest is not None and _in_place(dest, f.size):
                 progress.done_bytes += f.size  # an earlier item or run put it there
                 continue
@@ -504,7 +547,7 @@ class Installer:
 
         for attempt in range(len(RETRY_DELAYS) + 1):
             progress.state = "downloading"
-            self._in_download = True
+            self._interruptible = True
             try:
                 await download_file(
                     f.url,
@@ -522,7 +565,7 @@ class Installer:
                 await asyncio.sleep(RETRY_DELAYS[attempt])
                 last["t"], last["done"] = self._clock(), None
             finally:
-                self._in_download = False
+                self._interruptible = False
             progress.done_bytes = base
 
     async def _unpack(
@@ -531,8 +574,8 @@ class Installer:
         progress.state = "unpacking"
         progress.speed_bps = 0.0
         staging = self._downloads / f"{item.id}.unpack"
+        await asyncio.to_thread(_remove_tree, staging)  # what a stopped run left behind
         try:
-            await asyncio.to_thread(_remove_tree, staging)
             for f, part in archives:
                 if f.unpack == "zip":
                     await asyncio.to_thread(
@@ -556,8 +599,11 @@ class Installer:
                 await asyncio.to_thread(_swap_in, staging, self.data / item.install_dir)
             except OSError as exc:
                 raise _place_error(exc) from exc
-        finally:
+        except asyncio.CancelledError:
+            raise  # stopping: a thread may still be writing there; the next run clears it
+        except BaseException:
             await asyncio.to_thread(_remove_tree, staging)
+            raise
         for _, part in archives:
             with contextlib.suppress(OSError):
                 part.unlink(missing_ok=True)
@@ -568,19 +614,31 @@ class Installer:
             raise FetchError("unpack", "tar.exe was not found")
         staging.mkdir(parents=True, exist_ok=True)
         try:
-            done = await asyncio.to_thread(
-                self._run,
+            proc = self._popen(
                 [str(tar), "-xf", str(archive), "-C", str(staging)],
                 stdin=subprocess.DEVNULL,
-                capture_output=True,
-                timeout=TAR_TIMEOUT_SECONDS,
-                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 creationflags=NO_WINDOW,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise FetchError("unpack", f"tar failed: {type(exc).__name__}") from exc
-        if done.returncode != 0:
-            raise FetchError("unpack", f"tar exited with {done.returncode}")
+        started = self._clock()
+        self._interruptible = True
+        try:
+            while (code := proc.poll()) is None:
+                if self._cancel:
+                    raise FetchError("cancelled")
+                if self._clock() - started > TAR_TIMEOUT_SECONDS:
+                    raise FetchError("unpack", "tar took too long")
+                await asyncio.sleep(TAR_POLL_SECONDS)
+        except BaseException:
+            _kill(proc)
+            raise
+        finally:
+            self._interruptible = False
+        if code != 0:
+            raise FetchError("unpack", f"tar exited with {code}")
 
     # ---- models.toml ----------------------------------------
 
@@ -611,7 +669,6 @@ class Installer:
             set_top["default_chat_model"] = chats[-1].card
             set_top["chat_server"] = "local"
 
-        image_root = self.data / "models" / "image"
         comfys = [i for i in items if i.kind == "comfyui"]
         if not comfys and "image" in kinds:
             if rt.comfyui_python is None or rt.comfyui_main is None:
@@ -623,10 +680,9 @@ class Installer:
         for comfy in comfys:
             set_top["comfyui_python"] = str(self.data / comfy.install_dir / comfy.python)
             set_top["comfyui_main"] = str(self.data / comfy.install_dir / comfy.main)
-        root = rt.comfyui_model_root
-        if comfys or ("image" in kinds and root is None):
-            set_top["comfyui_model_root"] = str(image_root)
-            root = image_root
+        root = self._image_root(rt)
+        if rt.comfyui_model_root is None and (comfys or "image" in kinds):
+            set_top["comfyui_model_root"] = str(root)  # never replaces the owner's
 
         images = [i for i in items if i.kind == "image"]
         if images:

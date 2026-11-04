@@ -129,15 +129,41 @@ class Stall:
         return httpx.Response(200, content=stream())
 
 
-class FakeTar:
-    """Stands in for `subprocess.run` with tar.exe: builds the ComfyUI tree under `-C`."""
+class FakeProc:
+    """A `subprocess.Popen` stand-in: done with `returncode`, or running until killed."""
 
-    def __init__(self, link: bool = False) -> None:
+    def __init__(self, returncode: int | None = 0) -> None:
+        self.returncode = returncode
+        self.killed = False
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = -9
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
+class FakeTar:
+    """Stands in for `subprocess.Popen` with tar.exe: builds the ComfyUI tree under `-C`.
+    With `block`, it builds the tree and then keeps running until killed."""
+
+    def __init__(self, link: bool = False, block: bool = False, code: int = 0, tree=True) -> None:
         self.calls: list[tuple[list[str], dict]] = []
-        self.link = link
+        self.procs: list[FakeProc] = []
+        self.link, self.block, self.code, self.tree = link, block, code, tree
+        self.started = asyncio.Event()
 
     def __call__(self, argv, **kw):
         self.calls.append((list(argv), kw))
+        proc = FakeProc(None if self.block else self.code)
+        self.procs.append(proc)
+        self.started.set()
+        if not self.tree:
+            return proc
         dest = Path(argv[argv.index("-C") + 1])
         root = dest / "ComfyUI_windows_portable"
         (root / "python_embeded").mkdir(parents=True)
@@ -146,7 +172,7 @@ class FakeTar:
         (root / "ComfyUI" / "main.py").write_text("print('hi')\n")
         if self.link:
             make_link(root / "ComfyUI" / "sneaky", dest.parent.parent)
-        return subprocess.CompletedProcess(argv, 0, b"", b"")
+        return proc
 
 
 def make_link(link: Path, target: Path) -> None:
@@ -173,7 +199,7 @@ def quick(monkeypatch):
     monkeypatch.setattr(fetching, "CHUNK", 4)
 
 
-def make(data, server=None, *, pc=NO_GPU, free=10**12, run=None, **kw):
+def make(data, server=None, *, pc=NO_GPU, free=10**12, popen=None, **kw):
     server = server or Server()
     control = ServerControl(supervised=True)
     events: list[tuple[str, dict]] = []
@@ -182,7 +208,7 @@ def make(data, server=None, *, pc=NO_GPU, free=10**12, run=None, **kw):
         control,
         catalog=CATALOG,
         client_factory=server.client,
-        run=run or FakeTar(),
+        popen=popen or FakeTar(),
         disk=lambda path: SimpleNamespace(free=free),
         record=lambda event, detail: events.append((event, detail)),
         pc=lambda: pc,
@@ -316,7 +342,7 @@ def test_owner_llama_server_counts_as_a_runtime(data, tmp_path):
 
 async def test_shared_image_file_downloads_once(data):
     tar = FakeTar()
-    inst, server, control = make(data, pc=NVIDIA, run=tar)
+    inst, server, control = make(data, pc=NVIDIA, popen=tar)
     job = inst.start(["image-z-image-turbo", "image-flux2-klein-4b"], make_default=False)
     assert [i.id for i in job.items] == ["comfyui", "image-z-image-turbo", "image-flux2-klein-4b"]
     await inst.wait()
@@ -333,7 +359,7 @@ async def test_shared_image_file_downloads_once(data):
     assert Path(argv[0]).name == "tar.exe" and Path(argv[0]).parent.name == "System32"
     staging = data / "runtime" / "downloads" / "comfyui.unpack"
     assert argv[1:] == ["-xf", str(part_of(data, "comfyui")), "-C", str(staging)]
-    assert kw["timeout"] == 30 * 60 and kw["creationflags"] == NO_WINDOW
+    assert kw["creationflags"] == NO_WINDOW and kw["stdin"] == subprocess.DEVNULL
     assert not staging.exists()
 
     rt = load_runtime(data)
@@ -369,7 +395,11 @@ def test_needed_bytes_counts_parts_shared_files_and_unpacking(data):
     inst, _, _ = make(data)
     model = CATALOG["chat-qwen3.5-4b"]
     cpu = CATALOG["llama-cpu"]
-    assert inst.needed_bytes([cpu, model]) == 2 * cpu.size_bytes + model.size_bytes
+    # Room to unpack: three times a zip, four times a 7z.
+    assert installer.UNPACK_FACTOR == {"zip": 3, "7z": 4}
+    assert inst.needed_bytes([cpu, model]) == 4 * cpu.size_bytes + model.size_bytes
+    comfy = CATALOG["comfyui"]
+    assert inst.needed_bytes([comfy]) == 5 * comfy.size_bytes
     part = part_of(data, "chat-qwen3.5-4b")
     part.parent.mkdir(parents=True)
     part.write_bytes(b"12345")
@@ -377,6 +407,9 @@ def test_needed_bytes_counts_parts_shared_files_and_unpacking(data):
     z, flux = CATALOG["image-z-image-turbo"], CATALOG["image-flux2-klein-4b"]
     shared = z.files[1].size
     assert inst.needed_bytes([z, flux]) == z.size_bytes + flux.size_bytes - shared
+    put_runtime(data)
+    put_comfyui(data)  # already unpacked here: nothing to download or unpack again
+    assert inst.needed_bytes([cpu, comfy]) == 0
 
 
 async def test_disk_full_mid_download_fails_item_and_keeps_part(data, monkeypatch):
@@ -514,7 +547,7 @@ async def test_cancel_then_retry(data):
 
 
 async def test_7z_with_a_link_is_refused(data):
-    inst, _, control = make(data, pc=NVIDIA, run=FakeTar(link=True))
+    inst, _, control = make(data, pc=NVIDIA, popen=FakeTar(link=True))
     job = inst.start(["comfyui"], make_default=False)
     await inst.wait()
     assert job.state == "failed"
@@ -525,18 +558,12 @@ async def test_7z_with_a_link_is_refused(data):
 
 
 async def test_7z_that_fails_or_lacks_main_is_refused(data):
-    def failing(argv, **kw):
-        return subprocess.CompletedProcess(argv, 2, b"", b"bad archive")
-
-    inst, _, _ = make(data, pc=NVIDIA, run=failing)
+    inst, _, _ = make(data, pc=NVIDIA, popen=FakeTar(code=2))
     job = inst.start(["comfyui"], make_default=False)
     await inst.wait()
     assert job.items[0].error == "unpack"
 
-    def empty(argv, **kw):
-        return subprocess.CompletedProcess(argv, 0, b"", b"")
-
-    inst, _, _ = make(data, pc=NVIDIA, run=empty)
+    inst, _, _ = make(data, pc=NVIDIA, popen=FakeTar(tree=False))
     job = inst.start(["comfyui"], make_default=False)
     await inst.wait()
     assert job.items[0].error == "unpack"
@@ -599,3 +626,113 @@ async def test_progress_reports_state_and_speed(data, monkeypatch):
     await inst.shutdown()
     state, done, speed = seen[0]
     assert state == "downloading" and done > 0 and speed > 0
+
+
+async def test_shutdown_during_tar_kills_it_and_swaps_nothing(data):
+    tar = FakeTar(block=True)
+    inst, _, _ = make(data, pc=NVIDIA, popen=tar)
+    job = inst.start(["comfyui"], make_default=False)
+    await asyncio.wait_for(tar.started.wait(), 5)
+    await asyncio.wait_for(inst.shutdown(), 2)
+    [proc] = tar.procs
+    assert proc.killed
+    assert job.state == "cancelled" and job.items[0].state == "cancelled"
+    assert not (data / "tools").exists()
+    assert part_of(data, "comfyui").is_file()  # kept for the next start
+
+
+async def test_cancel_during_tar_kills_it(data):
+    tar = FakeTar(block=True)
+    inst, _, _ = make(data, pc=NVIDIA, popen=tar)
+    job = inst.start(["comfyui"], make_default=False)
+    await asyncio.wait_for(tar.started.wait(), 5)
+    inst.cancel()
+    await asyncio.wait_for(inst.wait(), 2)
+    assert tar.procs[0].killed and job.state == "cancelled"
+    assert not (data / "tools").exists()
+
+
+async def test_tar_over_its_time_limit_is_killed(data, monkeypatch):
+    monkeypatch.setattr(installer, "TAR_TIMEOUT_SECONDS", 0.05)
+    tar = FakeTar(block=True)
+    inst, _, _ = make(data, pc=NVIDIA, popen=tar)
+    job = inst.start(["comfyui"], make_default=False)
+    await asyncio.wait_for(inst.wait(), 5)
+    assert tar.procs[0].killed
+    assert (job.items[0].state, job.items[0].error) == ("failed", "unpack")
+    assert not (data / "tools").exists()
+    assert not (data / "runtime" / "downloads" / "comfyui.unpack").exists()
+
+
+async def test_wait_lets_its_caller_be_cancelled(data):
+    put_runtime(data)
+    inst, server, _ = make(data)
+    stall = Stall()
+    server.override[QWEN4B] = stall
+    inst.start(["chat-qwen3.5-4b"], make_default=True)
+    await asyncio.wait_for(stall.sent.wait(), 5)
+    waiter = asyncio.create_task(inst.wait())
+    await asyncio.sleep(0)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert inst.current().state == "running"  # cancelling the waiter left the job alone
+    await inst.shutdown()
+
+
+async def test_image_files_go_under_the_owners_comfyui_model_root(data, tmp_path):
+    own = tmp_path / "own comfy"
+    for rel in ("python.exe", "main.py"):
+        (own / rel).parent.mkdir(parents=True, exist_ok=True)
+        (own / rel).write_bytes(b"x")
+    root = tmp_path / "own models"
+    toml = (
+        f"comfyui_python = '{own / 'python.exe'}'\n"
+        f"comfyui_main = '{own / 'main.py'}'\n"
+        f"comfyui_model_root = '{root}'\n"
+    )
+    (data / "models.toml").write_text(toml, encoding="utf-8")
+    inst, _, control = make(data, pc=NVIDIA)
+    item = CATALOG["image-flux2-klein-4b"]
+    assert inst.needed_bytes([item]) == item.size_bytes
+    job = inst.start(["image-flux2-klein-4b"], make_default=False)
+    assert [i.id for i in job.items] == ["image-flux2-klein-4b"]
+    await inst.wait()
+    assert job.state == "done", job.to_json()
+    assert (root / "diffusion_models" / "flux-2-klein-4b.safetensors").is_file()
+    assert (root / "text_encoders" / "qwen_3_4b.safetensors").is_file()
+    assert not (data / "models" / "image").exists()
+    assert inst.installed(item) and inst.needed_bytes([item]) == 0
+    saved = models_toml(data)
+    assert saved["comfyui_model_root"] == str(root)
+    assert saved["comfyui_python"] == str(own / "python.exe")
+    assert control.restart_needed == {"models"}
+
+
+def test_refuse_links_refuses_hard_links(tmp_path):
+    (tmp_path / "a.txt").write_bytes(b"a")
+    installer._refuse_links(tmp_path)
+    os.link(tmp_path / "a.txt", tmp_path / "b.txt")
+    with pytest.raises(fetching.FetchError) as caught:
+        installer._refuse_links(tmp_path)
+    assert caught.value.reason == "unpack"
+
+
+def test_swap_in_puts_the_old_folder_back_when_the_second_rename_fails(tmp_path, monkeypatch):
+    target = tmp_path / "tools" / "comfyui"
+    target.mkdir(parents=True)
+    (target / "keep.txt").write_text("old")
+    new = tmp_path / "new"
+    new.mkdir()
+    real_rename = Path.rename
+
+    def rename(self, other):
+        if self == new:
+            raise PermissionError("in use")
+        return real_rename(self, other)
+
+    monkeypatch.setattr(Path, "rename", rename)
+    with pytest.raises(PermissionError):
+        installer._swap_in(new, target)
+    assert (target / "keep.txt").read_text() == "old"
+    assert not target.with_name("comfyui.old").exists() and new.is_dir()
