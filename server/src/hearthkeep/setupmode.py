@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hmac
 import secrets
+from pathlib import Path
 
 
 class SetupMode:
@@ -20,7 +21,12 @@ class SetupMode:
         self._secret: str | None = secret if secret is not None else secrets.token_urlsafe(32)
         self.completed = False
         # Whether this run made the data folder (so it may still move it, before any download).
+        # `cmd_setup` sets it for each folder it sets up.
         self.created_folder = False
+        # The folder the setup page chose to move the data to; `cmd_setup` moves it there.
+        self.next_data_dir: Path | None = None
+        # Whether to start Hearthkeep at login once setup is finished (chosen in the wizard).
+        self.start_at_login = True
 
     def __repr__(self) -> str:  # never the secret, in a traceback or a debug print
         return f"SetupMode(active={self.active}, completed={self.completed})"

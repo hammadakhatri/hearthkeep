@@ -31,8 +31,10 @@ import hearthkeep
 from hearthkeep import db, launcher, shortcut, startup
 from hearthkeep.api.app import DB_FILE
 from hearthkeep.api.common import ENROLLMENT_CODE_TTL_MINUTES
+from hearthkeep.api.routes_setup import folder_move_problem
 from hearthkeep.auth.enrollment import EnrollmentCodes, EnrollmentError, first_device_allowed
 from hearthkeep.config import (
+    DATA_SUBDIRS,
     ConfigError,
     Settings,
     bind_address,
@@ -41,8 +43,9 @@ from hearthkeep.config import (
     local_base_url,
 )
 from hearthkeep.host import DATA_MARKERS, REPO_ROOT, UNSUPPORTED_HOST, Host, current_host
-from hearthkeep.lifecycle import EXIT_USAGE, SUPERVISED_ENV, ServerControl
+from hearthkeep.lifecycle import EXIT_RELOCATE, EXIT_USAGE, SUPERVISED_ENV, ServerControl
 from hearthkeep.providers.chat import NoChatModelClient, OpenAIChatClient
+from hearthkeep.push import VAPID_SECRET
 from hearthkeep.runtime.gpu import detect_vram_gb
 from hearthkeep.runtime.supervisor import (
     API_KEY_FILE,
@@ -114,6 +117,7 @@ LAUNCHER_NOT_STARTED = (
 LOCATION_NOT_SAVED = (
     "Hearthkeep couldn't note where its data folder is on this PC. Setup carries on without it."
 )
+MOVING_DATA = "Moving Hearthkeep's data to the folder you chose."
 FOLDER_NOT_PROTECTED = (
     "Hearthkeep couldn't limit who on this PC can open its folders. Setup carries on without it."
 )
@@ -541,6 +545,92 @@ def _release_program_folder(
     return root
 
 
+# What setup itself puts in a new data folder: the files below (each with the check that it
+# is still only setup's own), and the empty folders DATA_SUBDIRS names with the folders that
+# hold them. Starting the setup server adds two: git's empty settings file, and the secret
+# store holding keys Hearthkeep made itself (a key or token the owner typed keeps the folder).
+SETUP_SECRETS = frozenset({VAPID_SECRET, LLAMA_API_KEY_SECRET})
+
+
+def _setup_secrets_only(folder: Path) -> bool:
+    try:
+        return set(SecretStore(folder).names()) <= SETUP_SECRETS
+    except (SecretStoreError, OSError):
+        return False
+
+
+SETUP_FILES: dict[str, Callable[[Path], bool]] = {
+    "config.toml": lambda folder: True,
+    DB_FILE: lambda folder: True,
+    f"{DB_FILE}-wal": lambda folder: True,
+    f"{DB_FILE}-shm": lambda folder: True,
+    "runtime/git-home/empty.gitconfig": (
+        lambda folder: (folder / "runtime/git-home/empty.gitconfig").stat().st_size == 0
+    ),
+    "secrets/store.bin": _setup_secrets_only,
+}
+SETUP_DIRS = frozenset(
+    "/".join(sub.split("/")[:n]) for sub in DATA_SUBDIRS for n in range(1, sub.count("/") + 2)
+)
+
+
+def _setup_folder_contents(folder: Path) -> list[Path] | None:
+    """Everything in `folder`, files first and then folders deepest first, when all of it is
+    setup's own (SETUP_FILES that pass their check, in SETUP_DIRS that hold nothing else);
+    None when anything else is there, a link included."""
+    files: list[Path] = []
+    dirs: list[Path] = []
+
+    def walk(directory: Path, rel: str) -> bool:
+        with os.scandir(directory) as entries:
+            found = list(entries)
+        for entry in found:
+            name = f"{rel}/{entry.name}" if rel else entry.name
+            if entry.is_symlink() or entry.is_junction():
+                return False
+            if entry.is_dir(follow_symlinks=False):
+                if name not in SETUP_DIRS or not walk(Path(entry.path), name):
+                    return False
+                dirs.append(Path(entry.path))  # after what is inside it
+            elif entry.is_file(follow_symlinks=False) and name in SETUP_FILES:
+                files.append(Path(entry.path))
+            else:
+                return False
+        return True
+
+    try:
+        if not walk(folder, ""):
+            return None
+        found = {path.relative_to(folder).as_posix() for path in files}
+        if not all(SETUP_FILES[name](folder) for name in found):
+            return None
+    except OSError:
+        return None
+    return files + dirs
+
+
+def _remove_setup_folder(folder: Path) -> bool:
+    """Remove a data folder this setup run made and is moving away from, only when it holds
+    nothing but setup's own files (an owner's file anywhere in it keeps all of it). Whether it
+    is gone; a failure part way leaves the rest, and is logged by type only."""
+    if folder.is_symlink() or not folder.is_dir():
+        return False
+    contents = _setup_folder_contents(folder)
+    if contents is None:
+        return False
+    try:
+        for path in contents:
+            if path.is_dir():
+                path.rmdir()  # never a folder with anything still in it
+            else:
+                path.unlink()
+        folder.rmdir()
+    except OSError as exc:
+        log.warning("the old data folder couldn't be removed: %s", type(exc).__name__)
+        return False
+    return True
+
+
 def _protect_folder(host: Host, path: Path) -> None:
     """Let only the owner's account, SYSTEM and Administrators into `path` (ruling C24). A
     failure is logged by type and never stops setup."""
@@ -647,80 +737,110 @@ def cmd_setup(
             print(problem)
             return 1
     data = data.resolve()
-    # Protected before Hearthkeep writes anything in it. A folder that already has its
-    # database is an install in use and is kept as it is (C2); one with only a config.toml the
-    # owner made first (for Tailscale) holds nothing of theirs yet, so it is protected too.
-    if not (data / DB_FILE).exists():
-        data.mkdir(parents=True, exist_ok=True)
-        _protect_folder(host, data)
-    program = program_folder()
-    if program is not None:
-        _protect_folder(host, program)
-    settings = _settings(data)  # creates the folder's files and its config on first run
-    if recorded is None:  # never repoint a record whose folder still exists
-        try:
-            host.write_location(data)
-        except OSError:
-            print(LOCATION_NOT_SAVED)
-    report = _upgrade(settings, host)
-
-    # Before the web app step: a re-run must not rebuild files a running Hearthkeep serves.
-    if _has_passkey(settings):
-        print(ALREADY_SET_UP)
-        # Make the Start menu shortcut again (it may have failed the first time), unless the
-        # upgrade just made it.
-        if report is None or "shortcut" not in report.changed:
-            _install_shortcut(host, data)
-        # In this window a problem is printed, not shown in a message box.
-        return opener(settings, host, open_url=open_url, notify=print)
-
-    print(STEP_WEB)
-    if ensure_bundle(say=print) == "failed":
-        return 1
-
-    host_ip = bind_address(settings.host)
-    if not free(host_ip, settings.port):
-        print(PORT_BUSY.format(port=settings.port))
-        return 1
-
-    print(STEP_START)
     if make_verifier is None:
         from hearthkeep.auth.webauthn import PyWebAuthnVerifier
 
         make_verifier = PyWebAuthnVerifier
+    # One setup run, one secret: a move to another folder keeps the page that is open.
     setup = SetupMode()
-    control = ServerControl(supervised=False, setup_mode=True)
-    try:
-        # Its startup lines are not printed: model details mean nothing at first setup.
-        app, _lines = build_app(
-            settings, verifier=make_verifier(settings), control=control, setup=setup,
-            make_llama=make_llama, make_comfy=make_comfy, detect_vram=detect_vram,
-        )  # fmt: skip
-    except ProcessError as exc:
-        print(exc.user_message)
-        return 1
+    # Never repoint a record whose folder still exists: the record is written when there is
+    # none. After a move it is repointed only when it named the folder being moved (this run
+    # made that folder), never when it names another install.
+    write_record = recorded is None
+    record_follows_moves = recorded is None or Path(recorded).resolve() == data
+    moved = False
+    while True:
+        setup.created_folder = new_folder
+        # Protected before Hearthkeep writes anything in it. A folder that already has its
+        # database is an install in use and is kept as it is (C2); one with only a config.toml
+        # the owner made first (for Tailscale) holds nothing of theirs yet, so it is protected.
+        if not (data / DB_FILE).exists():
+            data.mkdir(parents=True, exist_ok=True)
+            _protect_folder(host, data)
+        if not moved:
+            program = program_folder()
+            if program is not None:
+                _protect_folder(host, program)
+        settings = _settings(data)  # creates the folder's files and its config on first run
+        if write_record:
+            try:
+                host.write_location(data)
+            except OSError:
+                print(LOCATION_NOT_SAVED)
+        report = _upgrade(settings, host)
 
-    def announce() -> None:
-        secret = setup.secret
-        if secret is None:
-            return
-        link = setup_url(settings.public_origin, secret)
+        # Before the web app step: a re-run must not rebuild files a running Hearthkeep serves.
+        if _has_passkey(settings):
+            print(ALREADY_SET_UP)
+            # Make the Start menu shortcut again (it may have failed the first time), unless
+            # the upgrade just made it.
+            if report is None or "shortcut" not in report.changed:
+                _install_shortcut(host, data)
+            # In this window a problem is printed, not shown in a message box.
+            return opener(settings, host, open_url=open_url, notify=print)
+
+        if not moved:  # the web app is the program's, not the data folder's: made once
+            print(STEP_WEB)
+            if ensure_bundle(say=print) == "failed":
+                return 1
+
+        host_ip = bind_address(settings.host)
+        if not free(host_ip, settings.port):
+            print(PORT_BUSY.format(port=settings.port))
+            return 1
+
+        if not moved:
+            print(STEP_START)
+        control = ServerControl(supervised=False, setup_mode=True)
         try:
-            opened = bool(open_url(link))
-        except Exception:  # no browser at all: the same as one that didn't open
-            opened = False
-        if opened:
-            print(BROWSER_OPENING)
-            print(KEEP_OPEN)
-        else:
-            # The only time the link (and so the secret) is shown: in this window alone.
-            print(BROWSER_FAILED)
-            print(link)
+            # Its startup lines are not printed: model details mean nothing at first setup.
+            app, _lines = build_app(
+                settings, verifier=make_verifier(settings), control=control, setup=setup,
+                make_llama=make_llama, make_comfy=make_comfy, detect_vram=detect_vram,
+            )  # fmt: skip
+        except ProcessError as exc:
+            print(exc.user_message)
+            return 1
 
-    code = run_server(
-        app, host_ip, settings.port, control=control, on_started=announce,
-        log_level="critical", access_log=False,
-    )  # fmt: skip
+        def announce(settings: Settings = settings) -> None:
+            secret = setup.secret
+            if secret is None:
+                return
+            link = setup_url(settings.public_origin, secret)
+            try:
+                opened = bool(open_url(link))
+            except Exception:  # no browser at all: the same as one that didn't open
+                opened = False
+            if opened:
+                print(BROWSER_OPENING)
+                print(KEEP_OPEN)
+            else:
+                # The only time the link (and so the secret) is shown: in this window alone.
+                print(BROWSER_FAILED)
+                print(link)
+
+        # After a move the setup page is already open: it finds the server again by itself.
+        code = run_server(
+            app, host_ip, settings.port, control=control,
+            on_started=None if moved else announce, log_level="critical", access_log=False,
+        )  # fmt: skip
+        target = setup.next_data_dir
+        if code == EXIT_RELOCATE and target is not None and not setup.completed:
+            setup.next_data_dir = None
+            # The page checked it; checked again, as the folder may have changed since.
+            problem = folder_move_problem(host, target, data)
+            if problem:
+                print(problem)
+                print(STOPPED_EARLY)
+                return 1
+            print(MOVING_DATA)
+            if setup.created_folder:
+                _remove_setup_folder(data)  # only when nothing but setup's own files is there
+            data, new_folder, moved = target.resolve(), True, True
+            write_record = record_follows_moves
+            continue
+        break
+
     if not setup.completed:
         # A start that failed with the port now taken: something took it after the check
         # above. Any other failure (the app's own startup, say) is not a busy port.

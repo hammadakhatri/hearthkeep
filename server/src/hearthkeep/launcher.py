@@ -150,6 +150,8 @@ def run_launcher(
             if code in (EXIT_STOPPED, EXIT_USAGE):
                 _note(log, f"exit {code} {'stop' if code == EXIT_STOPPED else 'config_error'}")
                 return code
+            # Any other code is a crash. EXIT_RELOCATE needs no case: only the setup server
+            # returns it, and the launcher never runs that server.
             _note(log, "start_failed crash" if code is None else f"exit {code} crash")
             now = clock()
             crashes = [t for t in crashes if now - t < CRASH_WINDOW_S]

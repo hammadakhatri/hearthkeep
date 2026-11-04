@@ -84,20 +84,25 @@ def read_pc(
     except (ConfigError, OSError):
         configured = None
     vram = configured if configured is not None else (found[1] if found else None)
-    root = Path(data_dir)
-    while not root.exists() and root != root.parent:
-        root = root.parent  # the data folder may not exist yet: ask about its drive
-    try:
-        free_gb = disk(root).free / _GB
-    except OSError:
-        free_gb = 0.0
     return PcInfo(
         gpu_name=found[0] if found else None,
         vram_gb=vram,
         nvidia=found is not None,
         ram_gb=memory(),
-        free_disk_gb=free_gb,
+        free_disk_gb=free_bytes(Path(data_dir), disk=disk) / _GB,
     )
+
+
+def free_bytes(folder: Path, *, disk: Callable = shutil.disk_usage) -> int:
+    """Free bytes on the drive that holds `folder`, which may not exist yet (its nearest
+    existing parent is asked); 0 when the drive can't be read."""
+    root = Path(folder)
+    while not root.exists() and root != root.parent:
+        root = root.parent
+    try:
+        return int(disk(root).free)
+    except OSError:
+        return 0
 
 
 PC_CACHE_SECONDS = 60.0

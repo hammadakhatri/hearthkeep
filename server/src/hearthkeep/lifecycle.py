@@ -12,6 +12,10 @@ from datetime import UTC, datetime
 EXIT_STOPPED = 0  # stop: the launcher ends too
 EXIT_USAGE = 2  # a configuration or usage error: starting again would fail the same way
 EXIT_RESTART = 75  # restart: the launcher starts a new server
+# Setup only: the setup page chose another data folder, so `cmd_setup` starts setup again
+# there. Only the setup server returns it, and the launcher never runs that server, so the
+# launcher needs no case for it (it would count it as a crash).
+EXIT_RELOCATE = 76
 SUPERVISED_ENV = "HEARTHKEEP_SUPERVISED"  # "1" when the launcher started this server
 
 
