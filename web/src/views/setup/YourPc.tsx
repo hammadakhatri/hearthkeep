@@ -35,6 +35,12 @@ export function YourPc({ info, failed, onReload, canMoveHere, moving, onMove, fo
   const inputRef = useRef<HTMLInputElement>(null)
   const changeRef = useRef<HTMLButtonElement>(null)
   const wasChanging = useRef(false)
+  const statusRef = useRef<HTMLParagraphElement>(null)
+
+  // After a successful move the form is gone: focus goes to the status line, not the page.
+  useEffect(() => {
+    if (moving) statusRef.current?.focus()
+  }, [moving])
 
   // The form opens with the cursor in its field; closing it gives focus back to "Change…".
   useEffect(() => {
@@ -96,7 +102,7 @@ export function YourPc({ info, failed, onReload, canMoveHere, moving, onMove, fo
           </div>
         </dl>
       )}
-      <p className="setup-text" role="status" aria-live="polite">
+      <p ref={statusRef} tabIndex={-1} className="setup-text" role="status" aria-live="polite">
         {moving ? SETUP_COPY.moving : ''}
       </p>
       {info && info.can_move_data && canMoveHere && !moving && !changing && (

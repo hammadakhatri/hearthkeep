@@ -536,7 +536,9 @@ describe('Setup wizard', () => {
     expect(field).toHaveValue(HOME)
     fireEvent.change(field, { target: { value: TARGET } })
     fireEvent.click(screen.getByRole('button', { name: 'Move here' }))
-    expect(await screen.findByText('Moving the data folder…')).toHaveAttribute('role', 'status')
+    const status = await screen.findByText('Moving the data folder…')
+    expect(status).toHaveAttribute('role', 'status')
+    expect(status).toHaveFocus()
     expect(await screen.findByText(TARGET)).toBeInTheDocument()
     expect(screen.queryByText('Moving the data folder…')).toBeNull()
     expect(bodyOf(calls.find((c) => c.path === '/api/setup/data-folder')!)).toEqual({ secret: SECRET, path: TARGET })
@@ -546,6 +548,17 @@ describe('Setup wizard', () => {
     expect(bodyOf(statuses[1])).toEqual({ secret: SECRET })
     expect(healthAsks).toBeGreaterThanOrEqual(2)
     expect(screen.getByRole('heading', { level: 2, name: 'Your PC' })).toBeInTheDocument()
+  })
+
+  it('Change… puts the cursor in the field, and Cancel gives focus back to Change…', async () => {
+    window.sessionStorage.setItem('hk.setup.step', '1')
+    wizardRoutes({})
+    renderWizard()
+    expect(await screen.findByText(HOME)).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: 'Change…' }))
+    expect(screen.getByRole('textbox', { name: 'New data folder' })).toHaveFocus()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('button', { name: 'Change…' })).toHaveFocus()
   })
 
   it('a folder the server refuses shows its sentence, and Change… is hidden when it cannot move', async () => {
