@@ -197,6 +197,26 @@ def test_serve_llama_without_model_dir_stays_external(serve, tmp_path, capsys):
     assert "model_dirs" in capsys.readouterr().err
 
 
+def test_chat_server_external_uses_chat_base_url(serve, tmp_path, capsys):
+    # Owned models are installed, but the owner chose their own chat server: nothing deleted,
+    # nothing warned, and Hearthkeep doesn't run llama-server.
+    toml = owned_models_toml(tmp_path).replace(
+        "llama_port = 8091", "llama_port = 8091\nchat_server = 'external'"
+    )
+    write(serve.data, "models.toml", toml)
+    SecretStore(serve.data).put("chat_api_key", "external-key")
+    assert serve() == 0
+    client = serve.hk.runner._loop._client
+    assert type(client) is OpenAIChatClient
+    assert client._url == "http://127.0.0.1:8080/v1/chat/completions"
+    assert client._api_key == "external-key"
+    assert serve.llama_calls == []
+    assert serve.hk.managed == frozenset()
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "Chat: using the chat server at chat_base_url" in captured.out
+
+
 def test_serve_with_comfyui_registers_image_tool(serve, tmp_path, capsys):
     write(serve.data, "models.toml", owned_models_toml(tmp_path, comfy=True))
     assert serve() == 0

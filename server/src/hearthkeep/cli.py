@@ -259,7 +259,8 @@ def build_model_stack(
 
     Owned mode (models.toml sets llama_server_exe and model_dirs for the default chat card):
     Hearthkeep runs llama-server itself and every chat stream leases the chat model. External
-    mode (otherwise, when config.toml names chat_base_url) keeps Phase 1 behaviour: that chat
+    mode (otherwise, or when models.toml says chat_server = "external", when config.toml names
+    chat_base_url) keeps Phase 1 behaviour: that chat
     server is used as it is and stays out of the GPU scheduler. With neither, there is no chat
     model ("none"): the server still starts, and every chat stream says so. ComfyUI is managed
     when its three paths are set and at least one image card loaded.
@@ -279,7 +280,9 @@ def build_model_stack(
 
     chat_card = cards.get(rt.default_chat_model)
     owned = False
-    if rt.llama_server_exe is not None:
+    # The owner chose their own chat server: installed local models stay where they are.
+    external_chosen = rt.chat_server == "external" and settings.chat_base_url_set
+    if rt.llama_server_exe is not None and not external_chosen:
         fallback = (
             "using the chat server at chat_base_url instead."
             if settings.chat_base_url_set
