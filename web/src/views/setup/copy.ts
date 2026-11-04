@@ -15,7 +15,8 @@ export const SETUP_COPY = {
   defaultFolder: 'The default folder.',
   moveHint: 'Setup moves what it has made so far to the new folder and carries on there.',
   moving: 'Moving the data folder…',
-  tooLate: "The data folder can't move now: a download or the sandbox build has started.",
+  tooLate:
+    "The data folder can't move now: a download has started, the sandbox is building, or you chose the chat model or your model server.",
   moveFailed: "The data folder couldn't be moved. Try again.",
 
   chatTitle: 'Chat model',

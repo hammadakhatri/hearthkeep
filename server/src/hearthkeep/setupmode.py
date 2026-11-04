@@ -30,6 +30,12 @@ class SetupMode:
         self.next_data_dir: Path | None = None
         # Whether to start Hearthkeep at login once setup is finished (chosen in the wizard).
         self.start_at_login = True
+        # Whether the owner has chosen it in the wizard; until then a task that starts another
+        # data folder is left alone (the switch then shows that and starts off).
+        self.startup_chosen = False
+        # Whether the wizard chose the chat model or a model server: that writes into this data
+        # folder (models.toml, config.toml, the server's key), so the folder can't move after.
+        self.chat_changed = False
 
     def __repr__(self) -> str:  # never the secret, in a traceback or a debug print
         return f"SetupMode(active={self.active}, completed={self.completed})"

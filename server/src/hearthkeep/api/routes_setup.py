@@ -125,14 +125,15 @@ def _build_running(hk: Services) -> bool:
 
 
 def _move_closed(hk: Services) -> bool:
-    """A download or the sandbox build is under way: both write into this data folder."""
-    return _download_started(hk) or _build_running(hk)
+    """A download has started, the sandbox build is under way, or the chat model or a model
+    server was chosen: each writes into this data folder."""
+    return _download_started(hk) or _build_running(hk) or hk.setup.chat_changed
 
 
 @router.post("/pc")
 async def setup_pc(_: SetupDep, body: SetupBody, request: Request) -> dict:
     """This PC, and the data folder: the one place a path is shown, the folder the owner chose
-    or the default. It can still move while this run made it and no download has started."""
+    or the default. It can still move while this run made it and `_move_closed` is false."""
     hk = services(request)
     if hk.pc is None:
         raise ApiError(503, "unavailable")
@@ -183,8 +184,9 @@ def folder_move_problem(host: Host, target: Path, current: Path) -> str | None:
 async def setup_data_folder(
     _: SetupDep, body: SetupDataFolderBody, request: Request
 ) -> JSONResponse:
-    """Move Hearthkeep's data to another folder: allowed only for a folder this run made and
-    before any download has started (checked here, whatever the page was told). Setup's server
+    """Move Hearthkeep's data to another folder: allowed only for a folder this run made,
+    before any download has started or the chat was chosen and while no build runs (checked
+    here, whatever the page was told). Setup's server
     stops once this answers, and `cmd_setup` sets up again in the new folder."""
     hk = services(request)
     host = current_host()
@@ -278,7 +280,14 @@ SetupChatBody = Annotated[SetupLocalChat | SetupExternalChat, Field(discriminato
 
 @router.post("/chat")
 async def setup_chat(_: SetupDep, body: SetupChatBody, request: Request) -> dict:
-    return await service.switch_chat(services(request), body, ACTOR)
+    """Choose the chat model or a model server (ruling Q12). Either writes into this data
+    folder, so it waits while the folder is moving, and closes the move from here on: set
+    before the switch awaits anything, so a move checked meanwhile sees it, and kept even when
+    the switch fails part-way (it may already have written the server's key)."""
+    hk = services(request)
+    _not_moving(hk)
+    hk.setup.chat_changed = True
+    return await service.switch_chat(hk, body, ACTOR)
 
 
 # ---- start at login -------------------------------------------------------------------------

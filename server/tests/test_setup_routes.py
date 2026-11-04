@@ -644,6 +644,40 @@ def test_downloads_wait_while_a_move_is_under_way(setup_app, tmp_path, folder_ho
     assert client.fake.calls == [] and client.fake.current() is None
 
 
+def test_move_refused_after_choosing_a_model_server(setup_app, tmp_path, folder_host):
+    """Ruling Q12: the chat choice writes into this folder (the server's key among it), so a
+    move after it would leave that behind and drop the choice."""
+    client = mover(setup_app)
+    body = {"source": "external", "base_url": "http://127.0.0.1:9000/v1", "api_key": CHAT_KEY}
+    assert post(client, "/api/setup/chat", body).status_code == 200
+    assert client.mode.chat_changed is True
+    assert post(client, "/api/setup/pc").json()["can_move_data"] is False
+    r = post(client, "/api/setup/data-folder", {"path": str(moved(tmp_path))})
+    assert (r.status_code, r.json()) == (409, {"reason": "too_late"})
+    assert client.mode.next_data_dir is None and client.control.exit_code is None
+
+
+def test_move_refused_after_choosing_a_local_chat_model(setup_app, tmp_path, folder_host):
+    install_local_chat(tmp_path)
+    client = mover(setup_app)
+    assert (
+        post(client, "/api/setup/chat", {"source": "local", "card": "qwen3.5-4b"}).status_code
+        == 200
+    )
+    r = post(client, "/api/setup/data-folder", {"path": str(moved(tmp_path))})
+    assert (r.status_code, r.json()) == (409, {"reason": "too_late"})
+
+
+def test_chat_choice_waits_while_a_move_is_under_way(setup_app, tmp_path, folder_host):
+    client = mover(setup_app)
+    assert post(client, "/api/setup/data-folder", {"path": str(moved(tmp_path))}).status_code == 202
+    body = {"source": "external", "base_url": "http://127.0.0.1:9000/v1", "api_key": CHAT_KEY}
+    r = post(client, "/api/setup/chat", body)
+    assert (r.status_code, r.json()) == (409, {"reason": "moving"})
+    assert SecretStore(tmp_path).get("chat_api_key") is None
+    assert client.mode.chat_changed is False
+
+
 def test_move_refuses_a_folder_inside_another_data_folder(setup_app, tmp_path, folder_host):
     client = mover(setup_app)
     other = moved(tmp_path, "other")
