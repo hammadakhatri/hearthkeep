@@ -1045,3 +1045,37 @@ def test_a_damaged_resume_record_is_cleared(tmp_path):
         pass
     assert resume_state(tmp_path) is None
     assert [c for c in fake.calls if c[0] == "start"] == []
+
+
+# ---- every setup route is in the gate test (M10) --------------------------------------------
+
+
+def _flat_routes(routes):
+    """Every route, through included routers (FastAPI keeps them nested) and mounts."""
+    for route in routes:
+        inner = getattr(route, "original_router", None)
+        if inner is not None:
+            yield from _flat_routes(inner.routes)
+        elif getattr(route, "dependant", None) is None and hasattr(route, "routes"):
+            yield from _flat_routes(route.routes)
+        else:
+            yield route
+
+
+def test_every_setup_route_is_listed_and_gated(setup_app):
+    """A route added under /api/setup/ without the gate, or left out of ALL_ROUTES (so the gate
+    test never sees it), fails here."""
+    client = setup_app()
+    gates = {routes_setup.setup_gate, routes_setup.setup_poll_gate}
+    listed = {path for path, _ in ALL_ROUTES}
+    found = set()
+    for route in _flat_routes(client.app.routes):
+        path = getattr(route, "path", "")
+        if not path.startswith("/api/setup/"):
+            continue
+        found.add(path)
+        assert path in listed, path
+        assert route.methods == {"POST"}, path
+        calls = {dep.call for dep in route.dependant.dependencies}
+        assert calls & gates, path
+    assert found == listed

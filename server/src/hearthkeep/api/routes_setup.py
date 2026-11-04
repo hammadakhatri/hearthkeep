@@ -118,6 +118,11 @@ def _is_default(data: Path) -> bool:
     return os.path.normcase(str(data)) == os.path.normcase(str(Path(default).resolve()))
 
 
+def _data_folder(data_dir: Path | str) -> tuple[Path, bool]:
+    data = Path(data_dir).resolve()
+    return data, _is_default(data)
+
+
 def _download_started(hk: Services) -> bool:
     return hk.installer is not None and hk.installer.current() is not None
 
@@ -140,11 +145,12 @@ async def setup_pc(_: SetupDep, body: SetupBody, request: Request) -> dict:
     if hk.pc is None:
         raise ApiError(503, "unavailable")
     pc = await hk.pc.get()
-    data = Path(hk.settings.data_dir).resolve()
+    # Resolving a path can touch the disk: off the event loop, with the default check.
+    data, is_default = await asyncio.to_thread(_data_folder, hk.settings.data_dir)
     return {
         "pc": pc.to_json(),
         "data_dir": str(data),
-        "data_dir_default": await asyncio.to_thread(_is_default, data),
+        "data_dir_default": is_default,
         "can_move_data": bool(hk.setup.created_folder) and not _move_closed(hk),
     }
 
@@ -197,11 +203,11 @@ async def setup_data_folder(
     if not hk.setup.created_folder or _move_closed(hk):
         raise ApiError(409, "too_late")
     target = Path(body.path)
-    current = Path(hk.settings.data_dir).resolve()
+    current = Path(hk.settings.data_dir)  # resolved by folder_move_problem, in its thread
     problem = await asyncio.to_thread(folder_move_problem, host, target, current)
     if problem:
         raise ApiError(400, "bad_folder", message=problem)
-    target = target.resolve()
+    target = await asyncio.to_thread(target.resolve)
     free = await asyncio.to_thread(free_bytes, target)
     if free < MIN_FREE_GB * _GB:
         raise ApiError(400, "not_enough_space", free_gb=round(free / _GB, 1), needed_gb=MIN_FREE_GB)
