@@ -415,6 +415,22 @@ def test_real_install_end_to_end(app_with, tmp_path):
     assert not leaks_path(json.dumps([e["detail"] for e in events(tmp_path)]), tmp_path)
 
 
+def test_download_keeps_an_external_chat_server_in_use(app_with, tmp_path):
+    # The app gives the installer the same "chat is external" rule the panel shows.
+    client = app_with(real=Server(), pc=NVIDIA)
+    (tmp_path / "config.toml").write_text(
+        "docker_available = false\nchat_base_url = 'http://127.0.0.1:11434/v1'\n",
+        encoding="utf-8",
+    )
+    assert client.get("/api/models/catalog").json()["chat"]["source"] == "external"
+    token = step_up(client, "download")
+    r = install(client, ["chat-gemma-4-12b"], token, make_default=False)
+    assert r.status_code == 202, r.text
+    client.portal.call(client.app.state.hk.installer.wait)
+    assert load_runtime(tmp_path).chat_server == "external"
+    assert client.get("/api/models/catalog").json()["chat"]["source"] == "external"
+
+
 # ---- cancel and retry -----------------------------------------------------------------------
 
 
@@ -607,14 +623,88 @@ def test_external_needs_settings_step_up_and_loopback(app_with, tmp_path, caplog
 
 
 def test_external_key_null_keeps_and_empty_deletes(app_with, tmp_path):
+    # Chat already uses this server: a null key keeps its stored key.
+    good = "http://localhost:9000/v1"
+    (tmp_path / "config.toml").write_text(f"chat_base_url = '{good}'\n", encoding="utf-8")
     client = app_with(FakeInstaller())
     secrets = SecretStore(tmp_path)
     secrets.put("chat_api_key", "old-key")
-    good = "http://localhost:9000/v1"
     assert _external(client, good, step_up(client, "settings"), None).status_code == 200
     assert secrets.get("chat_api_key") == "old-key"
     assert _external(client, good, step_up(client, "settings"), "").status_code == 200
     assert secrets.get("chat_api_key") is None
+
+
+@pytest.mark.parametrize("before", ["local", "none"])
+def test_switching_to_external_drops_a_key_from_before(app_with, tmp_path, before):
+    # A key stored while chat wasn't external (an old generated one) is never sent to the
+    # new server.
+    install_local_chat(tmp_path)
+    client = app_with(FakeInstaller())
+    if before == "local":
+        local = {"source": "local", "card": "qwen3.5-4b"}
+        assert client.post("/api/models/chat", json=local, headers=CSRF).status_code == 200
+    assert client.get("/api/models/catalog").json()["chat"]["source"] == before
+    secrets = SecretStore(tmp_path)
+    secrets.put("chat_api_key", "stale-key")
+    r = _external(client, "http://127.0.0.1:9000/v1", step_up(client, "settings"), None)
+    assert r.status_code == 200, r.text
+    assert secrets.get("chat_api_key") is None
+
+
+def test_dropping_a_stale_key_needs_a_readable_secret_store(app_with, tmp_path, monkeypatch):
+    install_local_chat(tmp_path)
+    client = app_with(FakeInstaller())
+    store = client.app.state.hk.secrets
+
+    def unreadable(*args):
+        raise SecretStoreError("locked")
+
+    monkeypatch.setattr(store, "names", unreadable)
+    r = _external(client, "http://127.0.0.1:9000/v1", step_up(client, "settings"), None)
+    assert r.status_code == 503 and r.json()["reason"] == "secrets_unreadable"
+    assert not (tmp_path / "config.toml").exists()
+
+
+def _external_model(client, url, token, model):
+    body = {"source": "external", "base_url": url, "api_key": None, "step_up_token": token}
+    return client.post("/api/models/chat", json={**body, "model": model}, headers=CSRF)
+
+
+def test_external_model_name_is_saved_and_kept(app_with, tmp_path):
+    (tmp_path / "config.toml").write_text("# mine\nport = 8765\n", encoding="utf-8")
+    client = app_with(FakeInstaller())
+    good = "http://127.0.0.1:11434/v1"
+    r = _external_model(client, good, step_up(client, "settings"), "qwen2.5:7b-instruct")
+    assert r.status_code == 200, r.text
+    assert r.json()["model"] == "qwen2.5:7b-instruct"
+    config = (tmp_path / "config.toml").read_text(encoding="utf-8")
+    assert "chat_model = 'qwen2.5:7b-instruct'" in config and "# mine" in config
+    # No name given: the saved one stays.
+    r = _external_model(client, good, step_up(client, "settings"), None)
+    assert r.status_code == 200 and r.json()["model"] == "qwen2.5:7b-instruct"
+    r = _external(client, good, step_up(client, "settings"), None)
+    assert r.status_code == 200 and r.json()["model"] == "qwen2.5:7b-instruct"
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["m" * 129, 'say "hi"', "it's", "two\nlines", "cr\rhere", "tab\there", "", "   ", "bell\x07"],
+)
+def test_external_model_name_must_be_plain(app_with, tmp_path, model):
+    control = ServerControl(supervised=True)
+    client = app_with(FakeInstaller(), control=control)
+    r = _external_model(client, "http://127.0.0.1:9000/v1", step_up(client, "settings"), model)
+    assert r.status_code == 400 and r.json() == {"reason": "bad_model"}
+    assert not (tmp_path / "config.toml").exists() and not (tmp_path / "models.toml").exists()
+    assert control.restart_needed == set()
+
+
+def test_external_model_name_at_the_limit_is_fine(app_with, tmp_path):
+    client = app_with(FakeInstaller())
+    name = "org/" + "m" * 124
+    r = _external_model(client, "http://127.0.0.1:9000/v1", step_up(client, "settings"), name)
+    assert r.status_code == 200 and r.json()["model"] == name
 
 
 def test_external_body_limits(app_with):
