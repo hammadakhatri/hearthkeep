@@ -869,6 +869,26 @@ describe('Setup wizard › Your PC while moving', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(SETUP_COPY.dataMoving)
   })
 
+  it('a move refused as too late says why, the chat choice among the reasons', async () => {
+    let pcAsked = 0
+    wizardRoutes({
+      'POST /api/setup/data-folder': { status: 409, body: { reason: 'too_late' } },
+      'POST /api/setup/pc': () => {
+        pcAsked += 1
+        return { body: PC }
+      },
+    })
+    renderWizard()
+    fireEvent.click(await screen.findByRole('button', { name: 'Change…' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Move here' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(SETUP_COPY.tooLate)
+    expect(SETUP_COPY.tooLate).toMatch(/chat model/)
+    expect(SETUP_COPY.tooLate).toMatch(/model server/)
+    expect(SETUP_COPY.tooLate).toMatch(/sandbox/)
+    expect(forbiddenIn(SETUP_COPY.tooLate)).toEqual([])
+    await waitFor(() => expect(pcAsked).toBe(2))
+  })
+
   it('Change… waits until the add-ons say what this PC is', async () => {
     let answer: (reply: Reply) => void = () => {}
     wizardRoutes({ 'POST /api/setup/addons': () => new Promise<Reply>((resolve) => (answer = resolve)) })
