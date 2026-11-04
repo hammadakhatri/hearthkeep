@@ -267,6 +267,16 @@ describe('Add-ons', () => {
     expect(actionTarget(startup)).toBe('settings-startup')
   })
 
+  it('chat and image problems lead to their model screens', () => {
+    for (const state of ['not_set_up', 'error']) {
+      const [chat, , images] = addonList({ chat: state, images: state }) as Addon[]
+      expect(actionTarget(chat)).toBe('settings-chat')
+      expect(actionTarget(images)).toBe('settings-images')
+    }
+    const [offline] = addonList({ chat: 'offline' }) as Addon[]
+    expect(actionTarget(offline)).toBe('settings-chat')
+  })
+
   it('never shows a command or placeholder', async () => {
     const states = [
       { chat: 'not_set_up', analysis: 'not_set_up', images: 'error', github: 'not_set_up', devices: 'needs_tailscale', startup: 'off' },

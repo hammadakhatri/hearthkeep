@@ -33,6 +33,7 @@ function badgeFor(addon: Addon): Badge {
 function actionLabel(addon: Addon): string | null {
   if (addon.id === 'chat' && addon.action === 'open_setup') return 'Choose a chat model'
   if (addon.id === 'images' && addon.action === 'install') return 'Add image models'
+  if (addon.id === 'images' && addon.action === 'open_setup') return 'Check image models'
   if (addon.action === 'add_token') return 'Add a GitHub token'
   if (addon.action === 'turn_on') return 'Start at login settings'
   return null

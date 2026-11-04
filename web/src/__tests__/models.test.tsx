@@ -732,6 +732,7 @@ describe('Settings › Chat model and Image models', () => {
       source: 'external',
       base_url: 'http://127.0.0.1:8080/v1',
       api_key: 'sk-very-secret',
+      model: null,
       step_up_token: 'step-token',
     })
     expect(key).toHaveValue('')
@@ -838,6 +839,42 @@ describe('Settings › Chat model and Image models', () => {
     await pause(100)
     expect(polls).toBe(at)
     expect(within(await row('Qwen3.5 9B')).getByRole('button', { name: 'Download Qwen3.5 9B' })).toBeEnabled()
+    // One line says what happened and that nothing is lost.
+    expect(within(chatSection()).getByText(MODELS_ERRORS.forgotten)).toBeInTheDocument()
+    expect(MODELS_ERRORS.forgotten).toBe(
+      'The download stopped when Hearthkeep restarted. Download again to continue; nothing that arrived is lost.',
+    )
+  })
+
+  it('no note about a restart when the page opens with no download', async () => {
+    modelRoutes(catalog())
+    renderPanel(20)
+    await row('Qwen3.5 9B')
+    await pause(60)
+    expect(screen.queryByText(MODELS_ERRORS.forgotten)).toBeNull()
+  })
+
+  it('a retry of a job the server forgot says so in a sentence', async () => {
+    let catalogs = 0
+    const failed = job([jobItem({ id: 'chat-qwen3.5-9b', name: 'Qwen3.5 9B', state: 'failed', error: 'network' })], {
+      state: 'failed',
+    })
+    modelRoutes(catalog(), {
+      'GET /api/models/catalog': () => {
+        catalogs++
+        return { body: catalog() }
+      },
+      'GET /api/models/install': { body: { job: failed } },
+      'POST /api/models/install/retry': { status: 404, body: { reason: 'no_job' } },
+    })
+    renderPanel(60_000)
+    const list = await screen.findByRole('region', { name: 'Downloads' })
+    fireEvent.click(within(list).getByRole('button', { name: 'Retry' }))
+    const alert = await within(chatSection()).findByRole('alert')
+    expect(alert).toHaveTextContent(MODELS_ERRORS.no_job)
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Downloads' })).toBeNull())
+    await waitFor(() => expect(catalogs).toBe(2))
+    expect(forbiddenIn(MODELS_ERRORS.no_job)).toEqual([])
   })
 
   it('lists the chat engines, with the recommended one marked', async () => {
@@ -927,6 +964,51 @@ describe('Settings › Chat model and Image models', () => {
     renderPanel()
     fireEvent.click(within(await row('Qwen3.5 4B')).getByRole('button', { name: 'Use this: Qwen3.5 4B' }))
     expect(await within(chatSection()).findByText('Restart Hearthkeep to use it.')).toBeInTheDocument()
+  })
+
+  it('external server form takes an optional model name and shows where /v1 goes', async () => {
+    const { calls } = modelRoutes(catalog(), {
+      'POST /api/models/chat': {
+        body: { source: 'external', model: 'qwen2.5:7b', base_url: 'http://127.0.0.1:11434/v1', restart_needed: true },
+      },
+    })
+    renderPanel()
+    const form = await screen.findByRole('form', { name: 'Use a model server I already run' })
+    const address = within(form).getByLabelText('Server address')
+    expect(address).toHaveAttribute('placeholder', 'http://127.0.0.1:11434/v1')
+    const model = within(form).getByLabelText('Model name (optional)')
+    expect(within(form).getByText("The model's name on that server, if it asks for one.")).toBeInTheDocument()
+    fireEvent.change(address, { target: { value: 'http://127.0.0.1:11434/v1' } })
+    fireEvent.change(model, { target: { value: '  qwen2.5:7b  ' } })
+    fireEvent.click(within(form).getByRole('button', { name: 'Use this server' }))
+    expect(await within(chatSection()).findByText('In use: A model server you run')).toBeInTheDocument()
+    const post = calls.find((c) => c.path === '/api/models/chat')!
+    expect(bodyOf(post)).toMatchObject({ base_url: 'http://127.0.0.1:11434/v1', model: 'qwen2.5:7b', api_key: null })
+    expect(forbiddenIn(form.textContent ?? '')).toEqual([])
+  })
+
+  it('a model name the server refuses has its sentence', async () => {
+    modelRoutes(catalog(), { 'POST /api/models/chat': { status: 400, body: { reason: 'bad_model' } } })
+    renderPanel()
+    const form = await screen.findByRole('form', { name: 'Use a model server I already run' })
+    fireEvent.change(within(form).getByLabelText('Server address'), { target: { value: 'http://127.0.0.1:11434/v1' } })
+    fireEvent.change(within(form).getByLabelText('Model name (optional)'), { target: { value: 'say "hi"' } })
+    fireEvent.click(within(form).getByRole('button', { name: 'Use this server' }))
+    const alert = await within(chatSection()).findByRole('alert')
+    expect(alert).toHaveTextContent(MODELS_ERRORS.bad_model)
+  })
+
+  it('the confirm box copy passes forbiddenIn', async () => {
+    modelRoutes(catalog())
+    renderPanel()
+    fireEvent.click(within(await row('Gemma 4 12B')).getByRole('button', { name: 'Download Gemma 4 12B' }))
+    const confirm = await screen.findByRole('group', { name: 'Ready to download' })
+    const total = within(confirm).getByText(/^Up to /)
+    const becomes = within(confirm).getByText('It becomes the chat model in use after a restart.')
+    for (const text of [total.textContent ?? '', becomes.textContent ?? '', confirm.textContent ?? '']) {
+      expect(text).not.toBe('')
+      expect(forbiddenIn(text)).toEqual([])
+    }
   })
 
   it('a failed server change clears the key too', async () => {

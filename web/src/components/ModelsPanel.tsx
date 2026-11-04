@@ -29,6 +29,10 @@ export const MODELS_ERRORS = {
   unknown_item: "Hearthkeep doesn't know that download. Reload the page and try again.",
   bad_url:
     "That address won't work. Use a model server on this PC: its address starts with http://localhost or http://127.0.0.1.",
+  bad_model: "That model name won't work. Type it as the server lists it, without quotes.",
+  no_job: 'Hearthkeep restarted, so that download is no longer listed. Download it again to continue.',
+  forgotten:
+    'The download stopped when Hearthkeep restarted. Download again to continue; nothing that arrived is lost.',
   not_installed: "That model isn't fully installed. Download it again.",
   config_not_updated: ITEM_ERRORS.config_not_updated,
   secrets_unreadable: "Hearthkeep couldn't read its stored secrets.",
@@ -47,6 +51,8 @@ const REASONS = new Set([
   'nothing_to_do',
   'unknown_item',
   'bad_url',
+  'bad_model',
+  'no_job',
   'not_installed',
   'config_not_updated',
   'unavailable',
@@ -227,6 +233,7 @@ export function ModelsPanel({ pollMs = POLL_MS }: Props) {
   const chatTitle = useId()
   const imagesTitle = useId()
   const externalTitle = useId()
+  const modelHint = useId()
   const server = useServer()
   const noteRestartNeeded = server?.noteRestartNeeded
 
@@ -240,6 +247,13 @@ export function ModelsPanel({ pollMs = POLL_MS }: Props) {
   const [restartAt, setRestartAt] = useState<Section | null>(null)
   const [address, setAddress] = useState('')
   const [key, setKey] = useState('')
+  const [modelName, setModelName] = useState('')
+  // The section whose download the server forgot when it restarted, for a one-line note.
+  const [forgotten, setForgotten] = useState<Section | null>(null)
+  const jobRef = useRef<Job | null>(null)
+  const catalogRef = useRef<Catalog | null>(null)
+  jobRef.current = job
+  catalogRef.current = catalog
 
   const confirmRef = useRef<HTMLDivElement | null>(null)
   const downloadsRef = useRef<HTMLElement | null>(null)
@@ -295,6 +309,8 @@ export function ModelsPanel({ pollMs = POLL_MS }: Props) {
         if (next === null) {
           // The server forgot the job (it restarted): stop asking and show what is installed now.
           asking = false
+          const was = jobRef.current
+          setForgotten(was ? sectionOf(catalogRef.current, was) : 'chat')
           setJob(null)
           loadCatalog()
           return
@@ -368,6 +384,7 @@ export function ModelsPanel({ pollMs = POLL_MS }: Props) {
     const { section, item } = confirm
     setBusy(true)
     setError(null)
+    setForgotten(null)
     try {
       const started = await startInstall([item.id], makesDefault(catalog))
       if (!alive.current) return
@@ -387,13 +404,20 @@ export function ModelsPanel({ pollMs = POLL_MS }: Props) {
 
   async function act(section: Section, call: () => Promise<Job | null>) {
     setError(null)
+    setForgotten(null)
     try {
       const next = await call()
       if (!alive.current) return
       if (next) setJob(next)
       setFocusTo('downloads')
     } catch (e) {
-      if (alive.current) setError({ section, text: modelsErrorMessage(e, 'Retry') })
+      if (!alive.current) return
+      if (isApiError(e, 'no_job')) {
+        // The server restarted and forgot the job: show what is installed now.
+        setJob(null)
+        loadCatalog()
+      }
+      setError({ section, text: modelsErrorMessage(e, 'Retry') })
     }
   }
 
@@ -426,7 +450,8 @@ export function ModelsPanel({ pollMs = POLL_MS }: Props) {
     setBusy(true)
     setError(null)
     try {
-      const result = await switchToExternalChat(url, key ? key : null)
+      const name = modelName.trim()
+      const result = await switchToExternalChat(url, key ? key : null, name ? name : null)
       if (!alive.current) return
       setKey('')
       switched(result)
@@ -470,6 +495,16 @@ export function ModelsPanel({ pollMs = POLL_MS }: Props) {
 
   function sectionError(section: Section) {
     return error?.section === section ? <ErrorNote text={error.text} /> : null
+  }
+
+  function forgottenNote(section: Section) {
+    if (forgotten !== section || job !== null) return null
+    return (
+      <div className="note info">
+        <InfoIcon />
+        <span>{MODELS_ERRORS.forgotten}</span>
+      </div>
+    )
   }
 
   function confirmBox(section: Section) {
@@ -556,6 +591,7 @@ export function ModelsPanel({ pollMs = POLL_MS }: Props) {
               {chat?.source === 'external' && chat.base_url && <p className="folder-path">{chat.base_url}</p>}
             </div>
             {sectionError('chat')}
+            {forgottenNote('chat')}
             {downloads('chat')}
             {runningElsewhere && jobSection !== 'chat' && <p className="settings-lede">{MODELS_ERRORS.busy}</p>}
             <ul className="device-list" aria-label="Chat models">
@@ -605,6 +641,7 @@ export function ModelsPanel({ pollMs = POLL_MS }: Props) {
                     inputMode="url"
                     value={address}
                     onChange={(e) => setAddress(e.target.value)}
+                    placeholder="http://127.0.0.1:11434/v1"
                     autoComplete="off"
                     autoCapitalize="off"
                     autoCorrect="off"
@@ -626,12 +663,32 @@ export function ModelsPanel({ pollMs = POLL_MS }: Props) {
                     maxLength={512}
                   />
                 </label>
+                <label className="field">
+                  <span>Model name (optional)</span>
+                  <input
+                    className="input"
+                    type="text"
+                    value={modelName}
+                    onChange={(e) => setModelName(e.target.value)}
+                    aria-describedby={modelHint}
+                    autoComplete="off"
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    maxLength={128}
+                  />
+                </label>
                 <button type="submit" className="btn" disabled={busy || !address.trim()}>
                   <PasskeyIcon />
                   Use this server
                 </button>
               </div>
-              <p className="hint">Leave the key empty to keep the one saved before.</p>
+              <p className="hint">
+                The address usually ends in /v1. Leave the key empty to keep the one saved before.
+              </p>
+              <p id={modelHint} className="hint">
+                The model's name on that server, if it asks for one.
+              </p>
             </form>
           </>
         )}
@@ -654,6 +711,7 @@ export function ModelsPanel({ pollMs = POLL_MS }: Props) {
               Pictures are made by ComfyUI with one of these models, on an NVIDIA graphics card.
             </p>
             {sectionError('images')}
+            {forgottenNote('images')}
             {downloads('images')}
             {runningElsewhere && jobSection !== 'images' && <p className="settings-lede">{MODELS_ERRORS.busy}</p>}
             <ul className="device-list" aria-label="Image models">

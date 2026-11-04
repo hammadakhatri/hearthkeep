@@ -42,7 +42,7 @@ function noop() {}
  *  add-on's own card. */
 export function actionTarget(addon: Addon): SettingsAnchor {
   if (addon.id === 'chat' && addon.action === 'open_setup') return 'settings-chat'
-  if (addon.id === 'images' && addon.action === 'install') return 'settings-images'
+  if (addon.id === 'images' && (addon.action === 'install' || addon.action === 'open_setup')) return 'settings-images'
   if (addon.action === 'add_token') return 'settings-github'
   if (addon.action === 'turn_on') return 'settings-startup'
   return `addon-${addon.id}`
