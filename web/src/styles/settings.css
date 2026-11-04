@@ -65,6 +65,7 @@
 .device.model {
   flex-wrap: nowrap;
   align-items: stretch;
+  gap: var(--sp-2);
 }
 
 .device + .device {

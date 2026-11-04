@@ -81,7 +81,7 @@ The quick way on Windows needs none of the commands below:
    6. **Passkey.** Create your passkey with Windows Hello, a PIN or a security key. It is the only way in, so keep it on a second device too (see [Have your passkey on a second device](#have-your-passkey-on-a-second-device-before-you-rely-on-it)).
    7. **Done.** A summary of what is set up. Downloads that were still running carry on by themselves once Hearthkeep starts on its own, and you can watch them in Settings › Chat model or Image models. Anything you stopped, or that failed, is listed apart; download it again from Settings.
 
-   If you reload or close the page part-way, nothing already downloaded is lost: close the Setup window (the black console window that stays open during setup), double-click `Setup.cmd` again, and setup starts from the Welcome step with what it already has. Once you have a passkey, `Setup.cmd` only opens Hearthkeep.
+   If you reload or close the page part-way, nothing already downloaded is lost: close the Setup window (the black console window that stays open during setup), double-click `Setup.cmd` again, and setup starts again at the first step, or where you left off, with what it already has. Once you have a passkey, `Setup.cmd` only opens Hearthkeep.
 
 If you'll use Hearthkeep from your phone through Tailscale, read [step 7](#7-decide-on-remote-access-before-your-first-passkey) before you run Setup.cmd. The wizard will offer remote access itself in a later update; until then, step 7 is the way.
 
@@ -404,7 +404,7 @@ Hearthkeep can read the files you attach to a chat and analyse them with Python.
    docker version
    ```
 
-2. Build the sandbox images. In the app, choose **Build the sandbox** on the Analysis card in **Settings › Add-ons** (it asks for your passkey) or in the wizard's **Add-ons** step; the build's output is kept in `<data>\logs\sandbox-build.log`. This is a **one-time download of about 1 GB** (Python and the analysis libraries, plus a second, smaller image for GitHub repos, step 12), so do it on a connection you are happy to use. From a terminal:
+2. Build the sandbox images. In the app, choose **Build the sandbox** on the Analysis card in **Settings › Add-ons** (it asks for your passkey) or in the wizard's **Add-ons** step; the build's output is kept in a log file in your data folder. This is a **one-time download of about 1 GB** (Python and the analysis libraries, plus a second, smaller image for GitHub repos, step 12), so do it on a connection you are happy to use. The log is `<data>\logs\sandbox-build.log`. From a terminal:
 
    ```
    cd <repo>\server
