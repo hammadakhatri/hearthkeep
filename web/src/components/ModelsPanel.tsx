@@ -684,7 +684,7 @@ export function ModelsPanel({ pollMs = POLL_MS }: Props) {
                 </button>
               </div>
               <p className="hint">
-                The address usually ends in /v1. Leave the key empty to keep the one saved before.
+                The address usually ends in /v1. Leave the key empty to keep the key for the server you already use.
               </p>
               <p id={modelHint} className="hint">
                 The model's name on that server, if it asks for one.

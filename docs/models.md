@@ -30,7 +30,7 @@ The catalog ships with Hearthkeep as `server/src/hearthkeep/models/catalog.toml`
 
 The two image models share one text file (`qwen_3_4b`), which is downloaded once. The licence links are in `catalog.toml`.
 
-**The recommendation.** The largest chat model whose card `vram_gb` fits the graphics memory found (`gpu_vram_gb` from `models.toml` when set, else what `nvidia-smi` reports). With no NVIDIA graphics card it is Qwen3.5 4B on the CPU build. The engine is the CUDA build when `nvidia-smi` answers, otherwise the CPU build; the Vulkan build is offered as an alternative because it can't be detected reliably.
+**The recommendation.** The largest chat model whose card `vram_gb` fits the graphics memory found (`gpu_vram_gb` from `models.toml` when set, else what `nvidia-smi` reports). With no NVIDIA graphics card, or one too small for any chat model, it is Qwen3.5 4B on the CPU build. The engine is the CUDA build when `nvidia-smi` answers and the graphics card fits a chat model, otherwise the CPU build; the Vulkan build is offered as an alternative because it can't be detected reliably.
 
 **Where the files go.**
 
