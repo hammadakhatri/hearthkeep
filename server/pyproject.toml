@@ -32,6 +32,7 @@ build-backend = "hatchling.build"
 packages = ["src/hearthkeep"]
 artifacts = [
     "src/hearthkeep/models/cards/*.toml",
+    "src/hearthkeep/models/catalog.toml",
     "src/hearthkeep/models/workflows/*.json",
     "src/hearthkeep/sandbox/image/**",
 ]
