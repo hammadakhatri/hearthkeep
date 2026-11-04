@@ -1,8 +1,10 @@
 import subprocess
 from collections import namedtuple
+from dataclasses import replace
 
 import pytest
 
+from hearthkeep import hardware
 from hearthkeep.hardware import PcInfo, fits, read_pc, recommend, total_memory_gb
 from hearthkeep.models.cards import load_cards
 from hearthkeep.models.catalog import load_catalog
@@ -123,21 +125,61 @@ def test_nvidia_smi_parses_name_and_memory(tmp_path, monkeypatch):
 
 def test_fits_rules(catalog, cards):
     nv, no_nv = pc(24), pc(None, False)
-    assert not fits(catalog["image-z-image-turbo"], no_nv, cards)
-    assert not fits(catalog["comfyui"], no_nv, cards)
-    assert fits(catalog["image-z-image-turbo"], nv, cards)
-    assert fits(catalog["comfyui"], nv, cards)
-    assert not fits(catalog["llama-cuda"], no_nv, cards)
-    assert fits(catalog["llama-cuda"], nv, cards)
-    assert fits(catalog["llama-vulkan"], no_nv, cards)
-    assert fits(catalog["llama-cpu"], no_nv, cards)
-    assert fits(catalog["chat-qwen3.5-4b"], no_nv, cards)  # the smallest always fits
-    assert fits(catalog["chat-qwen3.5-4b"], pc(1), cards)
-    assert not fits(catalog["chat-qwen3.5-9b"], pc(6), cards)
-    assert fits(catalog["chat-qwen3.5-9b"], pc(7.5), cards)
-    assert not fits(catalog["chat-gemma-4-12b"], no_nv, cards)
+    assert not fits(catalog["image-z-image-turbo"], no_nv, cards, catalog)
+    assert not fits(catalog["comfyui"], no_nv, cards, catalog)
+    assert fits(catalog["image-z-image-turbo"], nv, cards, catalog)
+    assert fits(catalog["comfyui"], nv, cards, catalog)
+    assert not fits(catalog["llama-cuda"], no_nv, cards, catalog)
+    assert fits(catalog["llama-cuda"], nv, cards, catalog)
+    assert fits(catalog["llama-vulkan"], no_nv, cards, catalog)
+    assert fits(catalog["llama-cpu"], no_nv, cards, catalog)
+    assert fits(catalog["chat-qwen3.5-4b"], no_nv, cards, catalog)  # the smallest always fits
+    assert fits(catalog["chat-qwen3.5-4b"], pc(1), cards, catalog)
+    assert not fits(catalog["chat-qwen3.5-9b"], pc(6), cards, catalog)
+    assert fits(catalog["chat-qwen3.5-9b"], pc(7.5), cards, catalog)
+    assert not fits(catalog["chat-gemma-4-12b"], no_nv, cards, catalog)
 
 
 def test_total_memory_is_a_number_or_none():
     value = total_memory_gb()
     assert value is None or value > 0
+
+
+def test_owner_cards_never_change_the_smallest_catalog_chat_model(catalog, cards):
+    owner = {
+        **cards,
+        "tiny-owner": replace(cards["qwen3.5-4b"], id="tiny-owner", vram_gb=1),
+        "qwen3.5-4b": replace(cards["qwen3.5-4b"], vram_gb=9),
+    }
+    no_gpu = pc(None, False)
+    assert recommend(no_gpu, catalog, owner).chat == "chat-qwen3.5-4b"
+    fitting = [
+        i.id for i in catalog.values() if i.kind == "chat" and fits(i, no_gpu, owner, catalog)
+    ]
+    assert fitting == ["chat-qwen3.5-4b"]
+
+
+def test_recommend_without_any_chat_card_is_a_clear_error(catalog):
+    with pytest.raises(ValueError, match="no chat model in the catalog"):
+        recommend(pc(8), catalog, {})
+
+
+def test_owner_vram_setting_without_nvidia_still_picks_the_cpu_build(tmp_path, catalog, cards):
+    (tmp_path / "models.toml").write_text("gpu_vram_gb = 16\n", encoding="utf-8")
+    info = read_pc(
+        tmp_path, smi=lambda: None, memory=lambda: None, disk=lambda p: Usage(1, 0, 2**30)
+    )
+    assert info.vram_gb == 16 and not info.nvidia
+    assert recommend(info, catalog, cards).runtime == "llama-cpu"
+
+
+def test_read_pc_survives_unreadable_models_toml_and_disk(tmp_path, monkeypatch):
+    def broken(data_dir):
+        raise PermissionError("locked")
+
+    def no_disk(path):
+        raise OSError("gone")
+
+    monkeypatch.setattr(hardware, "load_runtime", broken)
+    info = read_pc(tmp_path, smi=lambda: ("GPU", 8.0), memory=lambda: None, disk=no_disk)
+    assert info.vram_gb == 8.0 and info.free_disk_gb == 0.0

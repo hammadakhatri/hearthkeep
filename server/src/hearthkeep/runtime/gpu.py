@@ -44,7 +44,8 @@ def _nvidia_smi_path() -> Path | None:
 
 
 def nvidia_smi_query(*, run=subprocess.run) -> tuple[str, float] | None:
-    """(name, total memory in GB) of the first NVIDIA GPU (nvidia-smi reports MiB); None if
+    """(name, total memory in GB) of the first NVIDIA GPU only, others are ignored
+    (nvidia-smi reports MiB); None if
     nvidia-smi is missing, fails or prints something unexpected."""
     exe = _nvidia_smi_path()
     if exe is None:
