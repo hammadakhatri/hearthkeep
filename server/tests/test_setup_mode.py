@@ -1102,8 +1102,24 @@ def test_old_folder_with_an_open_database_is_left_whole(tmp_path):
         assert (folder / "config.toml").is_file() and (folder / DB_FILE).is_file()
     finally:
         conn.close()
-    assert not any(p.name.endswith(".hk-probe") for p in folder.rglob("*"))
-    assert cli._removable(folder / "config.toml") and (folder / "config.toml").is_file()
+    config = folder / "config.toml"
+    before = (config.stat().st_mtime_ns, config.read_bytes(), sorted(folder.iterdir()))
+    assert cli._removable(config)  # a file nobody has open: deletable, and left as it was
+    assert (config.stat().st_mtime_ns, config.read_bytes(), sorted(folder.iterdir())) == before
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the Windows check")
+def test_removable_check_holds_the_file_only_for_a_moment(tmp_path):
+    file = tmp_path / "config.toml"
+    file.write_text("x", encoding="utf-8")
+    assert cli._removable(file) and cli._removable(file)  # closed straight away
+    file.unlink()  # nothing holds it afterwards
+    assert not cli._removable(file)  # a file that is gone is not one to delete
+
+
+def test_removable_check_says_deletable_on_other_os(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli.sys, "platform", "linux")
+    assert cli._removable(tmp_path / "anything") is True
 
 
 def test_move_copy_is_ascii_and_clean():
