@@ -155,8 +155,8 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
                 />
               </label>
               <p id="code-hint" className="hint">
-                Shown on your computer when Hearthkeep starts. Adding another device? Create a code on one that is
-                already signed in.
+                Your setup code comes from Settings › Devices on a device that's already signed in, or from Setup.cmd on this
+                PC.
               </p>
               <label className="field">
                 <span>Device name</span>

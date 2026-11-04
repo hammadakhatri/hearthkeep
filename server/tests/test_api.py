@@ -1265,7 +1265,6 @@ def test_startup_settings_endpoint(harness, monkeypatch):
         "supported": True,
         "enabled": False,
         "other_data_folder": False,
-        "command": f'hearthkeep startup enable --data "{data}"',
     }
     answer[0] = startup.StartupStatus(True, True, data)
     assert client.get("/api/settings/startup").json()["enabled"] is False  # cached
@@ -1276,7 +1275,6 @@ def test_startup_settings_endpoint(harness, monkeypatch):
         "supported": True,
         "enabled": True,
         "other_data_folder": False,
-        "command": f'hearthkeep startup disable --data "{data}"',
     }
     assert len(calls) == 2
 
@@ -1286,7 +1284,6 @@ def test_startup_settings_endpoint(harness, monkeypatch):
         "supported": False,
         "enabled": False,
         "other_data_folder": False,
-        "command": None,
     }
     assert harness.start().get("/api/settings/startup").status_code == 401
     startup.clear_cache()
@@ -1304,6 +1301,136 @@ def test_startup_settings_on_for_another_data_folder(harness, monkeypatch):
         "supported": True,
         "enabled": True,
         "other_data_folder": True,
-        "command": f'hearthkeep startup enable --data "{harness.data}"',
     }
     startup.clear_cache()
+
+
+class StartupHost:
+    """Windows, recorded: the start-at-login task is a flag, never Task Scheduler."""
+
+    name = "windows"
+    supported = True
+
+    def __init__(self, *, enable_error=None, disable_error=None, supported=True):
+        self.supported = supported
+        self.on_for: str | None = None
+        self.enabled_calls: list = []
+        self.disabled_calls = 0
+        self.enable_error = enable_error
+        self.disable_error = disable_error
+
+    def enable_startup(self, data_dir, *, run=None):
+        self.enabled_calls.append(str(data_dir))
+        if self.enable_error:
+            raise self.enable_error
+        self.on_for = str(data_dir)
+
+    def disable_startup(self, *, run=None):
+        self.disabled_calls += 1
+        if self.disable_error:
+            raise self.disable_error
+        was, self.on_for = self.on_for is not None, None
+        return was
+
+    def status(self, *, run=None):
+        from hearthkeep import startup
+
+        if self.on_for is None:
+            return startup.StartupStatus(True, False, None)
+        return startup.StartupStatus(True, True, self.on_for)
+
+
+@pytest.fixture
+def startup_host(monkeypatch):
+    from hearthkeep import addons, startup
+    from hearthkeep.api import routes_settings
+
+    fake = StartupHost()
+    monkeypatch.setattr(routes_settings, "current_host", lambda: fake)
+    monkeypatch.setattr(startup, "status", fake.status)
+    monkeypatch.setattr(
+        addons, "startup_status", lambda fresh=False: startup.cached_status(0.0, fresh=fresh)
+    )
+    startup.clear_cache()
+    yield fake
+    startup.clear_cache()
+
+
+def test_turning_startup_on_needs_step_up_and_off_does_not(harness, startup_host):
+    client = signed_in(harness)
+    body = {"enabled": True}
+    for token in (None, "nope", step_up(client, "server")):
+        payload = body if token is None else {**body, "step_up_token": token}
+        denied = client.post("/api/settings/startup", json=payload, headers=CSRF)
+        assert (denied.status_code, denied.json()) == (403, {"reason": "step_up_required"})
+    assert startup_host.enabled_calls == []
+    assert [e["detail"] for e in harness.events() if e["event"] == "startup.enable_denied"] == [
+        {"reason": "step_up_required"}
+    ] * 3
+
+    token = step_up(client, "settings")
+    on = client.post(
+        "/api/settings/startup", json={"enabled": True, "step_up_token": token}, headers=CSRF
+    )
+    assert on.status_code == 200, on.text
+    assert on.json() == {"supported": True, "enabled": True, "other_data_folder": False}
+    assert startup_host.enabled_calls == [str(harness.data)]
+    assert client.get("/api/settings/startup").json()["enabled"] is True  # no stale cache
+    addons = {a["id"]: a for a in client.get("/api/addons").json()["addons"]}
+    assert addons["startup"]["state"] == "on"
+
+    off = client.post("/api/settings/startup", json={"enabled": False}, headers=CSRF)
+    assert off.status_code == 200, off.text
+    assert off.json() == {"supported": True, "enabled": False, "other_data_folder": False}
+    assert startup_host.disabled_calls == 1
+    events = [e["event"] for e in harness.events() if e["event"].startswith("startup.")]
+    assert sorted(events) == sorted(
+        ["startup.enable_denied"] * 3 + ["startup.enabled", "startup.disabled"]
+    )
+    assert harness.start().post(
+        "/api/settings/startup", json={"enabled": False}, headers=CSRF
+    ).status_code == 401  # fmt: skip
+
+
+def test_startup_failure_is_a_plain_502(harness, startup_host):
+    from copy_rules import forbidden_in
+
+    from hearthkeep import startup
+
+    client = signed_in(harness)
+    raw = "Windows refused to create the task: ERROR: Access is denied. C:/secret/path"
+    startup_host.enable_error = startup.StartupError(raw)
+    token = step_up(client, "settings")
+    failed = client.post(
+        "/api/settings/startup", json={"enabled": True, "step_up_token": token}, headers=CSRF
+    )
+    assert failed.status_code == 502
+    body = failed.json()
+    assert body["reason"] == "startup_failed"
+    assert "Access is denied" not in failed.text and "schtasks" not in failed.text.lower()
+    assert body["message"] and forbidden_in(body["message"]) == []
+    startup_host.disable_error = startup.StartupError("schtasks exit code 1")
+    off = client.post("/api/settings/startup", json={"enabled": False}, headers=CSRF)
+    assert off.status_code == 502 and off.json()["reason"] == "startup_failed"
+    assert "schtasks" not in off.text.lower()
+
+
+def test_startup_unsupported_host_is_a_400(harness, startup_host):
+    client = signed_in(harness)
+    startup_host.supported = False
+    token = step_up(client, "settings")
+    r = client.post(
+        "/api/settings/startup", json={"enabled": True, "step_up_token": token}, headers=CSRF
+    )
+    assert (r.status_code, r.json()) == (400, {"reason": "unsupported"})
+    assert startup_host.enabled_calls == []
+
+
+def test_startup_command_is_gone(harness, startup_host):
+    client = signed_in(harness)
+    assert "command" not in client.get("/api/settings/startup").json()
+    token = step_up(client, "settings")
+    on = client.post(
+        "/api/settings/startup", json={"enabled": True, "step_up_token": token}, headers=CSRF
+    )
+    assert "command" not in on.json()

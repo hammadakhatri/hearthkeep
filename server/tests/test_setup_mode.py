@@ -42,6 +42,7 @@ from hearthkeep.cli import (
     PORT_BUSY,
     SETUP_INTRO,
     SHORTCUT_FAILED,
+    STARTUP_NOT_TURNED_ON,
     STEP_START,
     STEP_WEB,
     STOPPED_EARLY,
@@ -176,6 +177,8 @@ class FakeRunServer:
         self.data_dirs: list[Path] = []
         self.created: list[bool] = []
         self.existed: list[bool] = []
+        # What the setup page chose for start at login (None: it left the default alone).
+        self.startup_choice: bool | None = None
 
     def __call__(self, app, host, port, *, control=None, on_started=None, **kw) -> int:
         self.calls.append((host, port))
@@ -200,6 +203,10 @@ class FakeRunServer:
                 return control.exit_code
             if self.enroll:
                 body = {"secret": self.secret}
+                if self.startup_choice is not None:
+                    chosen = {**body, "enabled": self.startup_choice}
+                    r = client.post("/api/setup/startup", json=chosen, headers=CSRF)
+                    assert r.json() == {"enabled": self.startup_choice}, r.text
                 status = client.post("/api/setup/status", json=body, headers=CSRF)
                 assert status.json() == {"state": "needs_passkey"}, status.text
                 issued = client.post("/api/setup/enrollment-code", json=body, headers=CSRF)
@@ -710,6 +717,50 @@ def test_setup_shortcut_failure_still_finishes(tmp_path, capsys, run_cmd_setup):
     out = capsys.readouterr().out
     assert SHORTCUT_FAILED in out and FINISHED in out
     assert len(run_cmd_setup.host.spawned) == 1
+
+
+def _record_order(env):
+    order: list[str] = []
+    real_enable, real_spawn = env.host.enable_startup, env.host.spawn_detached
+    env.host.enable_startup = lambda data, **kw: (order.append("startup"), real_enable(data))[1]
+    env.host.spawn_detached = lambda argv, **kw: (order.append("spawn"), real_spawn(argv))[1]
+    return order
+
+
+def test_setup_startup_choice_applied_after_the_passkey(tmp_path, run_cmd_setup):
+    order = _record_order(run_cmd_setup)
+    data = tmp_path / "data"
+    assert run_cmd_setup(data) == 0
+    # Once, for this folder, after the shortcut and before the launcher starts.
+    assert run_cmd_setup.host.enabled == [data.resolve()]
+    assert order == ["startup", "spawn"]
+    assert run_cmd_setup.host.shortcuts == [data.resolve()]
+
+
+def test_setup_leaves_startup_off_when_it_was_turned_off(tmp_path, run_cmd_setup):
+    run_cmd_setup.run_server.startup_choice = False
+    assert run_cmd_setup(tmp_path / "data") == 0
+    assert run_cmd_setup.host.enabled == [] and run_cmd_setup.host.task is None
+    assert len(run_cmd_setup.host.spawned) == 1
+
+
+def test_setup_does_not_turn_startup_on_before_the_passkey(tmp_path, run_cmd_setup):
+    run_cmd_setup.run_server.enroll = False
+    assert run_cmd_setup(tmp_path / "data") == 1
+    assert run_cmd_setup.host.enabled == [] and run_cmd_setup.host.spawned == []
+
+
+def test_setup_finishes_when_startup_fails(tmp_path, capsys, monkeypatch, run_cmd_setup):
+    def refuse(data, *, run=None):
+        raise startup.StartupError("Windows refused to create the task: access denied")
+
+    monkeypatch.setattr(run_cmd_setup.host, "enable_startup", refuse)
+    assert run_cmd_setup(tmp_path / "data") == 0
+    out = capsys.readouterr().out
+    assert STARTUP_NOT_TURNED_ON in out and FINISHED in out
+    assert "access denied" not in out and forbidden_in(out) == []
+    assert STARTUP_NOT_TURNED_ON.isascii()
+    assert len(run_cmd_setup.host.spawned) == 1  # the launcher still started
 
 
 def test_setup_waits_for_the_launcher_and_says_when_it_is_slow(tmp_path, capsys, run_cmd_setup):

@@ -201,40 +201,29 @@
   gap: var(--sp-3);
 }
 
-.startup-row {
+.startup-switch {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.startup-switch-row {
+  display: flex;
+  align-items: flex-start;
   justify-content: space-between;
   gap: var(--sp-4);
 }
 
-.startup-row .perm-sub {
-  margin-top: 0;
-}
-
-.startup-how {
-  font-size: var(--text-sm);
-  color: var(--fg2);
-}
-
-.command {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  padding: 6px 6px 6px 14px;
-  border-radius: var(--r-md);
-  background: var(--black);
-  border: 1px solid var(--line);
-}
-
-.command code {
-  flex: 1;
+.startup-switch .perm-text {
   min-width: 0;
-  font-family: var(--mono);
-  font-size: var(--text-xs);
-  color: var(--fg);
-  overflow-wrap: anywhere;
-  user-select: all;
+}
+
+.startup-switch .badge {
+  margin-top: var(--sp-2);
+}
+
+.startup-switch[aria-busy='true'] .switch {
+  opacity: 0.6;
 }
 
 /* General: the version, a restart when one is needed, restart and stop. */
@@ -404,10 +393,5 @@
 
   .device-actions {
     justify-content: flex-start;
-  }
-
-  .startup-row {
-    flex-direction: column;
-    align-items: flex-start;
   }
 }

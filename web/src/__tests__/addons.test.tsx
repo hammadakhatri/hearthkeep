@@ -37,7 +37,7 @@ const settingsRoutes = {
   'GET /api/devices': { body: [] },
   'GET /api/folders': { body: { folders: [], suggestions: [] } },
   'GET /api/github': { body: { git: true, connected: false, login: null } },
-  'GET /api/settings/startup': { body: { supported: true, enabled: false, command: null } },
+  'GET /api/settings/startup': { body: { supported: true, enabled: false } },
   'GET /api/server': serverInfo(),
   ...modelsIdle,
 }

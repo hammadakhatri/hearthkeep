@@ -12,6 +12,7 @@ from hearthkeep import db, startup
 from hearthkeep.addons import ABOUT
 from hearthkeep.api.common import ApiError, Services, actor, current_session, record, services
 from hearthkeep.auth.sessions import Session
+from hearthkeep.host import HostUnsupported, current_host
 from hearthkeep.permissions import (
     DEFAULT_LEVELS,
     ToolLevel,
@@ -114,22 +115,59 @@ async def set_tool_level(tool: str, body: LevelBody, session: SessionDep, reques
     return _item(hk, key, await hk.docker_available())
 
 
-@router.get("/settings/startup")
-async def startup_settings(session: SessionDep, request: Request) -> dict:
-    """Whether Hearthkeep starts at login, and the command that changes it. Only the CLI on the
-    PC changes it; the web app shows it."""
-    hk = services(request)
-    state = await asyncio.to_thread(startup.cached_status, hk.monotonic())
-    # On for another data folder: enabling here points it at this one.
-    other = startup.on_for_another_folder(state, hk.settings.data_dir)
-    command = None
-    if state.supported:
-        verb = "disable" if state.enabled and not other else "enable"
-        data = startup.quote_arg(str(hk.settings.data_dir))
-        command = f"hearthkeep startup {verb} --data {data}"
+STARTUP_FAILED = (
+    "Start at login couldn't be changed. Try again; if it keeps failing, Windows may be "
+    "blocking scheduled tasks for this account."
+)
+
+
+class StartupBody(BaseModel):
+    enabled: bool
+    step_up_token: str = Field(default="", max_length=256)
+
+
+async def _startup_view(hk: Services, *, fresh: bool = False) -> dict:
+    """Whether Hearthkeep starts at login; `fresh` looks at the task again, not at the cache."""
+    state = await asyncio.to_thread(startup.cached_status, hk.monotonic(), fresh=fresh)
     return {
         "supported": state.supported,
         "enabled": state.enabled,
-        "other_data_folder": other,
-        "command": command,
+        # On, but for another data folder: turning it on here points it at this one.
+        "other_data_folder": startup.on_for_another_folder(state, hk.settings.data_dir),
     }
+
+
+@router.get("/settings/startup")
+async def startup_settings(session: SessionDep, request: Request) -> dict:
+    """Whether Hearthkeep starts at login."""
+    return await _startup_view(services(request))
+
+
+@router.post("/settings/startup")
+async def set_startup(body: StartupBody, session: SessionDep, request: Request) -> dict:
+    """Turn start at login on (a passkey step-up, as it makes Hearthkeep run unasked) or off
+    (the session is enough). A failure is a plain message; what Windows said stays out of it."""
+    hk = services(request)
+    host = current_host()
+    if not host.supported:
+        raise ApiError(400, "unsupported")
+    if body.enabled:
+        if not (
+            body.step_up_token
+            and hk.step_up.check(body.step_up_token, session.id, None, "settings")
+        ):
+            record(hk, actor(session), "startup.enable_denied", {"reason": "step_up_required"})
+            raise ApiError(403, "step_up_required")
+    try:
+        if body.enabled:
+            await asyncio.to_thread(host.enable_startup, hk.settings.data_dir)
+        else:
+            await asyncio.to_thread(host.disable_startup)
+    except HostUnsupported:
+        raise ApiError(400, "unsupported") from None
+    except startup.StartupError:
+        raise ApiError(502, "startup_failed", message=STARTUP_FAILED) from None
+    record(hk, actor(session), "startup.enabled" if body.enabled else "startup.disabled", {})
+    if hk.addons is not None:
+        await hk.addons.refresh("startup", fresh=True)
+    return await _startup_view(hk, fresh=True)

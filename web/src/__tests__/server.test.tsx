@@ -41,7 +41,7 @@ function settingsRoutes(extra: Record<string, Handler | Reply> = {}) {
   return mockFetch({
     'GET /api/devices': { body: [] },
     'GET /api/folders': { body: { folders: [], suggestions: [] } },
-    'GET /api/settings/startup': { body: { supported: true, enabled: true, command: null } },
+    'GET /api/settings/startup': { body: { supported: true, enabled: true } },
     ...modelsIdle,
     ...extra,
   })
