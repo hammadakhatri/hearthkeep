@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { stepUp } from '../api/webauthn'
 import { QrCode } from '../components/QrCode'
 import { Settings } from '../views/Settings'
+import { forbiddenIn } from '../test/copyRules'
 import { bodyOf, mockFetch, modelsIdle, serverInfo, type Handler, type Reply } from '../test/fetch'
 
 vi.mock('../api/webauthn', async (importOriginal) => ({
@@ -25,11 +26,7 @@ const phone = {
   current: false,
   last_used_at: new Date(Date.now() - 5 * 60 * MINUTE).toISOString(),
 }
-const startupOff = {
-  supported: true,
-  enabled: false,
-  command: 'hearthkeep startup enable --data "<data>"',
-}
+const startupOff = { supported: true, enabled: false, other_data_folder: false }
 const noFolders = { folders: [], suggestions: [] }
 
 function routes(extra: Record<string, Handler | Reply> = {}) {
@@ -46,6 +43,10 @@ function routes(extra: Record<string, Handler | Reply> = {}) {
 beforeEach(() => {
   vi.mocked(stepUp).mockReset().mockResolvedValue('step-token')
 })
+
+function startupSection(): HTMLElement {
+  return screen.getByRole('heading', { level: 2, name: 'Start at login' }).closest('section')!
+}
 
 describe('Settings', () => {
   it('lists devices with this device and last used', async () => {
@@ -186,29 +187,88 @@ describe('Settings', () => {
     expect(refused.calls.some((c) => c.init.method === 'DELETE')).toBe(true)
   })
 
-  it('start at login shows status and command', async () => {
+  it('start at login is a labelled switch, and no command text is shown', async () => {
     routes()
     render(<Settings />)
     const section = (await screen.findByRole('heading', { level: 2, name: 'Start at login' })).closest('section')!
-    expect(await within(section).findByText('Off')).toBeInTheDocument()
-    expect(within(section).getByText('To change it, run this on the PC:')).toBeInTheDocument()
-    expect(within(section).getByText(startupOff.command)).toBeInTheDocument()
-    expect(within(section).getByRole('button', { name: 'Copy command' })).toBeInTheDocument()
+    const toggle = await within(section).findByRole('switch', { name: 'Start Hearthkeep when I sign in to this PC' })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    expect(within(section).getByText('Off')).toBeInTheDocument()
+    expect(within(section).queryByRole('button', { name: 'Copy command' })).toBeNull()
+    expect(within(section).queryByText(/run this on the PC/)).toBeNull()
+    expect(forbiddenIn(section.textContent ?? '')).toEqual([])
+    expect(section.querySelector('code')).toBeNull()
+  })
+
+  it('settings startup switch turns on with a passkey and off without', async () => {
+    let enabled = false
+    const { calls } = routes({
+      'GET /api/settings/startup': () => ({ body: { ...startupOff, enabled } }),
+      'POST /api/settings/startup': (init) => {
+        enabled = JSON.parse(String(init.body)).enabled
+        return { body: { ...startupOff, enabled } }
+      },
+    })
+    render(<Settings />)
+    const toggle = await screen.findByRole('switch', { name: 'Start Hearthkeep when I sign in to this PC' })
+    await waitFor(() => expect(toggle).toBeEnabled())
+
+    fireEvent.click(toggle)
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'))
+    expect(stepUp).toHaveBeenCalledExactlyOnceWith('settings')
+    const on = calls.filter((c) => c.init.method === 'POST' && c.path === '/api/settings/startup')
+    expect(on.map(bodyOf)).toEqual([{ enabled: true, step_up_token: 'step-token' }])
+    expect(screen.getByText('On')).toBeInTheDocument()
+
+    fireEvent.click(toggle)
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'false'))
+    expect(stepUp).toHaveBeenCalledTimes(1) // turning it off needs only the session
+    const posts = calls.filter((c) => c.init.method === 'POST' && c.path === '/api/settings/startup')
+    expect(posts.map(bodyOf)).toEqual([{ enabled: true, step_up_token: 'step-token' }, { enabled: false }])
+  })
+
+  it('a cancelled passkey leaves the switch off and says so', async () => {
+    vi.mocked(stepUp).mockRejectedValue(Object.assign(new Error('x'), { name: 'NotAllowedError' }))
+    const { calls } = routes()
+    render(<Settings />)
+    const toggle = await screen.findByRole('switch', { name: 'Start Hearthkeep when I sign in to this PC' })
+    await waitFor(() => expect(toggle).toBeEnabled())
+    fireEvent.click(toggle)
+    expect(await within(startupSection()).findByRole('alert')).toHaveTextContent('was cancelled')
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    expect(calls.some((c) => c.init.method === 'POST' && c.path === '/api/settings/startup')).toBe(false)
+  })
+
+  it('a failed change shows the server message and keeps the old state', async () => {
+    const message = "Start at login couldn't be changed. Try again."
+    routes({ 'POST /api/settings/startup': { status: 502, body: { reason: 'startup_failed', message } } })
+    render(<Settings />)
+    const toggle = await screen.findByRole('switch', { name: 'Start Hearthkeep when I sign in to this PC' })
+    await waitFor(() => expect(toggle).toBeEnabled())
+    fireEvent.click(toggle)
+    const alert = await within(startupSection()).findByRole('alert')
+    expect(alert).toHaveTextContent(message)
+    expect(forbiddenIn(alert.textContent ?? '')).toEqual([])
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    expect(toggle).toBeEnabled()
   })
 
   it('start at login says when it is on for another data folder', async () => {
-    const elsewhere = { supported: true, enabled: true, other_data_folder: true, command: startupOff.command }
+    const elsewhere = { supported: true, enabled: true, other_data_folder: true }
     routes({ 'GET /api/settings/startup': { body: elsewhere } })
     render(<Settings />)
     expect(await screen.findByText('On, for another data folder')).toBeInTheDocument()
-    expect(screen.getByText(startupOff.command)).toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'Start Hearthkeep when I sign in to this PC' })).toHaveAttribute(
+      'aria-checked',
+      'false',
+    )
   })
 
   it('start at login says only on Windows elsewhere', async () => {
-    routes({ 'GET /api/settings/startup': { body: { supported: false, enabled: false, command: null } } })
+    routes({ 'GET /api/settings/startup': { body: { supported: false, enabled: false } } })
     render(<Settings />)
     expect(await screen.findByText('Only on Windows')).toBeInTheDocument()
-    expect(screen.queryByText('To change it, run this on the PC:')).toBeNull()
+    expect(screen.getByRole('switch', { name: 'Start Hearthkeep when I sign in to this PC' })).toBeDisabled()
   })
 })
 

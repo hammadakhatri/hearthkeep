@@ -51,6 +51,7 @@ ROUTES = [
     ("/api/setup/install/retry", {}),
     ("/api/setup/chat", {"source": "local", "card": "qwen3.5-4b"}),
     ("/api/setup/data-folder", {"path": "C:\\Hearthkeep\\elsewhere"}),
+    ("/api/setup/startup", {"enabled": False}),
 ]
 # And the two 2a routes, now behind the same dependency.
 ALL_ROUTES = [("/api/setup/status", {}), ("/api/setup/enrollment-code", {}), *ROUTES]
@@ -637,3 +638,35 @@ def test_move_refuses_a_folder_it_cant_look_into(setup_app, tmp_path, folder_hos
     r = post(client, "/api/setup/data-folder", {"path": str(moved(tmp_path))})
     assert (r.status_code, r.json()) == (400, {"reason": "bad_folder", "message": NOT_EMPTY})
     assert client.mode.next_data_dir is None and client.control.exit_code is None
+
+
+# ---- start at login -------------------------------------------------------------------------
+
+
+def test_setup_startup_choice_is_only_recorded(setup_app, monkeypatch):
+    class Host(host_module.WindowsHost):
+        def enable_startup(self, data_dir, *, run=None):
+            raise AssertionError("nothing runs until the hand-over")
+
+        def disable_startup(self, *, run=None):
+            raise AssertionError("nothing runs until the hand-over")
+
+    monkeypatch.setattr(routes_setup, "current_host", lambda: Host())
+    client = setup_app()
+    assert client.mode.start_at_login is True
+    off = post(client, "/api/setup/startup", {"enabled": False})
+    assert (off.status_code, off.json()) == (200, {"enabled": False})
+    assert client.mode.start_at_login is False
+    on = post(client, "/api/setup/startup", {"enabled": True})
+    assert (on.status_code, on.json()) == (200, {"enabled": True})
+    assert client.mode.start_at_login is True
+    assert post(client, "/api/setup/startup", {"enabled": "maybe"}).status_code == 422
+    assert post(client, "/api/setup/startup", {}).status_code == 422
+
+
+def test_setup_startup_is_unsupported_off_windows(setup_app, monkeypatch):
+    monkeypatch.setattr(routes_setup, "current_host", lambda: host_module.UnsupportedHost())
+    client = setup_app()
+    r = post(client, "/api/setup/startup", {"enabled": False})
+    assert (r.status_code, r.json()) == (400, {"reason": "unsupported"})
+    assert client.mode.start_at_login is True

@@ -269,3 +269,20 @@ SetupChatBody = Annotated[SetupLocalChat | SetupExternalChat, Field(discriminato
 @router.post("/chat")
 async def setup_chat(_: SetupDep, body: SetupChatBody, request: Request) -> dict:
     return await service.switch_chat(services(request), body, ACTOR)
+
+
+# ---- start at login -------------------------------------------------------------------------
+
+
+class SetupStartupBody(SetupBody):
+    enabled: bool
+
+
+@router.post("/startup")
+async def setup_startup(_: SetupDep, body: SetupStartupBody, request: Request) -> dict:
+    """Whether to start Hearthkeep at login once setup is done. Only the choice is kept here:
+    `cmd_setup` turns it on after the first passkey exists."""
+    if not current_host().supported:
+        raise ApiError(400, "unsupported")
+    services(request).setup.start_at_login = body.enabled
+    return {"enabled": body.enabled}

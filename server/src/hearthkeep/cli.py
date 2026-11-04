@@ -42,7 +42,14 @@ from hearthkeep.config import (
     load_settings,
     local_base_url,
 )
-from hearthkeep.host import DATA_MARKERS, REPO_ROOT, UNSUPPORTED_HOST, Host, current_host
+from hearthkeep.host import (
+    DATA_MARKERS,
+    REPO_ROOT,
+    UNSUPPORTED_HOST,
+    Host,
+    HostUnsupported,
+    current_host,
+)
 from hearthkeep.lifecycle import EXIT_RELOCATE, EXIT_USAGE, SUPERVISED_ENV, ServerControl
 from hearthkeep.providers.chat import NoChatModelClient, OpenAIChatClient
 from hearthkeep.push import VAPID_SECRET
@@ -117,6 +124,7 @@ LAUNCHER_NOT_STARTED = (
 LOCATION_NOT_SAVED = (
     "Hearthkeep couldn't note where its data folder is on this PC. Setup carries on without it."
 )
+STARTUP_NOT_TURNED_ON = "Start at login couldn't be turned on. You can turn it on in Settings."
 MOVING_DATA = "Moving Hearthkeep's data to the folder you chose."
 OLD_FOLDER_KEPT = "The old data folder was left in place. You can delete it yourself."
 FOLDER_NOT_PROTECTED = (
@@ -910,6 +918,11 @@ def cmd_setup(
         return 1
 
     _install_shortcut(host, data)
+    if setup.start_at_login:  # the wizard's choice, applied now that the passkey exists
+        try:
+            host.enable_startup(data)
+        except (startup.StartupError, HostUnsupported):
+            print(STARTUP_NOT_TURNED_ON)
     try:
         process = host.spawn_detached(launcher.launcher_argv(data))
     except OSError:

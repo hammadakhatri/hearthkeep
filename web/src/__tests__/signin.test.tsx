@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { startAuthentication, startRegistration } from '@simplewebauthn/browser'
 import App from '../App'
+import { forbiddenIn } from '../test/copyRules'
 import { bodyOf, headerOf, healthy, mockFetch, signedIn, signedOut } from '../test/fetch'
 
 vi.mock('@simplewebauthn/browser', () => ({
@@ -32,6 +33,23 @@ describe('Sign in', () => {
     expect(screen.getByLabelText('Device name')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Add this device' })).toBeInTheDocument()
     expect(startAuthentication).not.toHaveBeenCalled()
+  })
+
+  it('the sign-in hint names Settings › Devices', async () => {
+    mockFetch({
+      'GET /api/auth/session': signedOut,
+      'GET /api/health': healthy,
+      'POST /api/auth/login/options': { status: 409, body: { reason: 'no_devices' } },
+    })
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in with passkey' }))
+    const hint = await screen.findByText(/Your setup code comes from/)
+    expect(hint).toHaveTextContent(
+      "Your setup code comes from Settings › Devices on a device that's already signed in, or from Setup.cmd on this PC.",
+    )
+    expect(hint).toHaveAttribute('id', 'code-hint')
+    expect(forbiddenIn(hint.textContent ?? '')).toEqual([])
+    expect(screen.queryByText(/Shown on your computer/)).toBeNull()
   })
 
   it('sign-in calls login() and routes to Chat on success', async () => {

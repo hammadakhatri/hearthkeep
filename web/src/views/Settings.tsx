@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useState } from 'react'
-import { api } from '../api/client'
+import { api, isApiError, post } from '../api/client'
+import { PASSKEY_NOT_CONFIRMED, passkeyErrorMessage, stepUp } from '../api/webauthn'
 import { AddonsPanel } from '../components/AddonsPanel'
 import { DevicesPanel } from '../components/DevicesPanel'
 import { FoldersPanel } from '../components/FoldersPanel'
@@ -8,27 +9,34 @@ import { ModelsPanel } from '../components/ModelsPanel'
 import { NotificationToggle } from '../components/NotificationToggle'
 import { ServerProvider } from '../components/RestartNotice'
 import { ServerPanel } from '../components/ServerPanel'
+import { StartupSwitch, type StartupState } from '../components/StartupSwitch'
 import { useAddonsState, type SettingsAnchor } from '../shell/AddonsContext'
-import { AlertIcon, CopyIcon } from '../shell/icons'
+import { AlertIcon } from '../shell/icons'
 
-type Startup = {
-  supported: boolean
-  enabled: boolean
-  /** On, but the task starts Hearthkeep with another data folder. */
-  other_data_folder?: boolean
-  command: string | null
+const STARTUP_ERRORS = "Start at login couldn't be changed. Try again."
+
+function startupError(error: unknown): string {
+  if (isApiError(error, 'startup_failed')) {
+    const message = (error.body as { message?: unknown } | null)?.message
+    return typeof message === 'string' && message ? message : STARTUP_ERRORS
+  }
+  if (isApiError(error, 'step_up_required')) return PASSKEY_NOT_CONFIRMED
+  if (isApiError(error, 'network')) return "Can't reach Hearthkeep. Try again in a moment."
+  if (isApiError(error)) return STARTUP_ERRORS
+  return passkeyErrorMessage(error, 'Turning on start at login')
 }
 
-/** Start at login is changed on the PC itself; this only shows the state and the command. */
+/** Start at login: turning it on takes a passkey, turning it off does not. */
 function StartupPanel() {
   const titleId = useId()
-  const [state, setState] = useState<Startup | null>(null)
+  const [state, setState] = useState<StartupState | null>(null)
   const [failed, setFailed] = useState(false)
-  const [copied, setCopied] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     let live = true
-    api<Startup>('/api/settings/startup')
+    api<StartupState>('/api/settings/startup')
       .then((s) => live && setState(s))
       .catch(() => live && setFailed(true))
     return () => {
@@ -36,56 +44,29 @@ function StartupPanel() {
     }
   }, [])
 
-  async function copy(command: string) {
+  async function change(enabled: boolean) {
+    setBusy(true)
+    setError(null)
     try {
-      await navigator.clipboard.writeText(command)
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 2000)
-    } catch {
-      setCopied(false)
+      const body = enabled ? { enabled, step_up_token: await stepUp('settings') } : { enabled }
+      setState(await api<StartupState>('/api/settings/startup', post(body)))
+    } catch (e) {
+      setError(startupError(e))
     }
+    setBusy(false)
   }
 
-  const label =
-    state === null
-      ? ''
-      : !state.supported
-        ? 'Only on Windows'
-        : state.enabled && state.other_data_folder
-          ? 'On, for another data folder'
-          : state.enabled
-            ? 'On'
-            : 'Off'
   return (
     <section id="settings-startup" className="settings-section" aria-labelledby={titleId} tabIndex={-1}>
       <h2 id={titleId}>Start at login</h2>
       <div className="tile startup" aria-busy={(state === null && !failed) || undefined}>
-        <div className="startup-row">
-          <p className="perm-sub">Hearthkeep starts on its own, with no window, when you sign in to the PC.</p>
-          {state && <span className={`badge${state.enabled && !state.other_data_folder ? ' green' : ''}`}>{label}</span>}
-        </div>
-        {failed && (
+        {failed ? (
           <div className="note error" role="alert">
             <AlertIcon />
             <span>Couldn't check start at login.</span>
           </div>
-        )}
-        {state?.command && (
-          <>
-            <p className="startup-how">To change it, run this on the PC:</p>
-            <div className="command">
-              <code>{state.command}</code>
-              <button
-                type="button"
-                className="btn ghost"
-                aria-label="Copy command"
-                onClick={() => copy(state.command as string)}
-              >
-                <CopyIcon />
-                <span aria-live="polite">{copied ? 'Copied' : 'Copy'}</span>
-              </button>
-            </div>
-          </>
+        ) : (
+          <StartupSwitch state={state} onChange={change} busy={busy} error={error} />
         )}
       </div>
     </section>
