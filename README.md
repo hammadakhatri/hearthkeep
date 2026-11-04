@@ -65,7 +65,7 @@ Every number in that answer was computed by code in the sandbox, so the app unde
 <td width="50%" valign="top">
 
 💬 **Chat**<br>
-Talk to a local model (Gemma 4 12B through llama.cpp). Replies stream in, and every tool it uses is shown step by step.
+Talk to a local model (Qwen3.5 or Gemma 4 through llama.cpp). Replies stream in, and every tool it uses is shown step by step.
 
 </td>
 <td width="50%" valign="top">
@@ -215,7 +215,7 @@ flowchart LR
     end
     subgraph pc["Your PC, the only place your data lives"]
         hk["Hearthkeep<br/>(127.0.0.1 only)"]
-        llm["Gemma 4 12B<br/>llama.cpp"]
+        llm["Chat model<br/>llama.cpp"]
         img["ComfyUI<br/>image models"]
         box["Python sandbox<br/>Docker, no network"]
         data[("Your data folder<br/>chats, files, audit log")]
@@ -282,8 +282,8 @@ The full security model is in [docs/security.md](docs/security.md).
 
 Hearthkeep is early software. It's a good fit if you:
 
-- have a **Windows 11 PC with an NVIDIA GPU** (about 16 GB of VRAM for the shipped models),
-- are happy to follow a step-by-step guide to add the models and reach it from your phone,
+- have a **Windows 11 PC**, ideally with an NVIDIA GPU (8 GB of VRAM or more for a comfortable chat model; images need one),
+- are happy to follow a step-by-step guide to reach it from your phone (the models download from Settings),
 - want an assistant you can use from your phone without your data leaving home.
 
 <details>
@@ -292,16 +292,16 @@ Hearthkeep is early software. It's a good fit if you:
 | | Needed |
 |---|---|
 | OS | Windows 11 (the tested host). macOS and Linux work as clients; as a host they are untested. |
-| GPU | NVIDIA, about 16 GB VRAM for the shipped models |
+| GPU | NVIDIA recommended. 6 GB or less runs the small chat model, about 8 GB the medium one, 11 GB or more the largest; images need an NVIDIA card. Without one, chat runs on the processor, more slowly. |
 | RAM | 32 GB recommended |
-| Disk | About 60 GB for the shipped models and tools |
+| Disk | From about 4 GB (the smallest chat model) to about 50 GB (every chat and image model, plus ComfyUI) |
 | Software | Git 2.31+, Python 3.12+, [uv](https://docs.astral.sh/uv/), Node 20.19+ or 22.12+, [Docker Desktop](https://www.docker.com/products/docker-desktop/) for Python analysis and repo tests, [Tailscale](https://tailscale.com) for remote access |
 
 Git 2.31 or newer is also what turns the GitHub tools on: without it, they are not offered.
 
 </details>
 
-No suitable GPU? You can point Hearthkeep at an OpenAI-compatible chat server you already run on the same PC. Image generation is then off.
+No NVIDIA GPU? The small Qwen3.5 4B model runs on the processor alone, only more slowly. Or point Hearthkeep at an OpenAI-compatible chat server you already run on the same PC. Image generation needs an NVIDIA GPU.
 
 ## Quick start
 
@@ -315,7 +315,9 @@ If you'll use Hearthkeep from your phone through Tailscale, read [step 7 of the 
 
 Setup installs what it needs for your Windows account (no admin rights), keeps your data in `C:\Hearthkeep\data`, starts Hearthkeep and opens it in your browser, where you create your passkey. Afterwards, open Hearthkeep from the Start menu.
 
-The full guide, including model downloads, Docker, Tailscale and GitHub, is in **[docs/install.md](docs/install.md)**.
+Then open **Settings › Chat model**, choose the model marked **Recommended for this PC**, select **Download** and confirm with your passkey. Hearthkeep downloads it (3 to 10 GB, resuming if it is interrupted, every file checked) and asks you to restart. Images are in **Settings › Image models**.
+
+The full guide, including the models, Docker, Tailscale and GitHub, is in **[docs/install.md](docs/install.md)**.
 
 ### Developers
 
@@ -345,7 +347,7 @@ To work on GitHub repos, make a fine-grained token and add your repos: [Optional
 | 3. Files and analysis | Chat files, allowed folders, Python sandbox, number check, Analysis view, send to your phone, Devices and Settings, start at login | ✅ Done |
 | 4. GitHub | Your repos, sandboxed tests, approved pushes and pull requests | ✅ Done |
 | 5. Demos and launch | Demo data, screenshots and clips, getting started in minutes | Planned |
-| 6. Feature switches and model catalog | Choose features at install and in Settings (off means the AI can't reach them); a catalog that checks whether a model fits your PC, and room for your own models | Planned |
+| 6. Feature switches and model catalog | A model catalog in Settings: download chat and image models that fit your PC, switch between them, or use a server you run. Still to come: choose features at install and in Settings (off means the AI can't reach them) | In progress |
 | 7. Voice | Replies read aloud with local voices (Chatterbox, with Kokoro as a fallback) | Planned |
 | 8. 3D | A picture or a prompt in, a 3D model out (GLB, OBJ, FBX), straight into Blender if you like | Planned |
 
@@ -356,7 +358,7 @@ A daily briefing and a one-command installer are planned too; their place in the
 | Guide | What's in it |
 |---|---|
 | [docs/install.md](docs/install.md) | Installation, Docker, GitHub, Tailscale, notifications, start at login, updates, backups, troubleshooting |
-| [docs/models.md](docs/models.md) | Model cards, `models.toml`, GPU switching and images |
+| [docs/models.md](docs/models.md) | The model catalog, model cards, `models.toml`, doing it by hand, GPU switching and images |
 | [docs/security.md](docs/security.md) | The security model and what the assistant can never do |
 | [docs/design.md](docs/design.md) | The design |
 | [docs/README.md](docs/README.md) | Index of all docs |

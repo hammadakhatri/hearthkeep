@@ -1,4 +1,5 @@
-# Copy to <data>/models.toml and fill in the paths for your machine.
+# Settings › Chat model and Settings › Image models write this file for you. To set it up by hand,
+# copy it to <data>/models.toml and fill in the paths for your machine (docs/models.md).
 # Values that are empty or start with "<" are treated as unset.
 
 # Chat server (llama.cpp)
@@ -18,6 +19,10 @@ comfyui_model_root = "<path to the ComfyUI models folder>"
 
 default_chat_model = "gemma-4-12b"
 default_image_model = "z-image-turbo"
+
+# "local" runs the chat model Hearthkeep manages; "external" uses chat_base_url from config.toml
+# even when local models are installed. Settings › Chat model sets this for you.
+# chat_server = "local"
 
 # Chat models: the folder holding each card's files (by card id).
 [model_dirs]

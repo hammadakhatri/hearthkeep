@@ -1,12 +1,11 @@
 # Installing Hearthkeep
 
-This guide takes you from a fresh PC to Hearthkeep running with its own models, reachable from your phone or Mac. Windows 11 with an NVIDIA GPU is the tested host. Notes for macOS and Linux are given where they differ; as a host, both are untested.
+This guide takes you from a fresh PC to Hearthkeep running with its own models, reachable from your phone or Mac. Windows 11 with an NVIDIA GPU is the tested host; chat also runs on the processor alone, only more slowly. Notes for macOS and Linux are given where they differ; as a host, both are untested.
 
 Placeholders used below:
 
 - `<repo>`: the folder you cloned Hearthkeep into.
 - `<data>`: your Hearthkeep data folder (step 3).
-- `<tools>`: a folder for llama.cpp, ComfyUI and model files, for example `C:\AI`. Any folder works.
 - `<machine>.<tailnet>.ts.net`: your PC's Tailscale name (step 7).
 
 Commands are for PowerShell on Windows unless marked otherwise. Run each command on its own line.
@@ -16,12 +15,12 @@ Contents:
 1. [Install the prerequisites](#1-install-the-prerequisites)
 2. [Clone and build](#2-clone-and-build)
 3. [Create a data folder](#3-create-a-data-folder)
-4. [Chat model: llama.cpp and Gemma 4 12B](#4-chat-model-llamacpp-and-gemma-4-12b)
-5. [Image models (optional): ComfyUI, Z-Image Turbo and FLUX.2 klein](#5-image-models-optional-comfyui-z-image-turbo-and-flux2-klein)
-6. [Write `models.toml`](#6-write-modelstoml)
+4. [Chat model](#4-chat-model)
+5. [Image models (optional)](#5-image-models-optional)
+6. [Models you already have](#6-models-you-already-have)
 7. [Decide on remote access before your first passkey](#7-decide-on-remote-access-before-your-first-passkey)
 8. [First start and your passkey](#8-first-start-and-your-passkey)
-9. [Optional: an API key for an external chat server](#9-optional-an-api-key-for-an-external-chat-server)
+9. [Use a model server you already run](#9-use-a-model-server-you-already-run)
 10. [Run at login (Windows)](#10-run-at-login-windows)
 11. [Python sandbox (Docker)](#11-python-sandbox-docker)
 12. [Optional: GitHub](#12-optional-github)
@@ -41,7 +40,7 @@ You need:
 | Python | 3.12 or newer | [python.org](https://www.python.org/downloads/) (uv can also install it for you) |
 | uv | any recent | [docs.astral.sh/uv](https://docs.astral.sh/uv/getting-started/installation/) |
 | Node.js | 20.19+ or 22.12+ | [nodejs.org](https://nodejs.org/) (the LTS release is fine) |
-| NVIDIA driver | recent, with `nvidia-smi` | [nvidia.com/drivers](https://www.nvidia.com/Download/index.aspx) |
+| NVIDIA driver (optional) | recent, with `nvidia-smi` | [nvidia.com/drivers](https://www.nvidia.com/Download/index.aspx); needed for the fast chat engine and for image models |
 | Docker Desktop (optional) | recent | [docker.com](https://www.docker.com/products/docker-desktop/); needed only for Python analysis (step 11) |
 
 1. Install each tool from the links above. On Windows, `winget` works too:
@@ -62,9 +61,9 @@ You need:
    nvidia-smi
    ```
 
-   `node --version` must print 20.19 or later (or 22.12 or later). `nvidia-smi` must list your GPU; Hearthkeep uses it to read how much GPU memory you have.
+   `node --version` must print 20.19 or later (or 22.12 or later). With an NVIDIA graphics card, `nvidia-smi` must list it; Hearthkeep uses it to read how much graphics memory you have and to recommend a model. Without one, skip that command.
 
-**macOS and Linux:** install the same tools with your package manager (for example Homebrew on macOS). `nvidia-smi` only exists with an NVIDIA GPU; without it, see `gpu_vram_gb` in step 6.
+**macOS and Linux:** install the same tools with your package manager (for example Homebrew on macOS). `nvidia-smi` only exists with an NVIDIA GPU; without it, Hearthkeep recommends the small model on the processor (to override the memory it detects, see `gpu_vram_gb` in [docs/models.md](models.md#modelstoml)).
 
 ## 2. Clone and build
 
@@ -122,151 +121,75 @@ The data folder holds your chats, passkeys, audit log, encrypted secrets, images
 
 Keep the path short. llama-server on Windows cannot open a file whose full path is 260 characters or longer. Hearthkeep writes the chat model's key file to `<data>\runtime\llama-api-key` and checks this path (and the model file paths) before it starts llama-server. If any is too long it refuses with "Hearthkeep's data folder path is too long for llama-server on Windows". ComfyUI is not affected.
 
+The programs and models you download from Settings (steps 4 and 5) also live inside this folder, so it needs room: from about 4 GB for the smallest chat model to roughly 50 GB with every model and ComfyUI. Hearthkeep checks the free space before it downloads anything.
+
 Choose the location once. The key that encrypts your secrets is stored in the OS keyring under a name derived from the data folder's full path. If you move the folder later, see [Backing up](#15-backing-up).
 
-## 4. Chat model: llama.cpp and Gemma 4 12B
+## 4. Chat model
 
-Skip this step if you already run an OpenAI-compatible chat server on this PC and want to keep using it. Set `chat_base_url` in `<data>\config.toml` to that server (for example `http://127.0.0.1:8080/v1`; it must be on `127.0.0.1`, `::1` or `localhost`) and leave out `models.toml` (step 6). With neither `models.toml` nor `chat_base_url`, Hearthkeep starts without a chat model and Settings › Add-ons says so.
+Hearthkeep downloads its own chat model from Settings. There is nothing to install by hand, and you do this after you have created your passkey ([step 8](#8-first-start-and-your-passkey)). Until then Hearthkeep runs, but chat says that no chat model is set up yet.
 
-### 4.1 llama.cpp
+1. Open **Settings › Chat model**. The top line names your graphics card and how much memory it has, and one model carries the badge **Recommended for this PC**.
+2. Choose a model and select **Download**. Hearthkeep lists everything it will fetch, with the sizes and a link to each licence. Confirm with your passkey.
+3. Watch the progress list. You can leave the page; the download carries on, and the list is there when you come back.
+4. When it finishes, Hearthkeep asks you to restart. Select **Restart now**. If you started Hearthkeep from a terminal rather than from the Start menu, the page says "Restart Hearthkeep to use it." instead; stop it and start it again by hand.
+5. Send a message in Chat. The first reply takes a little longer while the model loads.
 
-1. Open the llama.cpp releases page: [github.com/ggml-org/llama.cpp/releases](https://github.com/ggml-org/llama.cpp/releases).
-2. For Windows with an NVIDIA GPU, download the CUDA build, `llama-<build>-bin-win-cuda-<version>-x64.zip`, and the matching CUDA runtime, `cudart-llama-bin-win-cuda-<version>-x64.zip`. Pick the CUDA version your driver supports (`nvidia-smi` shows it top right).
-3. Extract both zips into the same folder, for example `<tools>\llama.cpp`.
-4. Check that it runs:
+**What each model needs**
 
-   ```
-   <tools>\llama.cpp\llama-server.exe --version
-   ```
-
-**macOS:** use the `macos-arm64` release or `brew install llama.cpp`. **Linux:** build from source with CUDA as the llama.cpp README describes. Both are untested as a Hearthkeep host.
-
-### 4.2 Gemma 4 12B weights
-
-The shipped card (`server/src/hearthkeep/models/cards/gemma-4-12b.toml`) expects two files, with exactly these names, in one folder:
-
-| File | What it is | Size (approx.) |
-|---|---|---|
-| `gemma-4-12b-it-Q6_K.gguf` | Gemma 4 12B instruct, Q6_K quantisation | 9.8 GB |
-| `mmproj-F16.gguf` | The vision projector, so the model can see images | about 1 GB |
-
-1. Find a GGUF build of Gemma 4 12B instruct on [Hugging Face](https://huggingface.co/models?search=gemma-4-12b%20gguf) that offers a `Q6_K` file and an F16 `mmproj` file. Gemma's official page is [ai.google.dev/gemma](https://ai.google.dev/gemma); accept the Gemma licence terms where the download asks.
-2. Create a folder for them, for example `<tools>\models\gemma-4-12b`.
-3. Download both files into it. If a file has a different name, rename it to the name in the table, or write your own card ([docs/models.md](models.md#adding-your-own-card)).
-4. Where the repository publishes a SHA-256 for a file, compare it after downloading:
-
-   ```
-   Get-FileHash <tools>\models\gemma-4-12b\gemma-4-12b-it-Q6_K.gguf -Algorithm SHA256
-   ```
-
-   On macOS and Linux use `shasum -a 256 <file>`.
-
-The model needs about 11 GB of GPU memory with a 32K context.
-
-## 5. Image models (optional): ComfyUI, Z-Image Turbo and FLUX.2 klein
-
-Skip this step if you only want chat. Image generation stays off until the three `comfyui_*` paths are set in `models.toml`.
-
-### 5.1 ComfyUI portable
-
-1. Open the ComfyUI project page: [github.com/comfyanonymous/ComfyUI](https://github.com/comfyanonymous/ComfyUI). Its README links the Windows portable build for NVIDIA GPUs, published on the releases page.
-2. Download a recent release. It must be new enough to support FLUX.2 klein and Z-Image (the shipped workflows use nodes such as `Flux2Scheduler` and `EmptyFlux2LatentImage`).
-3. Extract it (it is a `.7z` archive; use [7-Zip](https://www.7-zip.org/)) into `<tools>`, for example `<tools>\ComfyUI_windows_portable`.
-4. Note three paths for step 6:
-
-   | `models.toml` key | Path in the portable build |
-   |---|---|
-   | `comfyui_python` | `<tools>\ComfyUI_windows_portable\python_embeded\python.exe` |
-   | `comfyui_main` | `<tools>\ComfyUI_windows_portable\ComfyUI\main.py` |
-   | `comfyui_model_root` | `<tools>\ComfyUI_windows_portable\ComfyUI\models` |
-
-You don't need to start ComfyUI yourself. Hearthkeep starts it on `127.0.0.1` when the first image is needed and points it at `comfyui_model_root`.
-
-**macOS and Linux:** there is no portable build. Install ComfyUI manually as its README describes and use that install's Python and `main.py`. Untested as a Hearthkeep host.
-
-### 5.2 Image weights
-
-The shipped cards expect these files, with exactly these names, under `comfyui_model_root`:
-
-| File | Folder | Used by | Size (approx.) |
+| Model | Download | Runs on | Notes |
 |---|---|---|---|
-| `z_image_turbo_bf16.safetensors` | `diffusion_models` | Z-Image Turbo | 12 GB |
-| `flux-2-klein-4b.safetensors` | `diffusion_models` | FLUX.2 klein 4B | 8 GB |
-| `qwen_3_4b.safetensors` | `text_encoders` | both (shared) | 8 GB |
-| `ae.safetensors` | `vae` | Z-Image Turbo | 0.3 GB |
-| `flux2-vae.safetensors` | `vae` | FLUX.2 klein 4B | 0.3 GB |
+| Qwen3.5 4B | 3.0 GB | The processor alone, or under 6 GB of graphics memory | The smallest. Chosen for you when there is no NVIDIA graphics card. |
+| Qwen3.5 9B | 6.2 GB | About 8 GB of graphics memory | A good all-rounder. |
+| Gemma 4 12B | 10.4 GB | 11 GB of graphics memory or more | Can also look at pictures and scanned pages. The download includes its vision file. |
 
-So the layout is:
+The first model you download also fetches the program that runs it, the **chat engine** (under 0.7 GB). The **Chat engine** list below the models shows the builds on offer: one for NVIDIA graphics cards, one for other graphics cards (marked as an alternative) and one for the processor alone. The recommended one is picked from your PC. Hearthkeep installs one engine at a time, and a model keeps working with whichever you picked.
 
-```
-<comfyui_model_root>
-├─ diffusion_models\
-│  ├─ z_image_turbo_bf16.safetensors
-│  └─ flux-2-klein-4b.safetensors
-├─ text_encoders\
-│  └─ qwen_3_4b.safetensors
-└─ vae\
-   ├─ ae.safetensors
-   └─ flux2-vae.safetensors
-```
+A model that needs more graphics memory than your PC has is greyed out with the reason. A PC without an NVIDIA graphics card can still chat with the processor alone, only more slowly.
 
-1. Find the ComfyUI-ready files on Hugging Face. The model makers' pages are [Tongyi-MAI on Hugging Face](https://huggingface.co/Tongyi-MAI) (Z-Image) and [Black Forest Labs on Hugging Face](https://huggingface.co/black-forest-labs) (FLUX.2 klein). ComfyUI's own documentation at [docs.comfy.org](https://docs.comfy.org) lists the files for its example workflows of both models. Accept each model's licence terms where the download asks.
-2. Download each file into the folder shown in the table. Create the folders if they don't exist.
-3. Rename any file whose name differs from the table, or write your own card ([docs/models.md](models.md#adding-your-own-card)).
-4. Check SHA-256 hashes where they are published, as in step 4.2.
+**How long it takes.** The time depends on your connection. At 10 MB a second, the 4B model takes about five minutes and the 12B model about 17. Keep the PC awake and online while it runs.
 
-Each image model needs about 10 to 10.5 GB of GPU memory. Hearthkeep unloads the chat model while an image renders (see [GPU switching](models.md#gpu-switching)).
+**If it stops.** A broken connection, a restart of Hearthkeep or the PC, or **Cancel** never loses what has arrived. Select **Download** again (or **Retry** in the list) and it carries on from where it stopped. A file that failed on the network is also tried again by itself a few times first. Every file is checked against a checksum before it is used, and a file that doesn't match is thrown away and reported, never used. Hearthkeep fetches only from GitHub and Hugging Face, and only the files in its own list.
 
-You can install just one of the two image models. If you only install FLUX.2 klein, set `default_image_model = "flux2-klein-4b"` in step 6.
+**Disk space.** Downloads land inside Hearthkeep's data folder ([step 3](#3-create-a-data-folder)). Hearthkeep checks there is room before it starts and says if there isn't.
 
-## 6. Write `models.toml`
+**Switching.** Models you have downloaded stay on the PC. Select **Use this** on one of them to switch, then restart when asked. Nothing is deleted.
 
-`models.toml` tells Hearthkeep where the programs and model files are. Without it, image generation is off, and Hearthkeep uses the chat server at `chat_base_url` if `config.toml` sets one. With neither, Hearthkeep starts without a chat model and Settings › Add-ons says so.
+**Licences.** All three models are released under Apache 2.0 and the chat engine under the MIT licence. Each row in Settings links to its licence before you download:
 
-1. Copy the example into your data folder:
+- [Qwen3.5 4B](https://huggingface.co/Qwen/Qwen3.5-4B) and [Qwen3.5 9B](https://huggingface.co/Qwen/Qwen3.5-9B)
+- [Gemma 4 12B](https://huggingface.co/google/gemma-4-12B-it)
+- [llama.cpp](https://github.com/ggml-org/llama.cpp/blob/b12099/LICENSE)
 
-   ```
-   copy <repo>\models.example.toml <data>\models.toml
-   ```
+**A model server you already run.** If you already run an OpenAI-compatible chat server on this PC (llama.cpp, Ollama, LM Studio), you don't need to download anything: see [step 9](#9-use-a-model-server-you-already-run).
 
-2. Open `<data>\models.toml` in a text editor and fill in your paths. Use single quotes on Windows so backslashes are taken literally:
+**macOS and Linux:** the downloads are Windows builds. See "Doing it by hand" in [docs/models.md](models.md#doing-it-by-hand) for your own llama.cpp, and step 9 for a server you run yourself. Both are untested as a Hearthkeep host.
 
-   ```toml
-   # Chat server (llama.cpp)
-   llama_server_exe = '<tools>\llama.cpp\llama-server.exe'
-   llama_port = 8080
+## 5. Image models (optional)
 
-   # Image server (ComfyUI)
-   comfyui_python = '<tools>\ComfyUI_windows_portable\python_embeded\python.exe'
-   comfyui_main = '<tools>\ComfyUI_windows_portable\ComfyUI\main.py'
-   comfyui_port = 8188
-   comfyui_model_root = '<tools>\ComfyUI_windows_portable\ComfyUI\models'
+Skip this step if you only want chat. Image models need an NVIDIA graphics card; without one, Settings says so and the downloads can't be chosen.
 
-   # gpu_vram_gb = 16
+1. Open **Settings › Image models**.
+2. Choose a model and select **Download**, then confirm with your passkey. Hearthkeep lists what it will fetch, with the sizes and a link to each licence.
 
-   default_chat_model = "gemma-4-12b"
-   default_image_model = "z-image-turbo"
+   | Model | Download | Good at |
+   |---|---|---|
+   | Z-Image Turbo | 20.7 GB | Pictures that contain words, and photo-like scenes |
+   | FLUX.2 klein 4B | 16.1 GB | Photos and edits to a photo you attach |
 
-   [model_dirs]
-   "gemma-4-12b" = '<tools>\models\gemma-4-12b'
-   ```
+   Both need about 10 to 10.5 GB of graphics memory while a picture is made. If you pick both, the text file they share is downloaded once.
+3. The first image model also fetches the picture maker, **ComfyUI** (1.9 GB), the program that draws the pictures. It is released under GPL-3.0: [licence](https://github.com/Comfy-Org/ComfyUI/blob/v0.44.0/LICENSE). The image models are released under Apache 2.0: [Z-Image Turbo](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo).
+4. When it finishes, restart as asked, as in step 4.
 
-Every key:
+Downloads resume after an interruption and are checked against checksums, as for chat models. Hearthkeep unpacks ComfyUI itself, using the archive tool that comes with Windows.
 
-| Key | What it does |
-|---|---|
-| `llama_server_exe` | Path to `llama-server` (`llama-server.exe` on Windows). With this and a `model_dirs` entry for the default chat model, Hearthkeep starts and stops llama-server itself. |
-| `llama_port` | The port llama-server listens on, on `127.0.0.1`. Default 8080. |
-| `comfyui_python` | The Python that runs ComfyUI. In the portable build, `python_embeded\python.exe`. |
-| `comfyui_main` | ComfyUI's `main.py`. |
-| `comfyui_port` | The port ComfyUI listens on, on `127.0.0.1`. Default 8188. |
-| `comfyui_model_root` | A folder with `diffusion_models`, `text_encoders` and `vae` inside. The image cards' file names are looked up there. Images are on only when all three `comfyui_*` paths are set. |
-| `gpu_vram_gb` | Optional. Your GPU memory in GB. Hearthkeep reads it from `nvidia-smi`; if that fails it assumes 16 GB and logs a warning. Set it when the guess is wrong. |
-| `default_chat_model` | The card id of the chat model to use. Default `gemma-4-12b`. |
-| `default_image_model` | The card id of the image model to use when you don't ask for one. Default `z-image-turbo`. |
-| `[model_dirs]` | For each chat card id, the folder that holds its files. |
+You don't need to start ComfyUI. Hearthkeep starts it when the first image is needed. It unloads the chat model while a picture is made (see [GPU switching](models.md#gpu-switching)). If you already have your own ComfyUI and image files, Hearthkeep keeps using them: see "Doing it by hand" in [docs/models.md](models.md#doing-it-by-hand).
 
-A value that is empty or starts with `<` counts as not set. An unknown key or a wrong type stops the server at start-up with a message naming the key. More detail: [docs/models.md](models.md#modelstoml).
+## 6. Models you already have
+
+Nothing you have set up by hand is lost. If your PC already has a working hand-made setup for Hearthkeep's models, Hearthkeep reads it as before. A model it finds there shows as installed in Settings, and it is never downloaded again. Hearthkeep changes only the few settings it manages, keeps your comments, and saves a copy of your file before its first change.
+
+Developers and anyone who prefers to do it all by hand: the manual route, with every setting explained, is in [docs/models.md](models.md#doing-it-by-hand).
 
 ## 7. Decide on remote access before your first passkey
 
@@ -367,7 +290,7 @@ If you used `Setup.cmd` (step 2), your first passkey is normally made on the set
 2. Open your address: `http://localhost:8765` (option A) or `https://<machine>.<tailnet>.ts.net` (option B).
 3. Enter the code within **15 minutes**, give the device a name, and choose **Add this device**.
 4. Create the passkey when your browser asks (Windows Hello, Touch ID, Face ID or a PIN). You are now signed in.
-5. Send a message in Chat. The first reply takes a little longer while llama-server loads the model.
+5. Download a chat model in **Settings › Chat model** ([step 4](#4-chat-model)), restart when asked, and send a message in Chat. The first reply takes a little longer while the model loads.
 
 If the code expired, or you lost it, create a new one (it works only while no passkey exists):
 
@@ -386,25 +309,16 @@ If your only passkey is lost, you cannot sign in. Make sure the passkey is on a 
 
 Then open your Tailscale address on the second device and check that you can sign in. The last remaining device can never be removed, so you cannot lock yourself out from inside the app.
 
-## 9. Optional: an API key for an external chat server
+## 9. Use a model server you already run
 
-Only for when Hearthkeep uses a chat server you run yourself (no `models.toml`, and `chat_base_url` set in `config.toml`) and that server needs a key. When Hearthkeep runs llama-server itself, it generates and stores its own key under the same name; you don't need to do anything.
+Only for when you already run a chat server on this PC and want Hearthkeep to talk to it instead of downloading a model. It can be llama.cpp, Ollama, LM Studio or anything else that speaks the same OpenAI-style chat protocol.
 
-1. Store the key. The value is read from a hidden prompt, so it never appears in your shell history:
+1. Open **Settings › Chat model** and scroll to **Use a model server I already run**.
+2. Type the server's address in **Server address**. It must be a server on this PC, so the address starts with `http://localhost` or `http://127.0.0.1`; Hearthkeep refuses any other address.
+3. If the server needs a key, type it in **Key (optional)**. Hearthkeep keeps it in its encrypted secret store, never in a settings file. Leave it empty to keep the key saved before.
+4. Select **Use this server** and confirm with your passkey, then restart when asked.
 
-   ```
-   uv run hearthkeep secrets set chat_api_key --data <data>
-   ```
-
-2. Check that it is there (this prints names only, never values):
-
-   ```
-   uv run hearthkeep secrets list --data <data>
-   ```
-
-3. Restart Hearthkeep.
-
-The secret's name is set by `chat_api_key_secret` in `config.toml` (default `chat_api_key`). Never put the key itself in `config.toml`.
+Your downloaded models stay where they are. To go back to one of them, select **Use this** on it in the same screen and restart.
 
 ## 10. Run at login (Windows)
 
@@ -607,7 +521,8 @@ What matters in `<data>`:
 | Path | Why |
 |---|---|
 | `hearthkeep.db` | Chats, passkeys, approvals, audit log, permission levels. The most important file. |
-| `config.toml`, `models.toml` | Your settings. |
+| `config.toml`, `models.toml` | Your settings, including which models you chose. |
+| `models\chat\`, `models\image\`, `tools\` | The models and programs you downloaded from Settings. Large, and Hearthkeep can fetch them again, so back them up only if you'd rather not download them twice. |
 | `models\cards\` | Your own model cards, if any. |
 | `secrets\` | Your encrypted secrets. Useless without the key in the keyring (below). |
 | `workspace\output\` | Images and files the assistant made. |
@@ -619,7 +534,7 @@ What matters in `<data>`:
 **The secret key.** Secrets are encrypted with a key held in your operating system's keyring (Windows Credential Manager, macOS Keychain, or the Secret Service on Linux), under the service name `hearthkeep`. The entry's name is derived from the data folder's full path. That means:
 
 - Restoring to the same path, for the same user on the same PC, just works.
-- Restoring to another path or another PC, Hearthkeep cannot find the key and stops with "master key is missing from the OS keyring". The fix: delete `<data>\secrets\store.bin`, start Hearthkeep, and set your secrets again (step 9). When Hearthkeep runs llama-server itself, it creates a new key on its own.
+- Restoring to another path or another PC, Hearthkeep cannot find the key and stops with "master key is missing from the OS keyring". The fix: delete `<data>\secrets\store.bin`, start Hearthkeep, and set your secrets again (for a model server you run yourself, in Settings › Chat model, step 9). When Hearthkeep runs llama-server itself, it creates a new key on its own.
 
 Your passkeys stay valid after a restore, as long as `public_origin` and `rp_id` are unchanged.
 
@@ -633,7 +548,7 @@ Start with the logs in `<data>\logs\`: `llama-server.log` for the chat model, `c
 netstat -ano | findstr :8765
 ```
 
-Stop that program, or change `port` in `<data>\config.toml`. For a local-only setup, change the port in `public_origin` too. With Tailscale, turn the old `tailscale serve` off (step 7) and run it again with the new port; `public_origin` stays the same. For llama-server or ComfyUI, change `llama_port` or `comfyui_port` in `models.toml`.
+Stop that program, or change `port` in `<data>\config.toml`. For a local-only setup, change the port in `public_origin` too. With Tailscale, turn the old `tailscale serve` off (step 7) and run it again with the new port; `public_origin` stays the same. For llama-server or ComfyUI, change `llama_port` or `comfyui_port` in `<data>\models.toml` (add the line if it isn't there).
 
 **The enrollment code expired.** Codes last 15 minutes. Restart the server, or run `uv run hearthkeep enroll-code --data <data>`. If it says a passkey is already enrolled, the code is no longer needed: sign in with your passkey.
 
@@ -646,15 +561,16 @@ Also check that you open exactly the address in `public_origin` (`localhost`, no
 
 **Sign-in or every action fails with a 403.** The page was opened on a different address than `public_origin`. Open exactly that address.
 
+**A download stops or fails.** Settings › Chat model (or Image models) shows the reason next to the item. A network error is tried again a few times by itself; after that, select **Retry** and it carries on from where it stopped. "There isn't enough free space on this PC" means the drive holding the data folder is too full: free some space, then retry. A checksum message means the file that arrived was not the file Hearthkeep expected, so it was removed: select **Retry** to fetch it again, and if it keeps happening, report it on the project's GitHub page. "Hearthkeep needs an update to fetch it" means a download address has changed; update Hearthkeep ([step 14](#14-updating)).
+
 **The chat model won't start.** Open `<data>\logs\llama-server.log`. The usual causes:
 
-- `llama_server_exe` or the `[model_dirs]` folder is wrong, or a file name doesn't match the card.
-- On Windows, the CUDA runtime zip was not extracted next to `llama-server.exe`.
-- Another program is using the GPU memory. Close it and try again.
+- A model you chose by hand: `llama_server_exe` or the `[model_dirs]` folder is wrong, or a file name doesn't match the card. Downloading the model from Settings › Chat model avoids this.
+- Another program is using the GPU memory. Close it and try again, or choose a smaller model in Settings › Chat model.
 - The path is too long (see step 3).
-- The start-up output says "using the chat server at chat_base_url" or "no chat model is set up yet": Hearthkeep did not find `llama_server_exe` or the `model_dirs` entry for the default chat model, so it is not running llama-server. It uses the server at `chat_base_url` only when `config.toml` sets it; to use a chat server you already run, set `chat_base_url` in `config.toml`.
+- The start-up output says "using the chat server at chat_base_url" or "no chat model is set up yet": no chat model is chosen yet. Download one in Settings › Chat model, or point Hearthkeep at a server you run (step 9).
 
-**Images are off, or the image tool is missing.** The start-up output says "Images: not set up". Set all three `comfyui_*` paths in `<data>\models.toml`, check they point to real files, and restart. If ComfyUI starts but fails, read `comfyui.log`: usually a missing weight file, or a ComfyUI too old for the shipped workflows.
+**Images are off, or the image tool is missing.** The start-up output says "Images: not set up". Download ComfyUI and an image model in Settings › Image models (step 5; it needs an NVIDIA graphics card) and restart. If you set the paths by hand, check that all three `comfyui_*` paths in `<data>\models.toml` point to real files. If ComfyUI starts but fails, read `comfyui.log`: usually a missing weight file, or a ComfyUI too old for the shipped workflows.
 
 **Python says it needs Docker.** Docker Desktop is not running (or not installed). Start it, wait until it is running, check with `uv run hearthkeep sandbox status --data <data>`, and ask again. Hearthkeep does not run the code on your PC instead.
 
@@ -693,6 +609,6 @@ Also check that you open exactly the address in `public_origin` (`localhost`, no
 4. If you don't want your data any more, delete `<data>`. Back it up first if you might.
 5. Remove the keyring entry: in Windows **Credential Manager**, under **Windows Credentials**, remove the generic credential for `hearthkeep`. On macOS, use Keychain Access; on Linux, your keyring app.
 6. Remove the passkey from each device's passkey manager (Windows: **Settings > Accounts > Passkeys**; Apple devices: the Passwords app; other managers: their own list).
-7. Optionally, delete llama.cpp, ComfyUI and the model files in `<tools>`.
+7. Optionally, delete the models and programs you downloaded: the `models` and `tools` folders inside `<data>`, which go with it if you delete `<data>`. Files you downloaded by hand live wherever you put them.
 8. Optionally, remove the sandbox images: `docker image rm hearthkeep-sandbox:<hash>` and `docker image rm hearthkeep-repo:<hash>` (read the tags from `hearthkeep sandbox status` before you delete anything). GitHub dependencies are kept in Docker volumes named `hk-deps-*`; remove them with `docker volume ls` and `docker volume rm`.
 9. If you used GitHub, delete the token on GitHub (**Settings > Developer settings**), so it stops working there too.
