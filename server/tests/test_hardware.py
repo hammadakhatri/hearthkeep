@@ -45,7 +45,7 @@ def cards(tmp_path_factory):
         (10.9, True, "chat-qwen3.5-9b", "llama-cuda", "fits_gpu"),
         (8, True, "chat-qwen3.5-9b", "llama-cuda", "fits_gpu"),
         (6, True, "chat-qwen3.5-4b", "llama-cuda", "fits_gpu"),
-        (2, True, "chat-qwen3.5-4b", "llama-cuda", "small_gpu"),
+        (2, True, "chat-qwen3.5-4b", "llama-cpu", "small_gpu"),
         (None, False, "chat-qwen3.5-4b", "llama-cpu", "no_nvidia"),
     ],
 )

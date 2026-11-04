@@ -170,9 +170,9 @@ def fits(
 def recommend(
     pc: PcInfo, catalog: dict[str, CatalogItem], cards: dict[str, ModelCard]
 ) -> Recommendation:
-    """The largest chat model whose card fits the VRAM; with no NVIDIA GPU the smallest on the
-    CPU build. The runtime follows `pc.nvidia` only: an owner's VRAM setting sizes the model
-    but never picks CUDA without an NVIDIA GPU."""
+    """The largest chat model whose card fits the VRAM, on the CUDA build; with no NVIDIA GPU,
+    or one too small for any chat model, the smallest on the CPU build. An owner's VRAM setting
+    sizes the model but never picks CUDA without an NVIDIA GPU."""
     chats = sorted(
         (i for i in catalog.values() if i.kind == "chat" and i.card in cards),
         key=lambda i: cards[i.card].vram_gb,
@@ -184,5 +184,5 @@ def recommend(
         return Recommendation(smallest.id, "llama-cpu", "no_nvidia")
     fitting = [i for i in chats if pc.vram_gb is not None and cards[i.card].vram_gb <= pc.vram_gb]
     if not fitting:
-        return Recommendation(smallest.id, "llama-cuda", "small_gpu")
+        return Recommendation(smallest.id, "llama-cpu", "small_gpu")
     return Recommendation(fitting[-1].id, "llama-cuda", "fits_gpu")
