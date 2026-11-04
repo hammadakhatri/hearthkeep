@@ -47,7 +47,7 @@ from hearthkeep.fetching import (
     new_client,
     safe_extract_zip,
 )
-from hearthkeep.hardware import PcInfo, read_pc, recommend
+from hearthkeep.hardware import PcInfo, free_bytes, read_pc, recommend
 from hearthkeep.lifecycle import ServerControl
 from hearthkeep.models.cards import ModelCard, load_cards, load_shipped_cards
 from hearthkeep.models.catalog import CatalogFile, CatalogItem, load_catalog
@@ -477,13 +477,7 @@ class Installer:
         return sum(size for _, size in self._needs(items).values())
 
     def _free_bytes(self, folder: Path) -> int:
-        root = folder
-        while not root.exists() and root != root.parent:
-            root = root.parent
-        try:
-            return int(self._disk(root).free)
-        except OSError:
-            return 0
+        return free_bytes(folder, disk=self._disk)
 
     def _check_space(self, items: list[CatalogItem]) -> int:
         """Refuse when any drive the job writes to is short: the error names that drive's

@@ -24,13 +24,16 @@ from test_api_model_install import (
 )
 from test_installer import NO_GPU, NVIDIA
 
+from hearthkeep import host as host_module
 from hearthkeep.api import routes_setup
 from hearthkeep.api.app import DB_FILE, create_app
 from hearthkeep.api.common import RateLimiter
 from hearthkeep.auth.enrollment import EnrollmentCodes
 from hearthkeep.config import Settings
 from hearthkeep.db import connect
+from hearthkeep.host import BAD_CHARACTERS, NOT_EMPTY, NOT_LOCAL, TOO_LONG, WindowsHost
 from hearthkeep.installer import NotEnoughSpace, NothingToDo
+from hearthkeep.lifecycle import EXIT_RELOCATE, ServerControl
 from hearthkeep.models.runtime import load_runtime
 from hearthkeep.secrets import SecretStore
 from hearthkeep.setupmode import SetupMode
@@ -47,6 +50,7 @@ ROUTES = [
     ("/api/setup/install/cancel", {}),
     ("/api/setup/install/retry", {}),
     ("/api/setup/chat", {"source": "local", "card": "qwen3.5-4b"}),
+    ("/api/setup/data-folder", {"path": "C:\\Hearthkeep\\elsewhere"}),
 ]
 # And the two 2a routes, now behind the same dependency.
 ALL_ROUTES = [("/api/setup/status", {}), ("/api/setup/enrollment-code", {}), *ROUTES]
@@ -399,3 +403,165 @@ def test_setup_chat_points_at_an_external_server_without_step_up(setup_app, tmp_
     assert (bad.status_code, bad.json()) == (400, {"reason": "bad_url"})
     for text in (r.text, bad.text, caplog.text, json.dumps(events(tmp_path))):
         assert CHAT_KEY not in text and SECRET not in text
+
+
+# ---- the data folder ------------------------------------------------------------------------
+
+GB = 1024**3
+
+
+class LocalHost(WindowsHost):
+    """Windows with every drive a local one (never asks the real kernel32)."""
+
+    def drive_type(self, root: str) -> int:
+        return 3
+
+
+@pytest.fixture
+def folder_host(tmp_path, monkeypatch):
+    """The Windows folder rules, on a host whose drives are all local. Folders beside this
+    test's temp folder pass the path-text rules on any OS (they are real folders to look in);
+    every other path gets the real Windows text rules. Free space is what `space` says."""
+    real_text = host_module.check_data_dir_text
+    base = str(tmp_path.parent)
+    monkeypatch.setattr(
+        host_module,
+        "check_data_dir_text",
+        lambda text: None if text.startswith(base) else real_text(text),
+    )
+    host = LocalHost()
+    monkeypatch.setattr(routes_setup, "current_host", lambda: host)
+    space = {"free": 100 * GB, "asked": []}
+
+    def free_bytes(path):
+        space["asked"].append(Path(path))
+        return space["free"]
+
+    monkeypatch.setattr(routes_setup, "free_bytes", free_bytes)
+    return space
+
+
+def moved(tmp_path: Path, name: str = "moved") -> Path:
+    return tmp_path.parent / f"{tmp_path.name}-{name}"
+
+
+def mover(setup_app):
+    control = ServerControl(supervised=False, setup_mode=True)
+    client = setup_app(control=control)
+    client.mode.created_folder = True
+    client.control = control
+    return client
+
+
+def test_move_records_the_new_folder_and_asks_setup_to_start_again(
+    setup_app, tmp_path, folder_host
+):
+    client = mover(setup_app)
+    target = moved(tmp_path)
+    r = post(client, "/api/setup/data-folder", {"path": str(target)})
+    assert (r.status_code, r.json()) == (202, {"ok": True})
+    assert client.mode.next_data_dir == target.resolve()
+    assert client.control.exit_code == EXIT_RELOCATE  # after the response, as the hand-over
+    assert folder_host["asked"] == [target.resolve()]
+    assert not target.exists()  # the route only checks: setup makes the folder
+
+
+def test_move_refused_after_a_download_started(setup_app, tmp_path, folder_host):
+    client = mover(setup_app)
+    assert post(client, "/api/setup/install", {"items": ["chat-qwen3.5-4b"]}).status_code == 202
+    r = post(client, "/api/setup/data-folder", {"path": str(moved(tmp_path))})
+    assert (r.status_code, r.json()) == (409, {"reason": "too_late"})
+    assert client.mode.next_data_dir is None and client.control.exit_code is None
+
+
+def test_move_refused_for_a_folder_this_run_did_not_make(setup_app, tmp_path, folder_host):
+    """The server checks it itself, whatever `can_move_data` told the page."""
+    control = ServerControl(supervised=False, setup_mode=True)
+    client = setup_app(control=control)
+    assert client.mode.created_folder is False
+    r = post(client, "/api/setup/data-folder", {"path": str(moved(tmp_path))})
+    assert (r.status_code, r.json()) == (409, {"reason": "too_late"})
+    assert client.mode.next_data_dir is None and control.exit_code is None
+
+
+def _not_empty(tmp_path: Path) -> str:
+    folder = moved(tmp_path, "full")
+    folder.mkdir()
+    (folder / "notes.txt").write_text("mine", encoding="utf-8")
+    return str(folder)
+
+
+@pytest.mark.parametrize(
+    ("make_path", "sentence"),
+    [
+        (lambda tmp: "C:\\" + "a" * 120, TOO_LONG),
+        (lambda tmp: "C:\\Hearth%keep\\data", BAD_CHARACTERS),
+        (_not_empty, NOT_EMPTY),
+        (lambda tmp: "\\\\homeserver\\share\\data", NOT_LOCAL),
+    ],
+    ids=["TOO_LONG", "BAD_CHARACTERS", "NOT_EMPTY", "NOT_LOCAL"],
+)
+def test_bad_folder_gets_the_2a_sentence(setup_app, tmp_path, folder_host, make_path, sentence):
+    client = mover(setup_app)
+    r = post(client, "/api/setup/data-folder", {"path": make_path(tmp_path)})
+    assert (r.status_code, r.json()) == (400, {"reason": "bad_folder", "message": sentence})
+    assert client.mode.next_data_dir is None and client.control.exit_code is None
+    assert folder_host["asked"] == []  # free space is asked only of a usable folder
+
+
+def test_move_refuses_another_hearthkeep_data_folder(setup_app, tmp_path, folder_host):
+    """An existing data folder passes check_data_dir (it is kept as it is), but a move is to a
+    new folder: another install's folder is never taken over."""
+    client = mover(setup_app)
+    other = moved(tmp_path, "other")
+    other.mkdir()
+    (other / "config.toml").write_text("port = 8765\n", encoding="utf-8")
+    r = post(client, "/api/setup/data-folder", {"path": str(other)})
+    assert (r.status_code, r.json()) == (400, {"reason": "bad_folder", "message": NOT_EMPTY})
+
+
+@pytest.mark.parametrize("where", ["same", "inside"])
+def test_move_refuses_the_current_folder_and_folders_inside_it(
+    setup_app, tmp_path, folder_host, where
+):
+    client = mover(setup_app)
+    target = tmp_path if where == "same" else tmp_path / "workspace" / "new"
+    r = post(client, "/api/setup/data-folder", {"path": str(target)})
+    assert r.status_code == 400
+    assert r.json() == {"reason": "bad_folder", "message": routes_setup.INSIDE_CURRENT}
+    assert client.mode.next_data_dir is None and client.control.exit_code is None
+
+
+def test_move_needs_5_gb_free(setup_app, tmp_path, folder_host):
+    client = mover(setup_app)
+    target = moved(tmp_path)
+    folder_host["free"] = int(4.94 * GB)
+    r = post(client, "/api/setup/data-folder", {"path": str(target)})
+    assert r.status_code == 400
+    assert r.json() == {"reason": "not_enough_space", "free_gb": 4.9, "needed_gb": 5}
+    assert client.mode.next_data_dir is None and client.control.exit_code is None
+    folder_host["free"] = 5 * GB
+    assert post(client, "/api/setup/data-folder", {"path": str(target)}).status_code == 202
+
+
+def test_move_path_limits(setup_app, folder_host):
+    client = mover(setup_app)
+    for path in ("", "C:\\" + "a" * 260):
+        r = post(client, "/api/setup/data-folder", {"path": path})
+        assert r.status_code == 422, path
+    assert client.mode.next_data_dir is None
+
+
+def test_move_on_another_os_is_unsupported(setup_app, tmp_path, folder_host, monkeypatch):
+    monkeypatch.setattr(routes_setup, "current_host", lambda: host_module.UnsupportedHost())
+    client = mover(setup_app)
+    r = post(client, "/api/setup/data-folder", {"path": str(moved(tmp_path))})
+    assert (r.status_code, r.json()) == (400, {"reason": "unsupported"})
+    assert client.control.exit_code is None
+
+
+def test_move_copy_is_clean():
+    from copy_rules import forbidden_in
+
+    text = routes_setup.INSIDE_CURRENT
+    assert text.isascii() and forbidden_in(text) == [] and "<" not in text

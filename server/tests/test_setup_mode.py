@@ -24,6 +24,7 @@ from test_api import (  # noqa: F401  (harness is a fixture)
 from hearthkeep import cli, db, startup
 from hearthkeep import host as host_module
 from hearthkeep.api import app as app_module
+from hearthkeep.api import routes_setup
 from hearthkeep.api.app import DB_FILE
 from hearthkeep.cli import (
     ALREADY_SET_UP,
@@ -35,6 +36,7 @@ from hearthkeep.cli import (
     KEEP_OPEN,
     LAUNCHER_NOT_STARTED,
     LOCATION_NOT_SAVED,
+    MOVING_DATA,
     PORT_BUSY,
     SETUP_INTRO,
     SHORTCUT_FAILED,
@@ -42,9 +44,12 @@ from hearthkeep.cli import (
     STEP_WEB,
     STOPPED_EARLY,
 )
+from hearthkeep.config import DATA_SUBDIRS
 from hearthkeep.host import BAD_CHARACTERS, UNSUPPORTED_HOST, WindowsHost
-from hearthkeep.lifecycle import EXIT_STOPPED, EXIT_USAGE, ServerControl
-from hearthkeep.runtime.supervisor import ProcessError
+from hearthkeep.lifecycle import EXIT_RELOCATE, EXIT_STOPPED, EXIT_USAGE, ServerControl
+from hearthkeep.push import VAPID_SECRET
+from hearthkeep.runtime.supervisor import LLAMA_API_KEY_SECRET, ProcessError
+from hearthkeep.secrets import SecretStore
 from hearthkeep.setupmode import SetupMode, setup_url
 from hearthkeep.shortcut import ShortcutError
 
@@ -154,6 +159,13 @@ class FakeRunServer:
         self.never_starts = False  # as uvicorn when the port was taken: STARTUP_FAILURE
         self.secret: str | None = None
         self.code: str | None = None
+        # Folders the setup page moves the data to, one per run, before anything else.
+        self.moves: list[Path] = []
+        self.before_move = lambda data: None  # called with the current folder before a move
+        self.after_move = lambda: None  # called once the page's move was accepted
+        self.secrets: list[str] = []
+        self.data_dirs: list[Path] = []
+        self.created: list[bool] = []
 
     def __call__(self, app, host, port, *, control=None, on_started=None, **kw) -> int:
         self.calls.append((host, port))
@@ -161,9 +173,20 @@ class FakeRunServer:
         if self.never_starts:
             return cli.STARTUP_FAILURE
         with TestClient(app, base_url=ORIGIN, client=LOOPBACK_PEER) as client:
-            self.secret = app.state.hk.setup.secret
+            hk = app.state.hk
+            self.secret = hk.setup.secret
+            self.secrets.append(self.secret)
+            self.data_dirs.append(Path(hk.settings.data_dir))
+            self.created.append(hk.setup.created_folder)
             if on_started is not None:
                 on_started()
+            if self.moves:
+                self.before_move(Path(hk.settings.data_dir))
+                body = {"secret": self.secret, "path": str(self.moves.pop(0))}
+                moved = client.post("/api/setup/data-folder", json=body, headers=CSRF)
+                assert moved.status_code == 202, moved.text
+                self.after_move()
+                return control.exit_code
             if self.enroll:
                 body = {"secret": self.secret}
                 status = client.post("/api/setup/status", json=body, headers=CSRF)
@@ -219,6 +242,9 @@ def run_cmd_setup(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "detect_docker", lambda: False)
     env = SetupEnv(tmp_path)
     monkeypatch.setattr(cli, "run_server", env.run_server)
+    # The setup page's folder move asks the same fake host, and finds plenty of space.
+    monkeypatch.setattr(routes_setup, "current_host", lambda: env.host)
+    monkeypatch.setattr(routes_setup, "free_bytes", lambda path: 100 * 1024**3)
     return env
 
 
@@ -787,6 +813,188 @@ def test_setup_carries_on_when_a_folder_cant_be_protected(tmp_path, capsys, run_
     out = capsys.readouterr().out
     assert out.count(FOLDER_NOT_PROTECTED) == 1 and FINISHED in out
     assert "icacls" not in out and "exit code" not in out
+
+
+# ---- moving the data folder ----------------------------------------
+
+
+def test_move_restarts_setup_in_the_new_folder_with_the_same_secret(
+    tmp_path, capsys, run_cmd_setup
+):
+    old, new = tmp_path / "data", tmp_path / "elsewhere" / "data"
+    server = run_cmd_setup.run_server
+    server.moves = [new]
+    assert run_cmd_setup(old) == 0
+    out = capsys.readouterr().out
+    assert len(server.calls) == 2
+    assert server.data_dirs == [old.resolve(), new.resolve()]
+    assert server.secrets[0] and server.secrets == [server.secrets[0]] * 2  # the same secret
+    assert server.created == [True, True]
+    assert run_cmd_setup.opened == [f"http://localhost:8765/setup#{server.secrets[0]}"]
+    assert out.count(MOVING_DATA) == 1 and out.count(BROWSER_OPENING) == 1
+    assert out.index(MOVING_DATA) < out.index(FINISHED)
+    assert run_cmd_setup.bundle_calls == 1  # the web app is the program's, not the folder's
+    assert not old.exists()  # it held only setup's own files
+    assert (new / "hearthkeep.db").is_file()
+    host = run_cmd_setup.host
+    assert host.location_writes == [old.resolve(), new.resolve()]
+    assert host.location == new.resolve()
+    assert host.protected == [old.resolve(), new.resolve()]
+    assert host.shortcuts == [new.resolve()]
+    assert len(host.spawned) == 1 and host.spawned[0][5] == str(new.resolve())
+
+
+def test_move_keeps_the_old_folder_when_something_else_is_in_it(tmp_path, capsys, run_cmd_setup):
+    old, new = tmp_path / "data", tmp_path / "elsewhere"
+    server = run_cmd_setup.run_server
+    server.moves = [new]
+    server.before_move = lambda data: (data / "logs" / "mine.txt").write_text("x", "utf-8")
+    assert run_cmd_setup(old) == 0
+    assert (old / "logs" / "mine.txt").is_file() and (old / "hearthkeep.db").is_file()
+    assert (new / "hearthkeep.db").is_file()
+    assert run_cmd_setup.host.location == new.resolve()
+    assert MOVING_DATA in capsys.readouterr().out
+
+
+def test_move_keeps_a_live_record_of_another_folder(tmp_path, run_cmd_setup):
+    """A record naming another, existing install is never repointed, even by a move."""
+    host = run_cmd_setup.host
+    live = tmp_path / "live"
+    live.mkdir()
+    host.location = live
+    run_cmd_setup.run_server.moves = [tmp_path / "elsewhere"]
+    assert run_cmd_setup(tmp_path / "data") == 0
+    assert host.location == live and host.location_writes == []
+    assert not (tmp_path / "data").exists()
+
+
+def test_move_can_happen_twice_and_never_reopens_the_browser(tmp_path, run_cmd_setup):
+    first, second, third = tmp_path / "a", tmp_path / "b", tmp_path / "c"
+    server = run_cmd_setup.run_server
+    server.moves = [second, third]
+    assert run_cmd_setup(first) == 0
+    assert server.data_dirs == [first.resolve(), second.resolve(), third.resolve()]
+    assert len(run_cmd_setup.opened) == 1
+    assert not first.exists() and not second.exists() and (third / "hearthkeep.db").is_file()
+    assert run_cmd_setup.host.location_writes == [p.resolve() for p in (first, second, third)]
+
+
+def test_setup_marks_only_a_folder_it_made(tmp_path, run_cmd_setup):
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "config.toml").write_text("docker_available = false\n", encoding="utf-8")
+    assert run_cmd_setup(data) == 0
+    assert run_cmd_setup.run_server.created == [False]
+    assert run_cmd_setup(tmp_path / "fresh") == 0
+    assert run_cmd_setup.run_server.created == [False, True]
+
+
+def test_move_stops_when_the_new_folder_fails_its_check_late(tmp_path, capsys, run_cmd_setup):
+    """The page checked the folder, but it filled up before setup got to it: setup says why,
+    and the old folder and its record are kept."""
+    old, new = tmp_path / "data", tmp_path / "elsewhere"
+    server = run_cmd_setup.run_server
+
+    def fill():
+        new.mkdir()
+        (new / "other.txt").write_text("x", encoding="utf-8")
+
+    server.moves = [new]
+    server.after_move = fill
+    assert run_cmd_setup(old) == 1
+    out = capsys.readouterr().out
+    assert host_module.NOT_EMPTY in out and MOVING_DATA not in out
+    assert (old / "hearthkeep.db").is_file()
+    assert run_cmd_setup.host.location == old.resolve()
+    assert len(server.calls) == 1
+
+
+def _setup_files(folder: Path) -> None:
+    folder.mkdir()
+    for name in ("config.toml", "hearthkeep.db", "hearthkeep.db-wal", "hearthkeep.db-shm"):
+        (folder / name).write_text("x", encoding="utf-8")
+    for sub in DATA_SUBDIRS:
+        (folder / sub).mkdir(parents=True, exist_ok=True)
+
+
+def test_old_folder_removed_only_when_setup_made_it_and_it_is_empty_of_owner_files(tmp_path):
+    clean = tmp_path / "clean"
+    _setup_files(clean)
+    assert cli._remove_setup_folder(clean) is True
+    assert not clean.exists()
+
+    bare = tmp_path / "bare"  # some of setup's files only: still all setup's own
+    bare.mkdir()
+    (bare / "config.toml").write_text("x", encoding="utf-8")
+    assert cli._remove_setup_folder(bare) is True and not bare.exists()
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "notes.txt",  # an extra file
+        "photos/",  # an extra subfolder, even an empty one
+        "logs/server.log",  # one of setup's subfolders, not empty
+        "workspace/chats/a/",  # a folder inside one of setup's subfolders
+        "workspace/other/",  # a folder beside setup's subfolders
+        "secrets/chat_api_key",  # a secret saved while setup ran
+    ],
+)
+def test_old_folder_is_kept_when_anything_else_is_in_it(tmp_path, extra):
+    folder = tmp_path / "old"
+    _setup_files(folder)
+    target = folder / extra
+    if extra.endswith("/"):
+        target.mkdir(parents=True, exist_ok=True)
+    else:
+        target.write_text("mine", encoding="utf-8")
+    before = sorted(str(p.relative_to(folder)) for p in folder.rglob("*"))
+    assert cli._remove_setup_folder(folder) is False
+    assert sorted(str(p.relative_to(folder)) for p in folder.rglob("*")) == before
+
+
+def _with_own_keys(folder: Path) -> None:
+    """What starting the setup server adds: git's empty settings file, and the keys
+    Hearthkeep makes itself in the secret store."""
+    (folder / "runtime" / "git-home" / "empty.gitconfig").write_bytes(b"")
+    store = SecretStore(folder)
+    store.put(VAPID_SECRET, "made-by-hearthkeep")
+    store.put(LLAMA_API_KEY_SECRET, "made-by-hearthkeep")
+
+
+def test_old_folder_with_only_hearthkeeps_own_keys_is_removed(tmp_path):
+    folder = tmp_path / "old"
+    _setup_files(folder)
+    _with_own_keys(folder)
+    assert cli._remove_setup_folder(folder) is True and not folder.exists()
+
+
+@pytest.mark.parametrize("change", ["owner_key", "git_settings", "unreadable_store"])
+def test_old_folder_is_kept_when_hearthkeeps_files_hold_more(tmp_path, change):
+    folder = tmp_path / "old"
+    _setup_files(folder)
+    _with_own_keys(folder)
+    if change == "owner_key":  # a key the owner typed in setup (an external chat server)
+        SecretStore(folder).put("chat_api_key", "the-owners-key")
+    elif change == "git_settings":
+        (folder / "runtime" / "git-home" / "empty.gitconfig").write_text("[user]\n", "utf-8")
+    else:
+        (folder / "secrets" / "store.bin").write_bytes(b"not a store")
+    assert cli._remove_setup_folder(folder) is False
+    assert (folder / "secrets" / "store.bin").is_file() and (folder / DB_FILE).is_file()
+
+
+def test_old_folder_that_is_a_file_or_gone_is_left_alone(tmp_path):
+    assert cli._remove_setup_folder(tmp_path / "gone") is False
+    file = tmp_path / "file"
+    file.write_text("x", encoding="utf-8")
+    assert cli._remove_setup_folder(file) is False and file.is_file()
+
+
+def test_move_copy_is_ascii_and_clean():
+    assert MOVING_DATA == "Moving Hearthkeep's data to the folder you chose."
+    assert MOVING_DATA.isascii() and forbidden_in(MOVING_DATA) == []
+    assert EXIT_RELOCATE == 76
 
 
 def test_setup_on_other_os_creates_nothing(tmp_path, monkeypatch, capsys):

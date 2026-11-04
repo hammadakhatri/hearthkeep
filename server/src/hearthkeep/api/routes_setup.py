@@ -1,7 +1,8 @@
 """Setup mode's endpoints, for the setup page `hearthkeep setup` opens.
 
 The page checks the secret, fetches the first-device enrolment code it passes to the existing
-passkey enrolment, and before that can show this PC, download models and choose the chat model.
+passkey enrolment, and before that can show this PC, move the data folder setup just made,
+download models and choose the chat model.
 The setup secret stands in for the passkey step-up those need in Settings: it proves the person
 is at this PC. What the model routes do is `models.service`, the same code the session routes
 call; audit rows use the actor "setup".
@@ -21,6 +22,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 from hearthkeep.api.common import (
     ENROLLMENT_CODE_TTL_MINUTES,
@@ -32,7 +34,9 @@ from hearthkeep.api.common import (
     services,
 )
 from hearthkeep.auth.enrollment import EnrollmentError, first_device_allowed
-from hearthkeep.host import current_host
+from hearthkeep.hardware import free_bytes
+from hearthkeep.host import DATA_MARKERS, NOT_EMPTY, Host, current_host
+from hearthkeep.lifecycle import EXIT_RELOCATE
 from hearthkeep.models import service
 from hearthkeep.models.service import ExternalChat, ItemId, LocalChat
 
@@ -111,6 +115,10 @@ def _is_default(data: Path) -> bool:
     return os.path.normcase(str(data)) == os.path.normcase(str(Path(default).resolve()))
 
 
+def _download_started(hk: Services) -> bool:
+    return hk.installer is not None and hk.installer.current() is not None
+
+
 @router.post("/pc")
 async def setup_pc(_: SetupDep, body: SetupBody, request: Request) -> dict:
     """This PC, and the data folder: the one place a path is shown, the folder the owner chose
@@ -120,13 +128,70 @@ async def setup_pc(_: SetupDep, body: SetupBody, request: Request) -> dict:
         raise ApiError(503, "unavailable")
     pc = await hk.pc.get()
     data = Path(hk.settings.data_dir).resolve()
-    started = hk.installer is not None and hk.installer.current() is not None
     return {
         "pc": pc.to_json(),
         "data_dir": str(data),
         "data_dir_default": await asyncio.to_thread(_is_default, data),
-        "can_move_data": bool(hk.setup.created_folder) and not started,
+        "can_move_data": bool(hk.setup.created_folder) and not _download_started(hk),
     }
+
+
+# ---- the data folder ------------------------------------------------------------------------
+
+MIN_FREE_GB = 5
+_GB = 1024**3
+INSIDE_CURRENT = "Choose a folder outside the one Hearthkeep uses now."
+
+
+class SetupDataFolderBody(SetupBody):
+    path: str = Field(min_length=1, max_length=260)
+
+
+def folder_move_problem(host: Host, target: Path, current: Path) -> str | None:
+    """Why `target` can't take the data, as the sentence to show; None when it can. The 2a
+    folder rules, and a move is always to a new folder: never the current one or one inside
+    it, and never another Hearthkeep data folder (check_data_dir lets those through, as
+    existing installs are kept as they are)."""
+    problem = host.check_data_dir(target)
+    if problem:
+        return problem
+    resolved, current = target.resolve(), current.resolve()
+    if resolved == current or current in resolved.parents:
+        return INSIDE_CURRENT
+    if any((resolved / name).exists() for name in DATA_MARKERS):
+        return NOT_EMPTY
+    return None
+
+
+@router.post("/data-folder", status_code=202)
+async def setup_data_folder(
+    _: SetupDep, body: SetupDataFolderBody, request: Request
+) -> JSONResponse:
+    """Move Hearthkeep's data to another folder: allowed only for a folder this run made and
+    before any download has started (checked here, whatever the page was told). Setup's server
+    stops once this answers, and `cmd_setup` sets up again in the new folder."""
+    hk = services(request)
+    host = current_host()
+    if not host.supported:
+        raise ApiError(400, "unsupported")
+    if not hk.setup.created_folder or _download_started(hk):
+        raise ApiError(409, "too_late")
+    target = Path(body.path)
+    current = Path(hk.settings.data_dir).resolve()
+    problem = await asyncio.to_thread(folder_move_problem, host, target, current)
+    if problem:
+        raise ApiError(400, "bad_folder", message=problem)
+    target = target.resolve()
+    free = await asyncio.to_thread(free_bytes, target)
+    if free < MIN_FREE_GB * _GB:
+        raise ApiError(400, "not_enough_space", free_gb=round(free / _GB, 1), needed_gb=MIN_FREE_GB)
+    hk.setup.next_data_dir = target
+    # As the 2a hand-over: the server stops only after this answer has gone out.
+    return JSONResponse(
+        {"ok": True},
+        status_code=202,
+        background=BackgroundTask(hk.control.request, EXIT_RELOCATE),
+    )
 
 
 # ---- the catalog and downloads --------------------------------------------------------------
